@@ -96,7 +96,7 @@ export default function Dashboard() {
           <div className="divide-y divide-border">
             {data.recent_invoices.length === 0 && <p className="text-sm text-muted-foreground py-4">Δεν υπάρχουν ακόμα τιμολόγια.</p>}
             {data.recent_invoices.map((inv) => (
-              <div key={inv._id} className="flex items-center justify-between py-2.5 text-sm">
+              <div key={inv.id} className="flex items-center justify-between py-2.5 text-sm">
                 <div>
                   <p className="font-medium">{inv.number}</p>
                   <p className="text-muted-foreground text-xs">{inv.client_name}</p>
@@ -111,7 +111,7 @@ export default function Dashboard() {
           <div className="divide-y divide-border">
             {data.recent_expenses.length === 0 && <p className="text-sm text-muted-foreground py-4">Δεν υπάρχουν ακόμα έξοδα.</p>}
             {data.recent_expenses.map((ex) => (
-              <div key={ex._id} className="flex items-center justify-between py-2.5 text-sm">
+              <div key={ex.id} className="flex items-center justify-between py-2.5 text-sm">
                 <div>
                   <p className="font-medium">{ex.vendor}</p>
                   <p className="text-muted-foreground text-xs">{ex.category}</p>

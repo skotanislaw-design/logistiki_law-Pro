@@ -20,7 +20,7 @@ export default function Clients() {
   const [form, setForm] = useState(emptyForm());
 
   const load = () => axios.get(`${API}/clients`).then((r) => setClients(r.data)).catch((e) => toast.error(errMsg(e)));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
 
   const openNew = () => { setEditing(null); setForm(emptyForm()); setOpen(true); };
   const openEdit = (c) => { setEditing(c); setForm(c); setOpen(true); };

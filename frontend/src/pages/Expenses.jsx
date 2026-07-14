@@ -29,7 +29,7 @@ export default function Expenses() {
   const fileRef = useRef(null);
 
   const load = () => axios.get(`${API}/expenses`).then((r) => setExpenses(r.data)).catch((e) => toast.error(errMsg(e)));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
 
   const handleFile = async (e) => {
     const file = e.target.files?.[0];

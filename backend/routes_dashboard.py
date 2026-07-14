@@ -34,7 +34,7 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
     recent_expenses = await db.expenses.find({}).sort("created_at", -1).limit(5).to_list(5)
 
     for d in recent_invoices + recent_expenses:
-        d["_id"] = str(d["_id"])
+        d["id"] = str(d.pop("_id"))
 
     chart_data = []
     for i in range(5, -1, -1):
