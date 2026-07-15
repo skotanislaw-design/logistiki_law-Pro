@@ -68,7 +68,7 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange }) {
             <>
               <CloudCheck size={18} className="text-[hsl(var(--success))]" />
               <div>
-                <p>Στάλθηκε στο myDATA <Badge variant="secondary" className="ml-1">MOCK</Badge></p>
+                <div>Στάλθηκε στο myDATA <Badge variant="secondary" className="ml-1">MOCK</Badge></div>
                 <p className="text-xs text-muted-foreground font-mono">MARK: {invoice.mydata_mark} · UID: {invoice.mydata_uid}</p>
               </div>
             </>
