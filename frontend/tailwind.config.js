@@ -11,6 +11,7 @@ module.exports = {
         heading: ['Chivo', 'sans-serif'],
         body: ['IBM Plex Sans', 'sans-serif'],
         mono: ['JetBrains Mono', 'monospace'],
+        brand: ['Cormorant Garamond', 'serif'],
       },
       borderRadius: {
         lg: 'var(--radius)',

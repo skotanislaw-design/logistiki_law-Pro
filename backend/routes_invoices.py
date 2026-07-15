@@ -2,6 +2,7 @@ import uuid
 import tempfile
 import os
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import Response
 from bson import ObjectId
 from db import db
 from models import Invoice
@@ -93,6 +94,28 @@ async def issue_invoice(invoice_id: str, user: dict = Depends(get_current_user))
     )
     doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
     return Invoice.from_mongo(doc)
+
+
+@router.get("/{invoice_id}/pdf")
+async def invoice_pdf(invoice_id: str, user: dict = Depends(get_current_user)):
+    from pdf_utils import build_invoice_pdf
+    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    client = None
+    if doc.get("client_id"):
+        try:
+            client = await db.clients.find_one({"_id": ObjectId(doc["client_id"])})
+        except Exception:
+            client = None
+    settings = await db.settings.find_one({}) or {}
+    pdf_bytes = build_invoice_pdf(doc, client or {}, settings)
+    safe_name = (doc.get("number") or "invoice").replace("ΤΠΥ", "TPY")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.pdf"'},
+    )
 
 
 @router.post("/voice-parse")

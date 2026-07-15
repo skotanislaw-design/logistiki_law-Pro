@@ -6,16 +6,34 @@ import {
 } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
 
-const NAV_ITEMS = [
-  { to: "/", label: "Πίνακας Ελέγχου", icon: SquaresFour, testid: "nav-dashboard" },
-  { to: "/invoices", label: "Τιμολόγια", icon: FileText, testid: "nav-invoices" },
-  { to: "/expenses", label: "Έξοδα", icon: Receipt, testid: "nav-expenses" },
-  { to: "/vat", label: "ΦΠΑ", icon: ChartLineUp, testid: "nav-vat" },
-  { to: "/mydata", label: "myDATA", icon: Scales, testid: "nav-mydata" },
-  { to: "/payroll", label: "Μισθοδοσία", icon: Calculator, testid: "nav-payroll" },
-  { to: "/clients", label: "Πελάτες", icon: Users, testid: "nav-clients" },
-  { to: "/tax-calendar", label: "Φορολ. Ημερολόγιο", icon: CalendarCheck, testid: "nav-tax-calendar" },
-  { to: "/settings", label: "Ρυθμίσεις", icon: GearSix, testid: "nav-settings" },
+const NAV_GROUPS = [
+  {
+    label: "ΚΥΡΙΑ",
+    items: [{ to: "/", label: "Πίνακας Ελέγχου", icon: SquaresFour, testid: "nav-dashboard" }],
+  },
+  {
+    label: "ΟΙΚΟΝΟΜΙΚΑ",
+    items: [
+      { to: "/invoices", label: "Τιμολόγια", icon: FileText, testid: "nav-invoices" },
+      { to: "/expenses", label: "Έξοδα", icon: Receipt, testid: "nav-expenses" },
+      { to: "/vat", label: "ΦΠΑ", icon: ChartLineUp, testid: "nav-vat" },
+      { to: "/payroll", label: "Μισθοδοσία", icon: Calculator, testid: "nav-payroll" },
+    ],
+  },
+  {
+    label: "ΣΥΜΜΟΡΦΩΣΗ",
+    items: [
+      { to: "/mydata", label: "myDATA", icon: Scales, testid: "nav-mydata" },
+      { to: "/tax-calendar", label: "Φορολ. Ημερολόγιο", icon: CalendarCheck, testid: "nav-tax-calendar" },
+    ],
+  },
+  {
+    label: "ΓΡΑΦΕΙΟ",
+    items: [
+      { to: "/clients", label: "Πελάτες", icon: Users, testid: "nav-clients" },
+      { to: "/settings", label: "Ρυθμίσεις", icon: GearSix, testid: "nav-settings" },
+    ],
+  },
 ];
 
 export function Sidebar() {
@@ -30,54 +48,71 @@ export function Sidebar() {
 
   return (
     <aside
-      className={`h-screen sticky top-0 flex flex-col bg-primary text-primary-foreground border-r border-border transition-[width] duration-200 ${collapsed ? "w-[64px]" : "w-[240px]"}`}
+      className={`h-screen sticky top-0 flex flex-col bg-[hsl(var(--sidebar))] border-r border-[hsl(var(--gold))]/15 transition-[width] duration-200 ${collapsed ? "w-[68px]" : "w-[248px]"}`}
       data-testid="sidebar"
     >
-      <div className="flex items-center justify-between px-4 h-16 border-b border-white/10">
+      <div className="flex items-center gap-3 px-4 h-[72px] border-b border-[hsl(var(--gold))]/15">
+        <img src="/nomos-logo.png" alt="Nomos One" className="w-10 h-10 rounded-full shrink-0" />
         {!collapsed && (
-          <span className="font-heading font-bold text-lg tracking-tight">Logistiki<span className="opacity-60">.gr</span></span>
+          <div className="min-w-0">
+            <div className="font-brand font-bold text-[17px] leading-tight text-[hsl(var(--gold))] tracking-widest">NOMOS ONE</div>
+            <div className="text-[9px] tracking-[0.25em] text-muted-foreground">LEGAL OPERATIONS</div>
+          </div>
         )}
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          className="p-1.5 rounded-sm hover:bg-white/10 transition-colors duration-200"
-          data-testid="sidebar-toggle"
-        >
-          {collapsed ? <CaretRight size={16} /> : <CaretLeft size={16} />}
-        </button>
       </div>
 
-      <nav className="flex-1 py-4 flex flex-col gap-1 px-2 overflow-y-auto">
-        {NAV_ITEMS.map(({ to, label, icon: Icon, testid }) => (
-          <NavLink
-            key={to}
-            to={to}
-            data-testid={testid}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm transition-colors duration-200 ${
-                isActive ? "bg-white/15 font-medium" : "hover:bg-white/8 text-primary-foreground/75"
-              }`
-            }
-          >
-            <Icon size={19} weight={"regular"} />
-            {!collapsed && <span>{label}</span>}
-          </NavLink>
+      <nav className="flex-1 py-3 flex flex-col overflow-y-auto">
+        {NAV_GROUPS.map((group) => (
+          <div key={group.label} className="mb-2">
+            {!collapsed && (
+              <div className="px-4 pt-3 pb-1.5 text-[9.5px] tracking-[0.22em] text-muted-foreground/70">{group.label}</div>
+            )}
+            <div className="px-2 flex flex-col gap-0.5">
+              {group.items.map(({ to, label, icon: Icon, testid }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  data-testid={testid}
+                  className={({ isActive }) =>
+                    `flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm border-l-2 transition-colors duration-200 ${
+                      isActive
+                        ? "border-[hsl(var(--gold))] bg-[hsl(var(--gold))]/10 text-[hsl(var(--gold))] font-medium"
+                        : "border-transparent text-foreground/60 hover:bg-white/5 hover:text-foreground"
+                    }`
+                  }
+                >
+                  <Icon size={19} weight="regular" />
+                  {!collapsed && <span className="truncate">{label}</span>}
+                </NavLink>
+              ))}
+            </div>
+          </div>
         ))}
       </nav>
 
-      <div className="border-t border-white/10 p-3">
+      <div className="border-t border-[hsl(var(--gold))]/15 p-3 space-y-2">
         {!collapsed && (
-          <div className="text-xs text-primary-foreground/60 mb-2 truncate" data-testid="current-user-label">
+          <div className="text-xs text-muted-foreground truncate" data-testid="current-user-label">
             {user?.name} · {user?.role}
           </div>
         )}
-        <button
-          onClick={handleLogout}
-          className="flex items-center gap-2 text-sm text-primary-foreground/75 hover:text-primary-foreground transition-colors duration-200"
-          data-testid="logout-button"
-        >
-          <SignOut size={18} />
-          {!collapsed && <span>Αποσύνδεση</span>}
-        </button>
+        <div className="flex items-center justify-between">
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-2 text-sm text-foreground/60 hover:text-[hsl(var(--gold))] transition-colors duration-200"
+            data-testid="logout-button"
+          >
+            <SignOut size={18} />
+            {!collapsed && <span>Αποσύνδεση</span>}
+          </button>
+          <button
+            onClick={() => setCollapsed(!collapsed)}
+            className="p-1.5 rounded-sm text-foreground/50 hover:bg-white/5 hover:text-foreground transition-colors duration-200"
+            data-testid="sidebar-toggle"
+          >
+            {collapsed ? <CaretRight size={15} /> : <CaretLeft size={15} />}
+          </button>
+        </div>
       </div>
     </aside>
   );

@@ -14,58 +14,42 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+.font-brand {
+    font-family: "Cormorant Garamond", "Chivo", serif;
+    letter-spacing: 0.06em;
+}
+
 @layer base {
     :root {
-        --background: 0 0% 99%;
-        --foreground: 240 10% 4%;
-        --card: 0 0% 100%;
-        --card-foreground: 240 10% 4%;
-        --popover: 0 0% 100%;
-        --popover-foreground: 240 10% 4%;
-        --primary: 240 6% 10%;
-        --primary-foreground: 0 0% 98%;
-        --secondary: 240 5% 96%;
-        --secondary-foreground: 240 6% 10%;
-        --muted: 240 5% 95%;
-        --muted-foreground: 240 4% 40%;
-        --accent: 240 5% 94%;
-        --accent-foreground: 240 6% 10%;
-        --destructive: 0 72% 51%;
+        --background: 225 45% 6%;
+        --foreground: 220 25% 92%;
+        --card: 224 40% 9%;
+        --card-foreground: 220 25% 92%;
+        --popover: 224 42% 8%;
+        --popover-foreground: 220 25% 92%;
+        --primary: 43 60% 52%;
+        --primary-foreground: 225 50% 8%;
+        --secondary: 223 35% 14%;
+        --secondary-foreground: 220 20% 88%;
+        --muted: 223 32% 13%;
+        --muted-foreground: 221 15% 64%;
+        --accent: 223 35% 15%;
+        --accent-foreground: 43 60% 62%;
+        --destructive: 0 62% 52%;
         --destructive-foreground: 0 0% 98%;
-        --border: 240 6% 90%;
-        --input: 240 6% 88%;
-        --ring: 240 6% 10%;
-        --success: 160 84% 39%;
-        --warning: 38 92% 50%;
-        --chart-1: 220 70% 50%;
-        --chart-2: 160 60% 40%;
-        --chart-3: 0 72% 51%;
-        --chart-4: 38 92% 50%;
-        --chart-5: 280 60% 55%;
-        --radius: 0.2rem;
-    }
-    .dark {
-        --background: 240 10% 4%;
-        --foreground: 0 0% 98%;
-        --card: 240 8% 7%;
-        --card-foreground: 0 0% 98%;
-        --popover: 240 8% 7%;
-        --popover-foreground: 0 0% 98%;
-        --primary: 0 0% 98%;
-        --primary-foreground: 240 6% 10%;
-        --secondary: 240 6% 14%;
-        --secondary-foreground: 0 0% 98%;
-        --muted: 240 6% 14%;
-        --muted-foreground: 240 5% 65%;
-        --accent: 240 6% 16%;
-        --accent-foreground: 0 0% 98%;
-        --destructive: 0 62% 45%;
-        --destructive-foreground: 0 0% 98%;
-        --border: 240 6% 18%;
-        --input: 240 6% 18%;
-        --ring: 240 5% 84%;
-        --success: 160 70% 45%;
+        --border: 223 30% 16%;
+        --input: 223 30% 19%;
+        --ring: 43 60% 52%;
+        --success: 160 70% 42%;
         --warning: 38 85% 55%;
+        --gold: 43 60% 52%;
+        --sidebar: 227 52% 4%;
+        --chart-1: 43 60% 52%;
+        --chart-2: 160 60% 42%;
+        --chart-3: 210 70% 55%;
+        --chart-4: 0 62% 55%;
+        --chart-5: 280 50% 60%;
+        --radius: 0.2rem;
     }
 }
 
@@ -78,6 +62,23 @@ body {
     }
     h1, h2, h3, h4 {
         font-family: "Chivo", sans-serif;
+    }
+    ::selection {
+        background: hsl(var(--gold) / 0.3);
+    }
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+        background: hsl(var(--background));
+    }
+    ::-webkit-scrollbar-thumb {
+        background: hsl(223 30% 20%);
+        border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: hsl(43 60% 35%);
     }
 }
 

@@ -1,17 +1,42 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { money, dateFmt } from "@/lib/api";
-import { CloudCheck, CloudSlash } from "@phosphor-icons/react";
+import { Button } from "@/components/ui/button";
+import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
+import { CloudCheck, CloudSlash, FilePdf } from "@phosphor-icons/react";
+import { toast } from "sonner";
 
 const STATUS_LABEL = { draft: "Πρόχειρο", issued: "Εκδόθηκε", paid: "Πληρώθηκε", cancelled: "Ακυρώθηκε" };
 
 export function InvoiceDetailDialog({ invoice, open, onOpenChange }) {
   if (!invoice) return null;
+
+  const downloadPdf = async () => {
+    try {
+      const res = await axios.get(`${API}/invoices/${invoice.id}/pdf`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${invoice.number || "timologio"}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Το PDF δημιουργήθηκε");
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto" data-testid="invoice-detail-dialog">
         <DialogHeader>
-          <DialogTitle>Τιμολόγιο {invoice.number}</DialogTitle>
+          <div className="flex items-center justify-between pr-6">
+            <DialogTitle>Τιμολόγιο {invoice.number}</DialogTitle>
+            <Button size="sm" variant="outline" onClick={downloadPdf} data-testid="invoice-detail-pdf-button">
+              <FilePdf size={16} className="mr-1.5" /> Λήψη PDF
+            </Button>
+          </div>
         </DialogHeader>
 
         <div className="grid grid-cols-2 gap-3 text-sm">

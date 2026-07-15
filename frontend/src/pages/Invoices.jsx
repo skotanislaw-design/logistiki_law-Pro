@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { InvoiceDetailDialog } from "@/components/InvoiceDetailDialog";
-import { Plus, Trash, Microphone, PaperPlaneTilt, CloudCheck, Eye, PencilSimple } from "@phosphor-icons/react";
+import { Plus, Trash, Microphone, PaperPlaneTilt, CloudCheck, Eye, PencilSimple, FilePdf } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const VAT_RATES = [24, 13, 6, 0];
@@ -83,11 +83,29 @@ export default function Invoices() {
     }
   };
 
+  const downloadPdf = async (inv) => {
+    try {
+      const res = await axios.get(`${API}/invoices/${inv.id}/pdf`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${inv.number || "timologio"}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success(`Το PDF του ${inv.number} δημιουργήθηκε`);
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
   const issueInvoice = async (id) => {
     try {
-      await axios.post(`${API}/invoices/${id}/issue`);
+      const { data } = await axios.post(`${API}/invoices/${id}/issue`);
       toast.success("Το τιμολόγιο εκδόθηκε και στάλθηκε (mock) στο myDATA");
       load();
+      downloadPdf(data);
     } catch (e) {
       toast.error(errMsg(e));
     }
@@ -181,6 +199,7 @@ export default function Invoices() {
                 <TableCell className="text-right font-mono">{money(inv.total)}</TableCell>
                 <TableCell className="text-right">
                   <Button variant="ghost" size="icon" onClick={() => setViewing(inv)} data-testid={`view-invoice-${inv.id}`}><Eye size={16} /></Button>
+                  <Button variant="ghost" size="icon" onClick={() => downloadPdf(inv)} title="Λήψη PDF" data-testid={`pdf-invoice-${inv.id}`}><FilePdf size={16} /></Button>
                   {inv.status === "draft" && (
                     <>
                       <Button variant="ghost" size="icon" onClick={() => openEdit(inv)} data-testid={`edit-invoice-${inv.id}`}><PencilSimple size={16} /></Button>

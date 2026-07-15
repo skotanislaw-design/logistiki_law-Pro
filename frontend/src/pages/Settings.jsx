@@ -46,6 +46,14 @@ export default function Settings() {
           <div><Label>ΔΟΥ</Label><Input value={form.doy} onChange={(e) => setForm({ ...form, doy: e.target.value })} className="mt-1.5" /></div>
         </div>
         <div>
+          <Label>Διεύθυνση</Label>
+          <Input value={form.address || ""} onChange={(e) => setForm({ ...form, address: e.target.value })} className="mt-1.5" data-testid="settings-address" />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div><Label>Τηλέφωνο</Label><Input value={form.phone || ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="mt-1.5" data-testid="settings-phone" /></div>
+          <div><Label>Email</Label><Input value={form.email || ""} onChange={(e) => setForm({ ...form, email: e.target.value })} className="mt-1.5" data-testid="settings-email" /></div>
+        </div>
+        <div>
           <Label>Περίοδος Δήλωσης ΦΠΑ</Label>
           <Select value={form.vat_period} onValueChange={(v) => setForm({ ...form, vat_period: v })}>
             <SelectTrigger className="mt-1.5"><SelectValue /></SelectTrigger>
@@ -54,6 +62,19 @@ export default function Settings() {
               <SelectItem value="quarterly">Τριμηνιαία</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+      </div>
+
+      <div className="border border-border rounded-sm p-5 bg-card space-y-4">
+        <h3 className="font-heading text-lg font-medium">Στοιχεία Πληρωμών</h3>
+        <p className="text-sm text-muted-foreground">Εμφανίζονται στα PDF τιμολογίων που εκδίδετε.</p>
+        <div>
+          <Label>IBAN</Label>
+          <Input value={form.iban || ""} onChange={(e) => setForm({ ...form, iban: e.target.value })} className="mt-1.5 font-mono" placeholder="GR00 0000 0000 0000 0000 0000 000" data-testid="settings-iban" />
+        </div>
+        <div>
+          <Label>Τράπεζα</Label>
+          <Input value={form.bank_name || ""} onChange={(e) => setForm({ ...form, bank_name: e.target.value })} className="mt-1.5" placeholder="π.χ. Εθνική Τράπεζα" data-testid="settings-bank" />
         </div>
       </div>
 

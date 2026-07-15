@@ -48,3 +48,19 @@ Testing agent run (iteration_1): Backend 17/17 pytest passed (auth, CRUD, VAT/pa
 1. User to review MVP and provide feedback
 2. When ready, gather real ΑΑΔΕ myDATA API credentials to replace mock flow
 3. Plan Phase 2: Ολομέλεια.gr γραμμάτια + παράβολα module (needs research into whether Ολομέλεια.gr / e-paravolo.gr expose any usable API or require scraping — should be scoped carefully due to legal/portal access constraints)
+
+## Implemented (2026-06 fork — Rebranding & PDF)
+- **Rebranding σε "Nomos One — Legal Operations Platform"**: dark navy + gold θέμα σε όλη την εφαρμογή (index.css tokens), λογότυπο χρήστη (/public/nomos-logo.png + favicon), sidebar με ομάδες πλοήγησης (ΚΥΡΙΑ/ΟΙΚΟΝΟΜΙΚΑ/ΣΥΜΜΟΡΦΩΣΗ/ΓΡΑΦΕΙΟ) & χρυσά active states, νέο Topbar (τίτλος σελίδας, live ρολόι, avatar χρήστη), footer "Nomos One v1.0 — Σκοτάνης & Συνεργάτες", redesigned Login. Font: Cormorant Garamond (brand).
+- **PDF Export Τιμολογίων**: GET /api/invoices/{id}/pdf (reportlab, FreeSans ελληνικά, navy/gold layout: header, στοιχεία πελάτη, γραμμές, ανάλυση ΦΠΑ, ΠΛΗΡΩΤΕΟ, στοιχεία πληρωμής IBAN/τράπεζα, myDATA MARK). Κουμπί PDF σε κάθε γραμμή τιμολογίου + στο detail dialog + ΑΥΤΟΜΑΤΗ λήψη PDF μετά την έκδοση τιμολογίου.
+- **Settings επεκτάθηκαν**: address, phone, email, IBAN, bank_name (εμφανίζονται στο PDF).
+- Tested: curl login→invoices→PDF (200, έγκυρο PDF, σωστά ελληνικά επιβεβαιωμένα με extraction), settings PUT με νέα πεδία OK, UI smoke screenshots (login/dashboard/invoices) OK.
+
+## User decisions (2026-06 fork)
+- Άντληση παραστατικών: ΚΑΙ Telegram bot ΚΑΙ Email (IMAP) → OCR → Έξοδα → αντιπαραβολή με myDATA (πάνω στο mock τώρα, έτοιμο για live AADE μετά).
+- Επιβεβαίωση χρήστη ΠΡΙΝ το τελικό βήμα έκδοσης γραμματίου προείσπραξης (olomeleia.gr) και παραβόλου (e-paravolo) — υποχρεωτικό confirm step στο Phase 2.
+- Ο χρήστης έχει ήδη Telegram (χρειάζεται bot token από @BotFather στο επόμενο βήμα).
+
+## Next Tasks (updated)
+1. **P0**: Άντληση παραστατικών από Telegram bot + Email (IMAP) → OCR → Έξοδα + αντιπαραβολή myDATA (mock). Χρειάζεται: Telegram bot token, email IMAP credentials.
+2. **P0**: Ολομέλεια.gr γραμμάτια + e-paravolo (με υποχρεωτική επιβεβαίωση πριν το τελικό βήμα έκδοσης).
+3. **P2**: Real AADE myDATA σύνδεση όταν δοθούν διαπιστευτήρια.
