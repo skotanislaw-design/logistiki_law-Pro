@@ -164,3 +164,48 @@ def build_invoice_pdf(invoice: dict, client: dict, settings: dict) -> bytes:
 
     doc.build(story)
     return buf.getvalue()
+
+
+GREEK_MONTHS = ["", "Ιανουαρίου", "Φεβρουαρίου", "Μαρτίου", "Απριλίου", "Μαΐου", "Ιουνίου",
+                "Ιουλίου", "Αυγούστου", "Σεπτεμβρίου", "Οκτωβρίου", "Νοεμβρίου", "Δεκεμβρίου"]
+
+
+def build_letter_pdf(settings: dict, recipient: str, subject: str, body: str) -> bytes:
+    from datetime import date
+    from reportlab.platypus import Image as RLImage
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=22 * mm, rightMargin=22 * mm, topMargin=14 * mm, bottomMargin=16 * mm)
+    story = []
+
+    story.append(RLImage("/app/backend/assets/letterhead_logo.png", width=52 * mm, height=34.7 * mm, hAlign="CENTER"))
+    story.append(Spacer(1, 4 * mm))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=GOLD))
+    story.append(Spacer(1, 8 * mm))
+
+    today = date.today()
+    story.append(_p(f"Αθήνα, {today.day} {GREEK_MONTHS[today.month]} {today.year}", 9.5, color=GRAY, align=2))
+    story.append(Spacer(1, 5 * mm))
+    if recipient:
+        story.append(_p(f"Προς: {recipient}", 10.5, bold=True, color=NAVY))
+        story.append(Spacer(1, 3 * mm))
+    if subject:
+        story.append(_p(f"Θέμα: {subject}", 11, bold=True, color=NAVY))
+        story.append(Spacer(1, 6 * mm))
+
+    for para in [p.strip() for p in body.replace("\r", "").split("\n") if p.strip()]:
+        story.append(_p(para, 10.5, align=4, leading=16))
+        story.append(Spacer(1, 3 * mm))
+
+    story.append(Spacer(1, 8 * mm))
+    story.append(_p("Με εκτίμηση,", 10.5))
+    story.append(Spacer(1, 1.5 * mm))
+    story.append(_p(settings.get("company_name") or "Nomos One", 11, bold=True, color=NAVY))
+
+    story.append(Spacer(1, 12 * mm))
+    story.append(HRFlowable(width="100%", thickness=0.6, color=GOLD))
+    story.append(Spacer(1, 2 * mm))
+    parts = [settings.get("address"), f"Τηλ. {settings['phone']}" if settings.get("phone") else None, settings.get("email")]
+    story.append(_p("  |  ".join([p for p in parts if p]), 8, color=GRAY, align=1))
+
+    doc.build(story)
+    return buf.getvalue()

@@ -14,6 +14,8 @@ import MyData from "@/pages/MyData";
 import Payroll from "@/pages/Payroll";
 import TaxCalendar from "@/pages/TaxCalendar";
 import Settings from "@/pages/Settings";
+import Copilot from "@/pages/Copilot";
+import Documents from "@/pages/Documents";
 
 function Protected({ children }) {
   return (
@@ -39,6 +41,8 @@ function App() {
             <Route path="/payroll" element={<Protected><Payroll /></Protected>} />
             <Route path="/tax-calendar" element={<Protected><TaxCalendar /></Protected>} />
             <Route path="/settings" element={<Protected><Settings /></Protected>} />
+            <Route path="/copilot" element={<Protected><Copilot /></Protected>} />
+            <Route path="/documents" element={<Protected><Documents /></Protected>} />
           </Routes>
         </BrowserRouter>
         <Toaster />

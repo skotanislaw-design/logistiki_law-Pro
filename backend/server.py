@@ -20,6 +20,8 @@ from routes_dashboard import router as dashboard_router
 from routes_settings import router as settings_router
 from routes_mydata import router as mydata_router
 from routes_tax_calendar import router as tax_calendar_router
+from routes_copilot import router as copilot_router
+from routes_documents import router as documents_router
 
 app = FastAPI(title="Logistiki Pro API")
 api_router = APIRouter(prefix="/api")
@@ -33,6 +35,8 @@ api_router.include_router(dashboard_router)
 api_router.include_router(settings_router)
 api_router.include_router(mydata_router)
 api_router.include_router(tax_calendar_router)
+api_router.include_router(copilot_router)
+api_router.include_router(documents_router)
 
 
 @api_router.get("/")

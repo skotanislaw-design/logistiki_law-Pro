@@ -12,6 +12,8 @@ const TITLES = {
   "/clients": "Πελάτες",
   "/tax-calendar": "Φορολογικό Ημερολόγιο",
   "/settings": "Ρυθμίσεις",
+  "/copilot": "Nomos AI — Copilot",
+  "/documents": "Έγγραφα",
 };
 
 const ROLE_LABEL = { admin: "Διαχειριστής", accountant: "Λογιστής", lawyer: "Δικηγόρος" };

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   SquaresFour, FileText, Receipt, ChartLineUp, Users, Calculator,
-  CalendarCheck, GearSix, SignOut, CaretLeft, CaretRight, Scales,
+  CalendarCheck, GearSix, SignOut, CaretLeft, CaretRight, Scales, Sparkle, Files,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
 
@@ -10,6 +10,13 @@ const NAV_GROUPS = [
   {
     label: "ΚΥΡΙΑ",
     items: [{ to: "/", label: "Πίνακας Ελέγχου", icon: SquaresFour, testid: "nav-dashboard" }],
+  },
+  {
+    label: "AI ΕΡΓΑΛΕΙΑ",
+    items: [
+      { to: "/copilot", label: "Nomos AI", icon: Sparkle, testid: "nav-copilot" },
+      { to: "/documents", label: "Έγγραφα", icon: Files, testid: "nav-documents" },
+    ],
   },
   {
     label: "ΟΙΚΟΝΟΜΙΚΑ",
