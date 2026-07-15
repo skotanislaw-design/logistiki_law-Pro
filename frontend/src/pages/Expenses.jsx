@@ -97,10 +97,11 @@ export default function Expenses() {
   };
 
   return (
-    <div className="space-y-6" data-testid="expenses-page">
+    <div className="space-y-8" data-testid="expenses-page">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-heading text-3xl font-bold tracking-tight">Έξοδα</h1>
+          <div className="lux-overline mb-1.5">Nomos One · Οικονομικά</div>
+          <h1 className="font-brand text-4xl font-bold tracking-wide">Έξοδα</h1>
           <p className="text-sm text-muted-foreground mt-1">Καταχώρηση παραστατικών εξόδων — χειροκίνητα ή με φωτογραφία (AI OCR)</p>
         </div>
         <div className="flex gap-2">
@@ -114,7 +115,7 @@ export default function Expenses() {
         </div>
       </div>
 
-      <div className="border border-border rounded-sm bg-card overflow-hidden">
+      <div className="lux-card overflow-hidden animate-in-up">
         <Table data-testid="expenses-table">
           <TableHeader>
             <TableRow>

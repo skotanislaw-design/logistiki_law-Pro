@@ -9,8 +9,8 @@ export function AppLayout({ children }) {
         <Topbar />
         <main className="flex-1 p-6 md:p-8">{children}</main>
         <footer className="flex items-center justify-between px-6 md:px-8 py-3 border-t border-[hsl(var(--gold))]/10 text-[11px] text-muted-foreground/70">
-          <span>Nomos One v1.0 — Σκοτάνης &amp; Συνεργάτες</span>
-          <span className="hidden sm:inline">Εμπιστευτική Πλατφόρμα Νομικών Λειτουργιών</span>
+          <span className="flex items-center gap-2"><span className="text-[hsl(var(--gold))]/40 text-[8px]">◆</span> Nomos One v1.0 — Σκοτάνης &amp; Συνεργάτες</span>
+          <span className="hidden sm:flex items-center gap-2">Εμπιστευτική Πλατφόρμα Νομικών Λειτουργιών <span className="text-[hsl(var(--gold))]/40 text-[8px]">◆</span></span>
         </footer>
       </div>
     </div>

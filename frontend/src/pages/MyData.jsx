@@ -35,13 +35,14 @@ export default function MyData() {
   if (!status) return <div className="text-muted-foreground">Φόρτωση...</div>;
 
   return (
-    <div className="space-y-6" data-testid="mydata-page">
+    <div className="space-y-8" data-testid="mydata-page">
       <div>
-        <h1 className="font-heading text-3xl font-bold tracking-tight">myDATA (ΑΑΔΕ)</h1>
+        <div className="lux-overline mb-1.5">Nomos One · Συμμόρφωση</div>
+        <h1 className="font-brand text-4xl font-bold tracking-wide">myDATA (ΑΑΔΕ)</h1>
         <p className="text-sm text-muted-foreground mt-1">Ηλεκτρονική διαβίβαση παραστατικών στην ΑΑΔΕ</p>
       </div>
 
-      <div className="border border-border rounded-sm p-5 bg-card flex items-center justify-between" data-testid="mydata-connection-panel">
+      <div className="lux-card p-6 flex items-center justify-between" data-testid="mydata-connection-panel">
         <div className="flex items-center gap-3">
           {status.connected ? <CloudCheck size={28} className="text-[hsl(var(--success))]" /> : <CloudSlash size={28} className="text-warning" />}
           <div>
@@ -61,7 +62,7 @@ export default function MyData() {
         </div>
       </div>
 
-      <div className="border border-border rounded-sm bg-card overflow-hidden">
+      <div className="lux-card overflow-hidden animate-in-up">
         <Table data-testid="mydata-invoices-table">
           <TableHeader>
             <TableRow>
@@ -100,7 +101,7 @@ export default function MyData() {
         </Table>
       </div>
 
-      <div className="border border-border rounded-sm p-5 bg-card flex items-start gap-3">
+      <div className="lux-card p-6 flex items-start gap-3">
         <Scales size={20} className="text-muted-foreground shrink-0" />
         <p className="text-sm text-muted-foreground">
           Για πραγματική σύνδεση με το myDATA, καταχωρήστε τα διαπιστευτήρια ΑΑΔΕ (User ID & Subscription Key) στις

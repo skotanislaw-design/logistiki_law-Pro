@@ -37,12 +37,13 @@ export function Topbar() {
         </p>
       </div>
       <div className="flex items-center gap-4">
-        <div className="hidden sm:flex items-center gap-2 border border-[hsl(var(--gold))]/25 rounded-sm px-3 py-1.5" data-testid="topbar-clock">
+        <div className="hidden sm:flex items-center gap-2 border border-[hsl(var(--gold))]/25 rounded-sm px-3 py-1.5 bg-[hsl(var(--gold))]/5" data-testid="topbar-clock">
           <span className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--success))] animate-pulse" />
           <span className="font-mono text-sm text-[hsl(var(--gold))]">{now.toLocaleTimeString("el-GR")}</span>
         </div>
+        <span className="hidden sm:inline text-[hsl(var(--gold))]/40 text-[9px]">◆</span>
         <div className="flex items-center gap-2.5" data-testid="topbar-user">
-          <div className="w-9 h-9 rounded-full bg-[hsl(var(--gold))]/15 border border-[hsl(var(--gold))]/40 flex items-center justify-center text-xs font-semibold text-[hsl(var(--gold))]">
+          <div className="w-9 h-9 rounded-full bg-[hsl(var(--gold))]/15 ring-1 ring-[hsl(var(--gold))]/50 ring-offset-2 ring-offset-background flex items-center justify-center text-xs font-semibold text-[hsl(var(--gold))]">
             {initials}
           </div>
           <div className="hidden md:block leading-tight">

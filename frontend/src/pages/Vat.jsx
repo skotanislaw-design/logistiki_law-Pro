@@ -29,10 +29,11 @@ export default function Vat() {
   const breakdown = [24, 13, 6, 0];
 
   return (
-    <div className="space-y-6" data-testid="vat-page">
+    <div className="space-y-8" data-testid="vat-page">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-heading text-3xl font-bold tracking-tight">ΦΠΑ</h1>
+          <div className="lux-overline mb-1.5">Nomos One · Οικονομικά</div>
+          <h1 className="font-brand text-4xl font-bold tracking-wide">ΦΠΑ</h1>
           <p className="text-sm text-muted-foreground mt-1">Εκκροές - Εισροές τρέχοντος μήνα & προθεσμία υποβολής</p>
         </div>
         <div className="w-48">
@@ -49,21 +50,21 @@ export default function Vat() {
       <DisclaimerBanner />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="border border-border rounded-sm p-5 bg-card">
+        <div className="lux-card p-6">
           <span className="text-xs uppercase tracking-[0.15em] font-semibold text-muted-foreground">ΦΠΑ Εκροών (Πωλήσεις)</span>
           <p className="font-mono text-2xl mt-2" data-testid="output-vat">{money(data.output_vat)}</p>
         </div>
-        <div className="border border-border rounded-sm p-5 bg-card">
+        <div className="lux-card p-6">
           <span className="text-xs uppercase tracking-[0.15em] font-semibold text-muted-foreground">ΦΠΑ Εισροών (Έξοδα)</span>
           <p className="font-mono text-2xl mt-2" data-testid="input-vat">{money(data.input_vat)}</p>
         </div>
-        <div className="border border-border rounded-sm p-5 bg-card bg-destructive/5">
+        <div className="lux-card p-6 bg-destructive/5">
           <span className="text-xs uppercase tracking-[0.15em] font-semibold text-muted-foreground">ΦΠΑ προς Απόδοση</span>
           <p className="font-mono text-2xl mt-2 text-destructive" data-testid="vat-net-due">{money(data.vat_due)}</p>
         </div>
       </div>
 
-      <div className="border border-border rounded-sm p-5 bg-card">
+      <div className="lux-card p-6">
         <h3 className="font-heading text-lg font-medium mb-4">Προθεσμία Υποβολής/Πληρωμής</h3>
         <p className="text-sm text-muted-foreground">
           Η επόμενη {settings.vat_period === "monthly" ? "μηνιαία" : "τριμηνιαία"} δήλωση ΦΠΑ πρέπει να υποβληθεί και πληρωθεί έως:
@@ -71,7 +72,7 @@ export default function Vat() {
         <p className="font-mono text-3xl mt-3" data-testid="vat-deadline-date">{dateFmt(data.next_vat_deadline)}</p>
       </div>
 
-      <div className="border border-border rounded-sm p-5 bg-card">
+      <div className="lux-card p-6">
         <h3 className="font-heading text-lg font-medium mb-4">Συντελεστές ΦΠΑ Ελλάδας</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {breakdown.map((r) => (

@@ -17,15 +17,16 @@ export default function TaxCalendar() {
   if (!data) return <div className="text-muted-foreground">Φόρτωση...</div>;
 
   return (
-    <div className="space-y-6" data-testid="tax-calendar-page">
+    <div className="space-y-8" data-testid="tax-calendar-page">
       <div>
-        <h1 className="font-heading text-3xl font-bold tracking-tight">Φορολογικό Ημερολόγιο</h1>
+        <div className="lux-overline mb-1.5">Nomos One · Συμμόρφωση</div>
+        <h1 className="font-brand text-4xl font-bold tracking-wide">Φορολογικό Ημερολόγιο</h1>
         <p className="text-sm text-muted-foreground mt-1">Επόμενες προθεσμίες ΦΠΑ, ΕΦΚΑ και φόρου εισοδήματος</p>
       </div>
 
       <div className="space-y-3">
         {data.deadlines.map((d, i) => (
-          <div key={i} className="border border-border rounded-sm p-5 bg-card flex items-center justify-between" data-testid={`deadline-${d.category}`}>
+          <div key={i} className="lux-card p-6 flex items-center justify-between" data-testid={`deadline-${d.category}`}>
             <div className="flex items-center gap-4">
               <CalendarCheck size={22} className="text-muted-foreground" />
               <div>

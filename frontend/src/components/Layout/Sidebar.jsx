@@ -76,7 +76,7 @@ export function Sidebar() {
                   className={({ isActive }) =>
                     `flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm border-l-2 transition-colors duration-200 ${
                       isActive
-                        ? "border-[hsl(var(--gold))] bg-[hsl(var(--gold))]/10 text-[hsl(var(--gold))] font-medium"
+                        ? "border-[hsl(var(--gold))] bg-gradient-to-r from-[hsl(var(--gold))]/15 to-transparent text-[hsl(var(--gold))] font-medium"
                         : "border-transparent text-foreground/60 hover:bg-white/5 hover:text-foreground"
                     }`
                   }

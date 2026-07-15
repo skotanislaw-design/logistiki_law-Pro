@@ -174,16 +174,17 @@ export default function Invoices() {
   };
 
   return (
-    <div className="space-y-6" data-testid="invoices-page">
+    <div className="space-y-8" data-testid="invoices-page">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-heading text-3xl font-bold tracking-tight">Τιμολόγια</h1>
+          <div className="lux-overline mb-1.5">Nomos One · Οικονομικά</div>
+          <h1 className="font-brand text-4xl font-bold tracking-wide">Τιμολόγια</h1>
           <p className="text-sm text-muted-foreground mt-1">Έκδοση & διαχείριση τιμολογίων παροχής υπηρεσιών</p>
         </div>
         <Button onClick={openNew} data-testid="new-invoice-button"><Plus size={16} className="mr-1.5" /> Νέο Τιμολόγιο</Button>
       </div>
 
-      <div className="border border-border rounded-sm bg-card overflow-hidden">
+      <div className="lux-card overflow-hidden animate-in-up">
         <Table data-testid="invoices-table">
           <TableHeader>
             <TableRow>

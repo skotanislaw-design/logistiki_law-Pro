@@ -42,13 +42,14 @@ export default function Settings() {
   return (
     <div className="space-y-6 max-w-2xl" data-testid="settings-page">
       <div>
-        <h1 className="font-heading text-3xl font-bold tracking-tight">Ρυθμίσεις</h1>
+        <div className="lux-overline mb-1.5">Nomos One · Γραφείο</div>
+        <h1 className="font-brand text-4xl font-bold tracking-wide">Ρυθμίσεις</h1>
         <p className="text-sm text-muted-foreground mt-1">Στοιχεία εταιρείας & σύνδεση myDATA / ΑΑΔΕ</p>
       </div>
 
       <DisclaimerBanner />
 
-      <div className="border border-border rounded-sm p-5 bg-card space-y-4">
+      <div className="lux-card p-6 space-y-4">
         <h3 className="font-heading text-lg font-medium">Στοιχεία Εταιρείας</h3>
         <div>
           <Label>Επωνυμία</Label>
@@ -78,7 +79,7 @@ export default function Settings() {
         </div>
       </div>
 
-      <div className="border border-border rounded-sm p-5 bg-card space-y-4">
+      <div className="lux-card p-6 space-y-4">
         <h3 className="font-heading text-lg font-medium">Στοιχεία Πληρωμών</h3>
         <p className="text-sm text-muted-foreground">Εμφανίζονται στα PDF τιμολογίων που εκδίδετε.</p>
         <div>
@@ -91,7 +92,7 @@ export default function Settings() {
         </div>
       </div>
 
-      <div className="border border-border rounded-sm p-5 bg-card space-y-4">
+      <div className="lux-card p-6 space-y-4">
         <h3 className="font-heading text-lg font-medium">Αποστολή Email (SMTP)</h3>
         <p className="text-sm text-muted-foreground">
           Τα τιμολόγια αποστέλλονται στους πελάτες από το δικό σας email. Για Gmail: ενεργοποιήστε την Επαλήθευση 2 βημάτων και δημιουργήστε ένα{" "}
@@ -124,7 +125,7 @@ export default function Settings() {
         </Button>
       </div>
 
-      <div className="border border-border rounded-sm p-5 bg-card space-y-4">
+      <div className="lux-card p-6 space-y-4">
         <h3 className="font-heading text-lg font-medium">Διαπιστευτήρια ΑΑΔΕ / myDATA</h3>
         <p className="text-sm text-muted-foreground">
           Καταχωρήστε τα πραγματικά διαπιστευτήρια σας από το <a href="https://www.aade.gr" target="_blank" rel="noreferrer" className="underline">aade.gr</a> για να ενεργοποιήσετε πραγματική σύνδεση. Χωρίς αυτά, το σύστημα λειτουργεί σε προσομοίωση (mock).

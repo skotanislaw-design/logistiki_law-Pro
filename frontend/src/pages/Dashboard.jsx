@@ -14,7 +14,7 @@ function StatCard({ label, value, icon: Icon, testid, tone = "default", hint }) 
     success: "text-[hsl(var(--success))]",
   }[tone];
   return (
-    <div className="border border-border rounded-sm p-5 bg-card flex flex-col gap-2" data-testid={testid}>
+    <div className="lux-card p-6 flex flex-col gap-2" data-testid={testid}>
       <div className="flex items-center justify-between">
         <span className="text-xs uppercase tracking-[0.15em] font-semibold text-muted-foreground flex items-center gap-1.5">
           {label}
@@ -52,15 +52,16 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="space-y-6" data-testid="dashboard-page">
-      <div>
-        <h1 className="font-heading text-3xl font-bold tracking-tight">Πίνακας Ελέγχου</h1>
+    <div className="space-y-8" data-testid="dashboard-page">
+      <div className="animate-in-up">
+        <div className="lux-overline mb-1.5">Nomos One · Επισκόπηση</div>
+        <h1 className="font-brand text-4xl font-bold tracking-wide">Πίνακας Ελέγχου</h1>
         <p className="text-sm text-muted-foreground mt-1">Τρέχων μήνας — επισκόπηση εσόδων, εξόδων και φορολογικών υποχρεώσεων</p>
       </div>
 
       <DisclaimerBanner />
 
-      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-5 stagger">
         <StatCard label="Έσοδα Μήνα" value={money(data.income_total)} icon={TrendUp} testid="stat-income" tone="success"
           hint="Το σύνολο της καθαρής αξίας (χωρίς ΦΠΑ) των εκδοθέντων τιμολογίων τον τρέχοντα μήνα. Αυξάνει το ΦΠΑ Εκροών." />
         <StatCard label="Έξοδα Μήνα" value={money(data.expense_total)} icon={TrendDown} testid="stat-expense"
@@ -71,24 +72,30 @@ export default function Dashboard() {
           hint="Ημερομηνία υποβολής & πληρωμής της επόμενης δήλωσης ΦΠΑ, βάσει της περιόδου (μηνιαία/τριμηνιαία) που έχετε ορίσει στις Ρυθμίσεις." />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 border border-border rounded-sm p-5 bg-card">
-          <h3 className="font-heading text-lg font-medium mb-4">Έσοδα vs Έξοδα (6 μήνες)</h3>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 stagger">
+        <div className="lg:col-span-2 lux-card p-6">
+          <h3 className="font-heading text-lg font-medium mb-1">Έσοδα vs Έξοδα (6 μήνες)</h3>
+          <div className="gold-rule mb-4">◆</div>
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={data.chart_data}>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-              <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
-              <ChartTooltip formatter={(v) => money(v)} contentStyle={{ fontSize: 12 }} />
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+              <XAxis dataKey="month" tick={{ fontSize: 12, fill: "hsl(221 15% 64%)" }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 12, fill: "hsl(221 15% 64%)" }} axisLine={false} tickLine={false} />
+              <ChartTooltip
+                formatter={(v) => money(v)}
+                cursor={{ fill: "hsl(43 60% 52% / 0.06)" }}
+                contentStyle={{ fontSize: 12, background: "hsl(224 42% 8%)", border: "1px solid hsl(43 60% 52% / 0.3)", borderRadius: 4 }}
+              />
               <Legend />
-              <Bar dataKey="income" name="Έσοδα" fill="hsl(var(--chart-2))" radius={[2, 2, 0, 0]} />
-              <Bar dataKey="expense" name="Έξοδα" fill="hsl(var(--chart-3))" radius={[2, 2, 0, 0]} />
+              <Bar dataKey="income" name="Έσοδα" fill="hsl(var(--gold))" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="expense" name="Έξοδα" fill="hsl(222 30% 32%)" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
 
-        <div className="border border-border rounded-sm p-5 bg-card flex flex-col gap-4">
+        <div className="lux-card p-6 flex flex-col gap-4">
           <h3 className="font-heading text-lg font-medium">myDATA & Εκκρεμότητες</h3>
+          <div className="gold-rule">◆</div>
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted-foreground flex items-center gap-2"><CloudArrowUp size={16} /> Εκκρεμή προς myDATA</span>
             <span className="font-mono" data-testid="pending-mydata-count">{data.pending_mydata}</span>
@@ -107,9 +114,10 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="border border-border rounded-sm p-5 bg-card">
-          <h3 className="font-heading text-lg font-medium mb-3">Πρόσφατα Τιμολόγια</h3>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 stagger">
+        <div className="lux-card p-6">
+          <h3 className="font-heading text-lg font-medium mb-1">Πρόσφατα Τιμολόγια</h3>
+          <div className="gold-rule mb-3">◆</div>
           <div className="divide-y divide-border">
             {data.recent_invoices.length === 0 && <p className="text-sm text-muted-foreground py-4">Δεν υπάρχουν ακόμα τιμολόγια.</p>}
             {data.recent_invoices.map((inv) => (
@@ -123,8 +131,9 @@ export default function Dashboard() {
             ))}
           </div>
         </div>
-        <div className="border border-border rounded-sm p-5 bg-card">
-          <h3 className="font-heading text-lg font-medium mb-3">Πρόσφατα Έξοδα</h3>
+        <div className="lux-card p-6">
+          <h3 className="font-heading text-lg font-medium mb-1">Πρόσφατα Έξοδα</h3>
+          <div className="gold-rule mb-3">◆</div>
           <div className="divide-y divide-border">
             {data.recent_expenses.length === 0 && <p className="text-sm text-muted-foreground py-4">Δεν υπάρχουν ακόμα έξοδα.</p>}
             {data.recent_expenses.map((ex) => (

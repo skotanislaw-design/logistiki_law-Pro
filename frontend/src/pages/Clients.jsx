@@ -53,16 +53,17 @@ export default function Clients() {
   };
 
   return (
-    <div className="space-y-6" data-testid="clients-page">
+    <div className="space-y-8" data-testid="clients-page">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-heading text-3xl font-bold tracking-tight">Πελάτες</h1>
+          <div className="lux-overline mb-1.5">Nomos One · Γραφείο</div>
+          <h1 className="font-brand text-4xl font-bold tracking-wide">Πελάτες</h1>
           <p className="text-sm text-muted-foreground mt-1">Διαχείριση πελατών της δικηγορικής εταιρείας</p>
         </div>
         <Button onClick={openNew} data-testid="new-client-button"><Plus size={16} className="mr-1.5" /> Νέος Πελάτης</Button>
       </div>
 
-      <div className="border border-border rounded-sm bg-card overflow-hidden">
+      <div className="lux-card overflow-hidden animate-in-up">
         <Table data-testid="clients-table">
           <TableHeader>
             <TableRow>

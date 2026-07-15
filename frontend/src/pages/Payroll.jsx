@@ -81,10 +81,11 @@ export default function Payroll() {
   };
 
   return (
-    <div className="space-y-6" data-testid="payroll-page">
+    <div className="space-y-8" data-testid="payroll-page">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-heading text-3xl font-bold tracking-tight">Μισθοδοσία</h1>
+          <div className="lux-overline mb-1.5">Nomos One · Οικονομικά</div>
+          <h1 className="font-brand text-4xl font-bold tracking-wide">Μισθοδοσία</h1>
           <p className="text-sm text-muted-foreground mt-1">Υπολογισμός μισθοδοσίας, ΕΦΚΑ & παρακρατούμενου φόρου</p>
         </div>
         <Button onClick={openNew} data-testid="new-employee-button"><Plus size={16} className="mr-1.5" /> Νέος Εργαζόμενος</Button>
@@ -103,7 +104,7 @@ export default function Payroll() {
             <Label className="text-sm">Περίοδος:</Label>
             <Input type="month" value={period} onChange={(e) => setPeriod(e.target.value)} className="w-40" data-testid="payroll-period-input" />
           </div>
-          <div className="border border-border rounded-sm bg-card overflow-hidden">
+          <div className="lux-card overflow-hidden animate-in-up">
             <Table data-testid="employees-table">
               <TableHeader>
                 <TableRow>
@@ -143,7 +144,7 @@ export default function Payroll() {
         </TabsContent>
 
         <TabsContent value="runs" className="space-y-4">
-          <div className="border border-border rounded-sm bg-card overflow-hidden">
+          <div className="lux-card overflow-hidden animate-in-up">
             <Table data-testid="payroll-runs-table">
               <TableHeader>
                 <TableRow>
