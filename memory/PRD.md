@@ -64,3 +64,11 @@ Testing agent run (iteration_1): Backend 17/17 pytest passed (auth, CRUD, VAT/pa
 1. **P0**: Άντληση παραστατικών από Telegram bot + Email (IMAP) → OCR → Έξοδα + αντιπαραβολή myDATA (mock). Χρειάζεται: Telegram bot token, email IMAP credentials.
 2. **P0**: Ολομέλεια.gr γραμμάτια + e-paravolo (με υποχρεωτική επιβεβαίωση πριν το τελικό βήμα έκδοσης).
 3. **P2**: Real AADE myDATA σύνδεση όταν δοθούν διαπιστευτήρια.
+
+## Implemented (2026-06 fork — Email αποστολή + Premium UI)
+- **One-click αποστολή τιμολογίου PDF στον πελάτη**: POST /api/invoices/{id}/send-email (aiosmtplib, SMTP με App Password του γραφείου, STARTTLS 587 / SSL 465 auto). Ελληνικό HTML email με navy/gold branding, ποσό, τρόπο πληρωμής, IBAN + συνημμένο PDF. Κουμπί φακέλου σε κάθε γραμμή τιμολογίου (πράσινο όταν έχει σταλεί, tooltip με παραλήπτη) + κουμπί «Αποστολή στον πελάτη» στο detail dialog. Πεδία email_sent_at/email_sent_to στο Invoice.
+- **SMTP Settings**: νέα κάρτα στις Ρυθμίσεις (host/port/user/app password/όνομα αποστολέα) + κουμπί «Αποστολή δοκιμαστικού email» (POST /api/settings/test-email). Φιλικά ελληνικά μηνύματα λάθους (400, όχι 502 — το Cloudflare καταπίνει 502). SMTP egress 587/465 επιβεβαιωμένα ΑΝΟΙΧΤΑ από το cluster. ΕΚΚΡΕΜΕΙ: ο χρήστης να βάλει πραγματικό App Password για live αποστολή.
+- **Premium UI redesign** (design_agent blueprint στο /app/design_guidelines.json): lux-card (gold-tinted borders, hover lift+glow), stagger entrance animations, font-brand (Cormorant Garamond) σε τίτλους σελίδων με gold overlines «NOMOS ONE · ...», gold-rule διακοσμητικά με ◆, χρυσές μπάρες στο chart, glassmorphic topbar με ρολόι + gold ring avatar, gradient active states στο sidebar, uppercase table headers.
+- **Settings προσυμπληρωμένα** από letterhead: Σκοτάνης & Συνεργάτες, Αθήνα Βαλαωρίτου 17 Κολωνάκι, +30 2289 100 111, info@skotanislaw.gr.
+- Νέα assets χρήστη: 2 Word templates (.dotx), Case Intelligence Engine οδηγός (HTML), SKOTANIS_Letterhead_Premium.pdf — URLs στο chat/artifacts.
+- Testing: testing_agent iteration_3 — frontend 100% pass (όλες οι σελίδες, PDF downloads, email error paths, settings persistence). Radix aria warning διορθώθηκε.

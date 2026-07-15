@@ -233,7 +233,7 @@ export default function Invoices() {
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" aria-describedby={undefined}>
           <DialogHeader><DialogTitle>{editing ? `Επεξεργασία Τιμολογίου ${editing.number}` : "Νέο Τιμολόγιο"}</DialogTitle></DialogHeader>
 
           {!editing && (

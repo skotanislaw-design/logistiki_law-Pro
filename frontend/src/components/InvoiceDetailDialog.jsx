@@ -44,7 +44,7 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto" data-testid="invoice-detail-dialog">
+      <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto" aria-describedby={undefined} data-testid="invoice-detail-dialog">
         <DialogHeader>
           <div className="flex items-center justify-between pr-6">
             <DialogTitle>Τιμολόγιο {invoice.number}</DialogTitle>
