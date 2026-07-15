@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { InvoiceDetailDialog } from "@/components/InvoiceDetailDialog";
-import { Plus, Trash, Microphone, PaperPlaneTilt, CloudCheck, Eye, PencilSimple, FilePdf } from "@phosphor-icons/react";
+import { Plus, Trash, Microphone, PaperPlaneTilt, CloudCheck, Eye, PencilSimple, FilePdf, EnvelopeSimple } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const VAT_RATES = [24, 13, 6, 0];
@@ -35,6 +35,7 @@ export default function Invoices() {
   const [recording, setRecording] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("");
   const [viewing, setViewing] = useState(null);
+  const [sendingId, setSendingId] = useState(null);
   const mediaRef = useState({ recorder: null, chunks: [] })[0];
 
   const load = () => {
@@ -97,6 +98,19 @@ export default function Invoices() {
       toast.success(`Το PDF του ${inv.number} δημιουργήθηκε`);
     } catch (e) {
       toast.error(errMsg(e));
+    }
+  };
+
+  const sendEmail = async (inv) => {
+    setSendingId(inv.id);
+    try {
+      const { data } = await axios.post(`${API}/invoices/${inv.id}/send-email`);
+      toast.success(`Το τιμολόγιο ${inv.number} στάλθηκε στο ${data.email_sent_to}`);
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSendingId(null);
     }
   };
 
@@ -293,7 +307,7 @@ export default function Invoices() {
         </DialogContent>
       </Dialog>
 
-      <InvoiceDetailDialog invoice={viewing} open={!!viewing} onOpenChange={(v) => !v && setViewing(null)} />
+      <InvoiceDetailDialog invoice={viewing} open={!!viewing} onOpenChange={(v) => !v && setViewing(null)} onEmailSent={load} />
     </div>
   );
 }

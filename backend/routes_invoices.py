@@ -118,6 +118,51 @@ async def invoice_pdf(invoice_id: str, user: dict = Depends(get_current_user)):
     )
 
 
+@router.post("/{invoice_id}/send-email")
+async def send_invoice_by_email(invoice_id: str, user: dict = Depends(get_current_user)):
+    from datetime import datetime, timezone
+    from pdf_utils import build_invoice_pdf
+    from email_utils import smtp_ready, send_email_with_pdf, invoice_email_html, invoice_email_text
+    import aiosmtplib as _smtp
+
+    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    client = None
+    if doc.get("client_id"):
+        try:
+            client = await db.clients.find_one({"_id": ObjectId(doc["client_id"])})
+        except Exception:
+            client = None
+    if not client or not client.get("email"):
+        raise HTTPException(status_code=400, detail="Ο πελάτης δεν έχει καταχωρημένο email. Προσθέστε email στην καρτέλα του πελάτη.")
+    settings = await db.settings.find_one({}) or {}
+    if not smtp_ready(settings):
+        raise HTTPException(status_code=400, detail="Δεν έχουν ρυθμιστεί τα στοιχεία αποστολής email. Συμπληρώστε τα στις Ρυθμίσεις → Αποστολή Email (SMTP).")
+
+    pdf_bytes = build_invoice_pdf(doc, client, settings)
+    company = settings.get("company_name") or "Nomos One"
+    subject = f"Τιμολόγιο {doc.get('number')} — {company}"
+    safe_name = (doc.get("number") or "invoice").replace("ΤΠΥ", "TPY")
+    try:
+        await send_email_with_pdf(
+            settings, client["email"], subject,
+            invoice_email_text(doc, settings), invoice_email_html(doc, settings),
+            pdf_bytes=pdf_bytes, pdf_filename=f"{safe_name}.pdf",
+        )
+    except _smtp.errors.SMTPAuthenticationError:
+        raise HTTPException(status_code=400, detail="Αποτυχία σύνδεσης SMTP: λάθος email ή App Password. Ελέγξτε τις Ρυθμίσεις.")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Αποτυχία αποστολής email: {e}")
+
+    await db.invoices.update_one(
+        {"_id": ObjectId(invoice_id)},
+        {"$set": {"email_sent_at": datetime.now(timezone.utc).isoformat(), "email_sent_to": client["email"]}},
+    )
+    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    return Invoice.from_mongo(doc)
+
+
 @router.post("/voice-parse")
 async def voice_parse_invoice(audio: UploadFile = File(...), user: dict = Depends(get_current_user)):
     suffix = os.path.splitext(audio.filename or "audio.webm")[1] or ".webm"

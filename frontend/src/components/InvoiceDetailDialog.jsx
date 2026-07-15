@@ -1,14 +1,29 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useState } from "react";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
-import { CloudCheck, CloudSlash, FilePdf } from "@phosphor-icons/react";
+import { CloudCheck, CloudSlash, FilePdf, EnvelopeSimple } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const STATUS_LABEL = { draft: "Πρόχειρο", issued: "Εκδόθηκε", paid: "Πληρώθηκε", cancelled: "Ακυρώθηκε" };
 
-export function InvoiceDetailDialog({ invoice, open, onOpenChange }) {
+export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }) {
+  const [sending, setSending] = useState(false);
   if (!invoice) return null;
+
+  const sendEmail = async () => {
+    setSending(true);
+    try {
+      const { data } = await axios.post(`${API}/invoices/${invoice.id}/send-email`);
+      toast.success(`Το τιμολόγιο στάλθηκε στο ${data.email_sent_to}`);
+      onEmailSent?.();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSending(false);
+    }
+  };
 
   const downloadPdf = async () => {
     try {
@@ -33,9 +48,14 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange }) {
         <DialogHeader>
           <div className="flex items-center justify-between pr-6">
             <DialogTitle>Τιμολόγιο {invoice.number}</DialogTitle>
-            <Button size="sm" variant="outline" onClick={downloadPdf} data-testid="invoice-detail-pdf-button">
-              <FilePdf size={16} className="mr-1.5" /> Λήψη PDF
-            </Button>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" onClick={downloadPdf} data-testid="invoice-detail-pdf-button">
+                <FilePdf size={16} className="mr-1.5" /> PDF
+              </Button>
+              <Button size="sm" onClick={sendEmail} disabled={sending} data-testid="invoice-detail-email-button">
+                <EnvelopeSimple size={16} className="mr-1.5" /> {sending ? "Αποστολή..." : "Αποστολή στον πελάτη"}
+              </Button>
+            </div>
           </div>
         </DialogHeader>
 
@@ -85,6 +105,12 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange }) {
         {invoice.notes && (
           <div className="text-sm">
             <span className="text-muted-foreground">Σημειώσεις: </span>{invoice.notes}
+          </div>
+        )}
+
+        {invoice.email_sent_at && (
+          <div className="text-xs text-[hsl(var(--success))] flex items-center gap-1.5" data-testid="invoice-detail-email-status">
+            <EnvelopeSimple size={14} /> Εστάλη στο {invoice.email_sent_to} · {dateFmt(invoice.email_sent_at)}
           </div>
         )}
 

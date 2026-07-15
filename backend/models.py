@@ -70,6 +70,8 @@ class Invoice(BaseDocument):
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
     issued_at: Optional[str] = None
+    email_sent_at: Optional[str] = None
+    email_sent_to: Optional[str] = None
 
 
 class Expense(BaseDocument):
@@ -122,6 +124,11 @@ class Settings(BaseDocument):
     email: str = ""
     iban: str = ""
     bank_name: str = ""
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_name: str = ""
     vat_period: Literal["monthly", "quarterly"] = "monthly"
     aade_user_id: str = ""
     aade_subscription_key: str = ""

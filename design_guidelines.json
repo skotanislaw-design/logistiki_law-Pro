@@ -1,130 +1,109 @@
 {
-  "project_name": "Greek Law Firm Digital Accountant & Legal-Ops",
-  "theme_strategy": {
-    "default": "light",
-    "supported": ["light", "dark"],
-    "rationale": "High-contrast 'Swiss Brutalist' light mode is preferable for reading dense financial/legal data and OCR receipts during the day. A dark mode toggle is available for power users in intensive accounting workflows."
+  "project_context": {
+    "app_type": "dashboard / saas_app",
+    "target_audience": "Greek law firm (Σκοτάνης & Συνεργάτες) executives and accountants",
+    "core_aesthetic": "Tremendous aesthetics and ultra-expensive taste (γλύκανε το UI κάνε το πανέμορφο με τρομερή αισθητική και πανάκριβο γούστο). Refined luxury, Old Money Tech."
   },
-  "typography": {
-    "fonts": {
-      "heading": "Chivo",
-      "body": "IBM Plex Sans",
-      "numbers": "JetBrains Mono"
-    },
-    "hierarchy": {
-      "h1": "text-3xl sm:text-4xl tracking-tight font-bold",
-      "h2": "text-2xl sm:text-3xl tracking-tight font-semibold",
-      "h3": "text-xl font-medium",
-      "body": "text-sm text-foreground/80 leading-relaxed",
-      "labels": "text-xs uppercase tracking-[0.15em] font-semibold text-muted-foreground",
-      "financial_data": "font-mono text-base tabular-nums tracking-tight"
-    },
-    "rules": [
-      "Use JetBrains Mono for ALL monetary values (VAT, Income, ΕΦΚΑ) to ensure tabular alignment.",
-      "Never use Inter for headings.",
-      "Use tracking-tight for all headings."
-    ]
-  },
-  "colors": {
-    "archetype": "Swiss & High-Contrast (Authority, Clarity, Truth)",
-    "light": {
-      "background": "#FDFDFD",
-      "surface": "#FFFFFF",
-      "foreground": "#09090B",
-      "primary": "#18181B",
-      "primary_foreground": "#FAFAFA",
-      "border": "#E4E4E7",
-      "success": "#10B981",
-      "warning": "#F59E0B",
-      "danger": "#EF4444"
-    },
-    "dark": {
-      "background": "#09090B",
-      "surface": "#121214",
-      "foreground": "#FAFAFA",
-      "primary": "#FAFAFA",
-      "primary_foreground": "#09090B",
-      "border": "#27272A",
-      "success": "#059669",
-      "warning": "#D97706",
-      "danger": "#DC2626"
-    },
-    "rules": [
-      "No gradients for financial data backgrounds. Use solid flat colors.",
-      "Green for income/credits, Red for VAT due/debts/ΕΦΚΑ payables.",
-      "Color is for function only. Use monochrome base for structure."
-    ]
-  },
-  "visual_enhancers": {
-    "surfaces": "Grid Borders (The 'Technical' Look). Use border-collapse logic for dashboards to make the data grid visible and highly structured. Max 4px (rounded-sm) border radius for all cards and inputs to keep it serious.",
-    "textures": "Subtle noise on auth/login screens, purely solid for dashboard data areas to prevent visual refraction of financial figures.",
-    "shadows": "Minimal. Use 1px borders instead of shadows to delineate cards."
-  },
-  "grids_and_layouts": {
-    "dashboard_pattern": "Modified F-Pattern Hierarchy. Place the 'North Star Metric' (e.g., Total VAT Due or Pending myDATA submissions) in the top-left quadrant.",
-    "navigation": "Collapsible Left-Sidebar. Required for complex European fintech stacks (Dashboard, Invoices, Expenses, myDATA, Payroll/ΕΦΚΑ).",
-    "bento_grid": "High Density Grid (Mode B). grid-cols-1 md:grid-cols-3 lg:grid-cols-4. Tight gaps (gap-4 or gap-6). Use h-full to stretch items.",
-    "alignment": "Left-align all numeric columns in tables EXCEPT the final amount which should be right-aligned. Left-align text."
-  },
-  "component_rules": {
-    "cards": "Go cardless or flat rectangular. Avoid heavy drop-shadows. Use strict 1px borders (border-border).",
-    "tables": "Use Shadcn tables. Dense spacing (py-2). Must be screen-reader accessible.",
-    "charts": "Use Recharts. Use Waterfall charts for cash flow/VAT transitions. BANNED: Pie charts for financial data >5 segments. Use Bar charts for income vs expense.",
-    "forms": "Use Shadcn Forms, Inputs, Select. Must have focus states (focus:ring-2 focus:ring-primary).",
-    "toasts": "Use Sonner for myDATA sync simulations and OCR success alerts. (Position: bottom-right)"
-  },
-  "motion": {
-    "interactions": "Hover states must darken backgrounds (hover:bg-muted) or elevate borders. Focus states must have high contrast rings.",
-    "transitions": "Fast and snappy. transition-colors duration-200. Do NOT use transition-all.",
-    "loading": "Use skeleton loaders (Shadcn Skeleton) for OCR processing and myDATA syncing."
-  },
-  "accessibility": {
-    "contrast": "APCA standard. Ensure financial figures over any background have a minimum 4.5:1 ratio.",
-    "testing": "All interactive and key informational elements MUST include a data-testid attribute (e.g., data-testid='vat-due-amount').",
-    "aria": "Use aria-live regions for OCR parsing updates and voice command listening states."
-  },
-  "media": {
-    "image_urls": {
-      "user_avatar": {
-        "url": "https://images.unsplash.com/photo-1758518729922-3a9e7b62b4c9?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NjZ8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBsYXd5ZXIlMjBwb3J0cmFpdCUyMGluJTIwbW9kZXJuJTIwb2ZmaWNlfGVufDB8fHx8MTc4NDA3MDQxNXww&ixlib=rb-4.1.0&q=85",
-        "description": "Professional lawyer for user profile/avatar."
+  "design_system": {
+    "theme_mode": "dark",
+    "colors": {
+      "background": {
+        "base": "hsl(220, 50%, 6%)",
+        "card": "hsl(220, 45%, 9%)",
+        "glass": "rgba(8, 13, 24, 0.65)"
       },
-      "receipt_ocr_sample": {
-        "url": "https://images.unsplash.com/photo-1648823161626-0e839927401b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDV8MHwxfHNlYXJjaHwzfHxyZWNlaXB0JTIwZG9jdW1lbnQlMjBjbG9zZSUyMHVwJTIwcGFwZXJ8ZW58MHx8fHwxNzg0MDcwNDE2fDA&ixlib=rb-4.1.0&q=85",
-        "description": "Close up of a receipt for the AI photo OCR mock/demo screen."
+      "gold_palette": {
+        "primary": "hsl(43, 65%, 53%)",
+        "light": "hsl(43, 75%, 65%)",
+        "dark": "hsl(43, 60%, 40%)",
+        "muted_bg": "hsla(43, 65%, 53%, 0.08)",
+        "border_thin": "hsla(43, 65%, 53%, 0.15)"
       },
-      "auth_background": {
-        "url": "https://images.pexels.com/photos/6077665/pexels-photo-6077665.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
-        "description": "Elegant justice scales/technology for the login/auth background."
+      "text": {
+        "primary": "hsl(0, 0%, 98%)",
+        "secondary": "hsl(220, 20%, 65%)",
+        "accent": "hsl(43, 65%, 53%)"
       }
     },
-    "rules": "Never use placeholder images. Use provided URLs. Apply bg-black/40 overlay if placing text over the auth background."
+    "typography": {
+      "brand_headings": {
+        "family": "Cormorant Garamond",
+        "usage": "Brand logo, Page Titles, Large KPI figures (non-financial), Hero text.",
+        "classes": "font-serif tracking-tight"
+      },
+      "ui_body": {
+        "family": "IBM Plex Sans",
+        "usage": "General UI text, labels, paragraphs, table data.",
+        "classes": "font-sans leading-relaxed"
+      },
+      "data_numbers": {
+        "family": "JetBrains Mono",
+        "usage": "Financial numbers, VAT rates, IDs, tabular data, exact euro alignments.",
+        "classes": "font-mono tracking-tight"
+      }
+    },
+    "visual_enhancers": {
+      "borders": "1px solid var(--gold-border-thin). Do not use generic grey borders. All structural lines must have a hint of gold.",
+      "shadows": {
+        "card_ambient": "0 8px 32px rgba(0, 0, 0, 0.4)",
+        "gold_glow": "0 0 20px hsla(43, 65%, 53%, 0.15)"
+      },
+      "surfaces": "Crystal Glass. Backdrop blur (backdrop-blur-xl), slight saturation boost, and a 1px delicate inner stroke of gold/10. NEVER use fully transparent backgrounds for headers/dropdowns.",
+      "ornaments": "Use the diamond symbol (◆) in pale gold (text-primary/40) as elegant separators in the topbar or footers, echoing the premium letterhead."
+    }
   },
-  "libraries": {
-    "icons": "@phosphor-icons/react",
-    "charts": "recharts",
-    "motion": "framer-motion",
-    "toast": "sonner"
+  "layouts": {
+    "dashboard_grid": "Bento-style grids. High Density for data, wide gaps for summaries. md:grid-cols-4 with gap-6. Use col-span logic for 6-month chart (col-span-3) and myDATA panel (col-span-1).",
+    "sidebar": "Grouped navigation. Active links should feature a thin left gold border (border-l-2 border-primary) and a very subtle gold gradient background (bg-gradient-to-r from-primary/10 to-transparent).",
+    "topbar": "Glassmorphic background (z-50, backdrop-blur-md, bg-background/80). Must not be transparent. Must contain a live clock (IBM Plex Sans, subtle text) and User Avatar with a thin gold ring."
   },
-  "instructions_to_main_agent": [
-    "Build a comprehensive Dashboard with Left-Sidebar Navigation (Dashboard, Invoices, Expenses, myDATA, Payroll).",
-    "Dashboard must show Real-time VAT Due, Pending ΕΦΚΑ contributions, and Income/Expense summary.",
-    "Implement an 'Upload Receipt / AI OCR' module using the receipt_ocr_sample image, showing a simulated parsing state for Greek VAT (24%, 13%, 6%).",
-    "Implement a 'Voice Command' interaction button (e.g., 'Listening...') for invoice creation, simulating Whisper AI.",
-    "Create a 'myDATA Sync' panel simulating the AADE API connection (status indicators, sync buttons).",
-    "Design a Payroll/ΕΦΚΑ module showing gross-to-net calculations and tax brackets.",
-    "Ensure the layout is highly dense, cardless/flat bordered, using pure HTML/Tailwind for macro layouts and Shadcn for micro-components (Tables, Forms).",
-    "Add 'data-testid' to ALL critical numbers and action buttons."
+  "components": {
+    "cards": {
+      "style": "Flat dark navy background (bg-card) with border-primary/10. Hover state lifts slightly (-translate-y-1) and increases border opacity to primary/30 with a soft black shadow.",
+      "padding": "Generous: p-6 or p-8"
+    },
+    "buttons": {
+      "primary": "Solid gold (bg-primary text-primary-foreground font-medium). Hover: brighter gold with a subtle glow shadow.",
+      "secondary": "Transparent with thin gold border (border border-primary/30 text-primary). Hover: bg-primary/10."
+    },
+    "tables": {
+      "header": "Border-bottom thin gold (border-b border-primary/20). Text uppercase, tracking-wider, text-xs, text-muted-foreground.",
+      "rows": "Hover effect (hover:bg-primary/5). Financial numbers strictly right-aligned using JetBrains Mono."
+    },
+    "badges": {
+      "style": "Pill-shaped, extremely subtle background. e.g., bg-primary/10 text-primary border border-primary/20."
+    }
+  },
+  "motion": {
+    "staggered_entrance": "Use Framer Motion to stagger dashboard cards and table rows on load. initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ staggerChildren: 0.1 }}.",
+    "micro_interactions": "All buttons, table rows, and interactive elements must have a 0.2s ease transition on hover."
+  },
+  "pages": {
+    "dashboard": "KPI cards top row. 6-month Bar Chart (Recharts, gold bars with opacity, white tooltips). myDATA pending panel.",
+    "invoices": "Table with MARK status badges. Actions column with PDF icon and Mail icon. One-click email to client. Invoice creation dialog with voice-command button (glow effect when listening).",
+    "expenses": "Upload zone with dashed gold/30 border. OCR preview panel side-by-side with data form.",
+    "payroll": "Detailed breakdown using monospace font for exact euro alignments.",
+    "tax_calendar": "Timeline or grid view. Upcoming deadlines highlighted with a glowing gold dot."
+  },
+  "image_urls": [
+    {
+      "url": "https://images.unsplash.com/photo-1633366147060-ce9e1a9fd39c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1Mjh8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBsYXd5ZXIlMjBwb3J0cmFpdCUyMGRhcmslMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc4NDA3NzIwMnww&ixlib=rb-4.1.0&q=85",
+      "category": "user_avatar",
+      "description": "Professional man in suit in dark room. Perfect for the topbar user avatar (Σκοτάνης & Συνεργάτες)."
+    }
   ],
-  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
-    "You tend to converge toward generic, 'on distribution' outputs. Avoid the 'AI slop' aesthetic. Create a distinctive, precise, professional European legal/finance back-office tool.",
-    "DO NOT use Inter for headings. Use Chivo for headings, IBM Plex Sans for body, and JetBrains Mono for ALL monetary/financial figures.",
-    "DO NOT use complete transparent backgrounds in headers or dropdowns. Use backdrop-blur with solid/semi-solid backgrounds.",
-    "DO NOT apply universal transitions (e.g., 'transition: all'). Add transitions strictly for colors/opacity.",
-    "DO NOT center align the app container (.App { text-align: center; } is forbidden). Keep text left-aligned.",
-    "DO NOT use AI assistant Emojis (🤖🧠💭) for icons. Use Phosphor Icons.",
-    "Use 2-3x more spacing (Tailwind p-6, p-8) around main page containers, but keep dashboard grid gaps tight (gap-4).",
-    "Always use the provided image URLs. NEVER use placeholder services.",
-    "All interactive and key informational elements MUST include a data-testid attribute in kebab-case."
-  ]
+  "accessibility": {
+    "contrast": "Ensure text-to-background ratio is at least 4.5:1. Use muted gold for borders but brighter gold for text.",
+    "testing": "All interactive elements MUST include a `data-testid` attribute (e.g., `data-testid='invoice-download-btn'`)."
+  },
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "GENERAL UI UX DESIGN GUIDELINES",
+    "You MUST NOT apply universal transition (`transition: all`). Use specific properties.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Never use fully transparent backgrounds for headers, dropdowns, or modals.",
+    "All interactive and key informational elements MUST include a `data-testid` attribute.",
+    "Do not use generic UI placeholder text; utilize Greek copywriting appropriate for accounting (e.g., 'Έσοδα', 'Έξοδα', 'ΦΠΑ')."
+  ],
+  "instructions_to_main_agent": "Implement these tokens by updating the CSS variables in the primary CSS file (index.css) to match the dark navy and gold palette. Update Tailwind config if necessary to extend colors and fonts. Refactor shadcn/ui components (cards, buttons, tables, badges) to use 'Crystal Glass' and 'Thin Gold Rule' aesthetics. Ensure typography classes (font-serif, font-sans, font-mono) are properly applied. Add Framer Motion staggered entrance animations. Add data-testids to all interactive elements."
 }

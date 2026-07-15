@@ -9,6 +9,19 @@ import { toast } from "sonner";
 
 export default function Settings() {
   const [form, setForm] = useState(null);
+  const [testingEmail, setTestingEmail] = useState(false);
+
+  const sendTestEmail = async () => {
+    setTestingEmail(true);
+    try {
+      const { data } = await axios.post(`${API}/settings/test-email`);
+      toast.success(data.message);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setTestingEmail(false);
+    }
+  };
 
   useEffect(() => {
     axios.get(`${API}/settings`).then((r) => setForm(r.data)).catch((e) => toast.error(errMsg(e)));
@@ -76,6 +89,39 @@ export default function Settings() {
           <Label>Τράπεζα</Label>
           <Input value={form.bank_name || ""} onChange={(e) => setForm({ ...form, bank_name: e.target.value })} className="mt-1.5" placeholder="π.χ. Εθνική Τράπεζα" data-testid="settings-bank" />
         </div>
+      </div>
+
+      <div className="border border-border rounded-sm p-5 bg-card space-y-4">
+        <h3 className="font-heading text-lg font-medium">Αποστολή Email (SMTP)</h3>
+        <p className="text-sm text-muted-foreground">
+          Τα τιμολόγια αποστέλλονται στους πελάτες από το δικό σας email. Για Gmail: ενεργοποιήστε την Επαλήθευση 2 βημάτων και δημιουργήστε ένα{" "}
+          <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" className="underline text-[hsl(var(--gold))]">App Password</a>.
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label>Διακομιστής SMTP</Label>
+            <Input value={form.smtp_host || ""} onChange={(e) => setForm({ ...form, smtp_host: e.target.value })} className="mt-1.5" placeholder="smtp.gmail.com" data-testid="settings-smtp-host" />
+          </div>
+          <div>
+            <Label>Θύρα</Label>
+            <Input type="number" value={form.smtp_port || 587} onChange={(e) => setForm({ ...form, smtp_port: Number(e.target.value) })} className="mt-1.5" data-testid="settings-smtp-port" />
+          </div>
+        </div>
+        <div>
+          <Label>Email αποστολέα</Label>
+          <Input type="email" value={form.smtp_user || ""} onChange={(e) => setForm({ ...form, smtp_user: e.target.value })} className="mt-1.5" placeholder="grafeio@example.gr" data-testid="settings-smtp-user" />
+        </div>
+        <div>
+          <Label>App Password</Label>
+          <Input type="password" value={form.smtp_password || ""} onChange={(e) => setForm({ ...form, smtp_password: e.target.value })} className="mt-1.5" placeholder="16ψήφιος κωδικός εφαρμογής" data-testid="settings-smtp-password" />
+        </div>
+        <div>
+          <Label>Όνομα αποστολέα</Label>
+          <Input value={form.smtp_from_name || ""} onChange={(e) => setForm({ ...form, smtp_from_name: e.target.value })} className="mt-1.5" placeholder="π.χ. Σκοτάνης & Συνεργάτες" data-testid="settings-smtp-from-name" />
+        </div>
+        <Button variant="outline" size="sm" onClick={sendTestEmail} disabled={testingEmail} data-testid="settings-test-email-button">
+          {testingEmail ? "Αποστολή..." : "Αποστολή δοκιμαστικού email"}
+        </Button>
       </div>
 
       <div className="border border-border rounded-sm p-5 bg-card space-y-4">
