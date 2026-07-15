@@ -55,7 +55,7 @@ export function Sidebar() {
 
   return (
     <aside
-      className={`h-screen sticky top-0 flex flex-col bg-[hsl(var(--sidebar))]/85 backdrop-blur-xl border-r border-[hsl(var(--gold))]/15 transition-[width] duration-200 ${collapsed ? "w-[68px]" : "w-[248px]"}`}
+      className={`h-screen sticky top-0 z-20 flex flex-col bg-[hsl(var(--sidebar))]/80 backdrop-blur-xl border-r border-[hsl(var(--gold))]/15 transition-[width] duration-200 ${collapsed ? "w-[68px]" : "w-[248px]"}`}
       data-testid="sidebar"
     >
       <div className="flex items-center gap-3 px-4 h-[72px] border-b border-[hsl(var(--gold))]/15">
@@ -63,7 +63,7 @@ export function Sidebar() {
         {!collapsed && (
           <div className="min-w-0">
             <div className="font-brand font-bold text-[17px] leading-tight text-[hsl(var(--gold))] tracking-widest">NOMOS ONE</div>
-            <div className="text-[9px] tracking-[0.25em] text-muted-foreground">LEGAL OPERATIONS</div>
+            <div className="text-[9px] tracking-[0.22em] text-muted-foreground">PERSONAL LOGISTICS</div>
           </div>
         )}
       </div>

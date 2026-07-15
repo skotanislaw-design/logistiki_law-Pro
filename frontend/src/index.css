@@ -87,14 +87,60 @@ body {
 }
 
 @layer components {
+    .aurora-bg {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        overflow: hidden;
+        pointer-events: none;
+    }
+    .aurora-blob {
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(90px);
+        will-change: transform;
+    }
+    .aurora-gold {
+        width: 55vw;
+        height: 55vw;
+        top: -20%;
+        right: -12%;
+        background: radial-gradient(circle, hsl(43 70% 50% / 0.16), transparent 65%);
+        animation: auroraDrift1 26s ease-in-out infinite alternate;
+    }
+    .aurora-blue {
+        width: 65vw;
+        height: 65vw;
+        bottom: -30%;
+        left: -18%;
+        background: radial-gradient(circle, hsl(221 85% 45% / 0.20), transparent 65%);
+        animation: auroraDrift2 32s ease-in-out infinite alternate;
+    }
+    .aurora-gold-2 {
+        width: 35vw;
+        height: 35vw;
+        top: 45%;
+        left: 40%;
+        background: radial-gradient(circle, hsl(38 80% 55% / 0.08), transparent 65%);
+        animation: auroraDrift3 38s ease-in-out infinite alternate;
+    }
+    .aurora-watermark {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: min(640px, 60vw);
+        opacity: 0.05;
+        user-select: none;
+    }
     .lux-card {
-        background: linear-gradient(160deg, hsl(224 40% 12% / 0.72), hsl(225 45% 8% / 0.58));
-        -webkit-backdrop-filter: blur(20px) saturate(140%);
-        backdrop-filter: blur(20px) saturate(140%);
-        border: 1px solid hsl(var(--gold) / 0.14);
-        border-top-color: hsl(0 0% 100% / 0.09);
+        background: linear-gradient(160deg, hsl(224 40% 12% / 0.62), hsl(225 45% 8% / 0.5));
+        -webkit-backdrop-filter: blur(22px) saturate(150%);
+        backdrop-filter: blur(22px) saturate(150%);
+        border: 1px solid hsl(var(--gold) / 0.16);
+        border-top-color: hsl(0 0% 100% / 0.12);
         border-radius: 1.25rem;
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35), inset 0 1px 0 hsl(0 0% 100% / 0.04);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35), inset 0 1px 0 hsl(0 0% 100% / 0.05);
         transition: border-color 0.3s ease, transform 0.3s ease, box-shadow 0.3s ease;
     }
     .lux-card:hover {
@@ -147,6 +193,19 @@ body {
         opacity: 1;
         transform: translateY(0);
     }
+}
+
+@keyframes auroraDrift1 {
+    from { transform: translate(0, 0) scale(1); }
+    to { transform: translate(-10vw, 14vh) scale(1.25); }
+}
+@keyframes auroraDrift2 {
+    from { transform: translate(0, 0) scale(1); }
+    to { transform: translate(12vw, -10vh) scale(1.15); }
+}
+@keyframes auroraDrift3 {
+    from { transform: translate(0, 0) scale(0.9); }
+    to { transform: translate(-14vw, -12vh) scale(1.3); }
 }
 
 @layer base {

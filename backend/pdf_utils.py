@@ -48,7 +48,7 @@ def build_invoice_pdf(invoice: dict, client: dict, settings: dict) -> bytes:
 
     brand_cell = [
         _p("NOMOS ONE", 17, bold=True, color=GOLD),
-        _p("LEGAL OPERATIONS PLATFORM", 6.5, color=colors.HexColor("#8a93a8")),
+        _p("PERSONAL LOGISTICS · PERSACC", 6.5, color=colors.HexColor("#8a93a8")),
         Spacer(1, 4),
         _p(company, 10, bold=True, color=colors.white),
     ] + [_p(l, 8, color=colors.HexColor("#aeb6c8")) for l in comp_lines]

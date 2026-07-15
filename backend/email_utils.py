@@ -47,7 +47,7 @@ def invoice_email_html(invoice: dict, settings: dict) -> str:
     <html><body style="font-family:Arial,sans-serif;color:#1a2035;max-width:560px;">
       <div style="background:#0a0f1e;padding:20px 24px;border-bottom:3px solid #c9a227;">
         <span style="color:#c9a227;font-size:20px;font-weight:bold;letter-spacing:2px;">NOMOS ONE</span><br/>
-        <span style="color:#8a93a8;font-size:10px;letter-spacing:3px;">LEGAL OPERATIONS PLATFORM</span>
+        <span style="color:#8a93a8;font-size:10px;letter-spacing:3px;">PERSONAL LOGISTICS · PERSACC</span>
       </div>
       <div style="padding:24px;">
         <p>Αγαπητέ/ή <strong>{invoice.get('client_name') or 'πελάτη'}</strong>,</p>

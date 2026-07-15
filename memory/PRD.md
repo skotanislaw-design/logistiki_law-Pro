@@ -84,3 +84,10 @@ Testing agent run (iteration_1): Backend 17/17 pytest passed (auth, CRUD, VAT/pa
 - **Φωνητικές εντολές στο Nomos AI**: POST /api/copilot/voice (Whisper μέσω transcribe_audio) + κουμπί μικροφώνου στο chat (MediaRecorder → webm → transcript → αυτόματη αποστολή). Recording state με κόκκινο pulse + Stop. Tested: voice endpoint επιστρέφει transcript (πραγματική ομιλία OK, pipeline verified).
 - Fix: VAT select στο dialog τιμολογίου («24% ΦΠΑ» κοβόταν → «24%»).
 - Smoke tested: dashboard/copilot/dialog screenshots — glass UI άψογο.
+
+## Implemented (2026-06 fork — Aurora Glass + PersAcc rebrand)
+- Ο χρήστης διάλεξε concept «Aurora Glass» (από 4 AI-generated mockups: Obsidian Minimal, Art Deco, Executive Print light, Aurora Glass).
+- **Aurora background**: νέο component AuroraBackground.jsx (fixed layer z-0) με 3 blurred κινούμενα radial blobs (χρυσό/μπλε/χρυσό, keyframes auroraDrift1-3, 26-38s) + **watermark λογότυπο NOMOS ONE** κεντραρισμένο (opacity 0.05, min(640px,60vw)). Προστέθηκε σε AppLayout + Login. Content σε z-10, sidebar z-20.
+- lux-card πιο διάφανο (0.62/0.5) + blur 22px ώστε να αχνοφαίνεται το aurora/watermark από πίσω.
+- **Rebrand σε «NOMOS ONE Personal Logistics (PersAcc)»**: sidebar caption PERSONAL LOGISTICS, login «PERSONAL LOGISTICS · PERSACC», footer «Nomos One PersAcc v1.0», browser title, PDF τιμολογίου header + email HTML header «PERSONAL LOGISTICS · PERSACC».
+- Smoke tested με screenshots: login/dashboard/copilot — watermark & aurora ορατά, όλα λειτουργικά.
