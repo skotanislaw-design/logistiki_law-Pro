@@ -1,0 +1,33 @@
+{
+  "summary": "Frontend end-to-end regression for the NEW Δικαστικά module (Υποθέσεις + Γραμμάτια Προείσπραξης + Παράβολα). Login as admin@logistiki.gr / Admin@2026! OK. Sidebar shows new ΔΙΚΑΣΤΙΚΑ group with nav-cases / nav-grammatia / nav-paravola (all visible). /cases lists existing case (ΥΠΘ-2026-0001 rendered). New case dialog (case-title-input, case-type-select, case-client-select [4 clients], case-court-input, save-case-button) creates a case and navigates to /cases/{id}. Case detail 3-column layout renders: all 12 requested testids present (case-fees-total, case-expenses-total, tab-grammatia/paravola/notes/history, next-action-card, quick-new-grammatio, quick-new-paravolo, case-status-select, archive-case-button, edit-next-action). GrammatioFormDialog: reference table returns 13 options; picking one auto-fills totals — grammatio-total = 254,32 € as expected; grammatio-save-button creates draft that appears in the Γραμμάτια tab. GrammatioIssueDialog opens with title 'Επιβεβαίωση Έκδοσης — Τελικό Βήμα', olomeleia-link href=https://portal.olomeleia.gr, portal-ref input present; grammatio-confirm-issue transitions status to Εκδόθηκε and case-fees-total updates to 254,32 €. ParavoloFormDialog: 8 categories, save works with 150 €; ParavoloIssueDialog contains 'Τελικό Βήμα' + eparavolo-link href=https://www1.gsis.gr/sgsisapps/eparavolo/public/welcome.htm; paravolo-confirm-issue → Εκδόθηκε; mark-paid → Πληρώθηκε; case-expenses-total = 150,00 €. Notes tab: case-note-input + case-note-save adds note (visible with author/date). History tab shows 7 chronological events after full flow. Edit-next-action pencil opens dialog, next-action-input + next-action-date + next-action-save persists to the yellow next-action-card. case-status-select changes status (4 options). /grammatia standalone: 3 rows rendered; pdf-grammatio-{id} downloads real PDF (ΓΡΠ-2026-0003.pdf); 2 invoice-grammatio-{id} buttons visible for issued+non-invoiced+has-client rows; clicking one creates draft invoice ΤΠΥ-2026-0008 with 254,32 € (0% ΦΠΑ) that appears in /invoices list. /paravola standalone renders 2 rows. All Greek copy correct. Confirmation dialogs correctly appear BEFORE final issuance step (the core user requirement) for BOTH γραμμάτιο and παράβολο.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "console_warnings": [
+      {"component": "react-error-overlay (CRA dev only)", "issue": "'ResizeObserver loop completed with undelivered notifications' benign warning is surfaced as an Uncaught runtime error overlay after opening Radix Select/Dialog components. Overlay blocks pointer events until dismissed. Purely dev-time, will NOT appear in production build. Consider adding a small window.addEventListener('error', ...) filter for the ResizeObserver message, or set process.env.DISABLE_ESLINT_PLUGIN + configure CRA overlay to ignore it. Priority: LOW.", "priority": "LOW"},
+      {"component": "Multiple DialogContent (case dialogs, grammatio, paravolo)", "issue": "Radix a11y warning: 'Missing Description or aria-describedby'. Code passes aria-describedby={undefined}, which silences the runtime warning but is not a real description. Add DialogDescription for a11y. Priority: LOW.", "priority": "LOW"}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "(LOW / dev-DX) Suppress the CRA dev overlay for benign 'ResizeObserver loop completed' errors — it does not affect prod but causes flaky manual dev clicks. Simple fix: add `window.addEventListener('error', e => { if (e.message?.includes('ResizeObserver loop')) { e.stopImmediatePropagation(); } });` early in src/index.js.",
+    "(LOW / a11y) Add <DialogDescription> to Grammatio/Paravolo/Case dialogs instead of aria-describedby={undefined}."
+  ],
+  "critical_code_review_comments": [
+    "GrammatioIssueDialog and ParavoloIssueDialog correctly implement the user's key requirement: a warning-styled confirmation appears BEFORE the final POST /issue call, with an outbound link to the official portal (olomeleia.gr / gsis e-παράβολο) and an optional reference/code input. This UX is exactly what was requested. Solid.",
+    "Reference-table auto-fill in GrammatioFormDialog computes contributions_amount = amount*12% and vat_amount = amount*24% correctly, and total updates live via computed value — verified 254,32 € for the 3rd reference row.",
+    "Grammatia.jsx to-invoice flow: correctly hides the button unless status==='issued' && !invoice_id; verified invoice ΤΠΥ-2026-0008 created with the grammatio total (254,32 €).",
+    "Case detail (CaseDetail.jsx) is 294 lines — still readable but starting to grow. Consider extracting the left column into <CaseSummaryColumn/> and the right column into <CaseSidebarColumn/> for maintainability if more features are added.",
+    "Cases.jsx exports CASE_STATUS constant that CaseDetail imports — clean and DRY. Good pattern."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested this iteration (per request; main agent curl-verified)", "frontend": "100% (all requested flows verified: sidebar nav, cases list, case creation, 3-col detail, grammatio create/issue with confirmation dialog + olomeleia link, paravolo create/issue with confirmation dialog + e-paravolo link, mark-paid, notes, history, next-action, status change, /grammatia PDF download, to-invoice creation, /paravola list)"},
+  "test_credentials": "admin@logistiki.gr / Admin@2026! (verified working)",
+  "seed_data_creation": "Created 2 test cases (TEST_Αγωγή διαζυγίου δοκιμής, TEST_Δοκιμαστική Υπόθεση 2) with 1 grammatio (ΓΡΠ-2026-0003 issued PRT-TEST-001 → invoiced as ΤΠΥ-2026-0008) and 1 paravolo (issued+paid, code 23456789012345). Safe to delete via UI if needed.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Δικαστικά module is fully functional end-to-end. All testids from the review request exist. Confirmation-before-issuance dialogs work for both γραμμάτια and παράβολα with correct official portal links. Only outstanding items are LOW-priority DX/a11y polish (ResizeObserver overlay filter + DialogDescription). Backend was not re-tested here (main agent confirmed via curl).",
+  "rca of the issue": "N/A — no functional bugs found."
+}

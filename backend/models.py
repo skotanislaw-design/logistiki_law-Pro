@@ -115,6 +115,58 @@ class PayrollRun(BaseDocument):
     created_at: str = Field(default_factory=now_iso)
 
 
+class Case(BaseDocument):
+    number: str = ""
+    title: str
+    case_type: str = "Αστικό"
+    client_id: str = ""
+    client_name: str = ""
+    court: str = ""
+    opposing_party: str = ""
+    status: Literal["active", "pending", "completed", "archived"] = "active"
+    next_action: str = ""
+    next_action_date: str = ""
+    notes: List[dict] = Field(default_factory=list)
+    history: List[dict] = Field(default_factory=list)
+    created_by: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class Grammatio(BaseDocument):
+    number: str = ""
+    case_id: str = ""
+    case_title: str = ""
+    client_id: str = ""
+    client_name: str = ""
+    court_type: str
+    procedure: str = ""
+    reference_amount: float
+    contributions_amount: float = 0
+    vat_amount: float = 0
+    total: float = 0
+    status: Literal["draft", "issued", "cancelled"] = "draft"
+    portal_ref: str = ""
+    notes: str = ""
+    issued_at: Optional[str] = None
+    invoice_id: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class Paravolo(BaseDocument):
+    number: str = ""
+    case_id: str = ""
+    case_title: str = ""
+    category: str
+    description: str = ""
+    amount: float
+    eparavolo_code: str = ""
+    status: Literal["draft", "issued", "paid", "cancelled"] = "draft"
+    issued_at: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
 class Settings(BaseDocument):
     company_name: str = "Δικηγορική Εταιρεία"
     afm: str = ""

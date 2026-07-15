@@ -14,6 +14,9 @@ const TITLES = {
   "/settings": "Ρυθμίσεις",
   "/copilot": "Nomos AI — Copilot",
   "/documents": "Έγγραφα",
+  "/cases": "Υποθέσεις",
+  "/grammatia": "Γραμμάτια Προείσπραξης",
+  "/paravola": "Παράβολα",
 };
 
 const ROLE_LABEL = { admin: "Διαχειριστής", accountant: "Λογιστής", lawyer: "Δικηγόρος" };
@@ -33,7 +36,7 @@ export function Topbar() {
   return (
     <header className="sticky top-0 z-20 h-[72px] flex items-center justify-between px-6 md:px-8 border-b border-[hsl(var(--gold))]/15 bg-background/85 backdrop-blur-md" data-testid="topbar">
       <div>
-        <h2 className="font-heading text-lg font-semibold tracking-tight">{TITLES[pathname] || "Nomos One"}</h2>
+        <h2 className="font-heading text-lg font-semibold tracking-tight">{TITLES[pathname] || (pathname.startsWith("/cases/") ? "Υπόθεση" : "Nomos One")}</h2>
         <p className="text-xs text-muted-foreground capitalize">
           {now.toLocaleDateString("el-GR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
         </p>

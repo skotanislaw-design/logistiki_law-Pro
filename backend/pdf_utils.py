@@ -170,6 +170,78 @@ GREEK_MONTHS = ["", "Ιανουαρίου", "Φεβρουαρίου", "Μαρτ�
                 "Ιουλίου", "Αυγούστου", "Σεπτεμβρίου", "Οκτωβρίου", "Νοεμβρίου", "Δεκεμβρίου"]
 
 
+def build_grammatio_pdf(grammatio: dict, settings: dict) -> bytes:
+    from datetime import date as _date
+    from reportlab.platypus import Image as RLImage
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=22 * mm, rightMargin=22 * mm, topMargin=14 * mm, bottomMargin=16 * mm)
+    story = []
+
+    story.append(RLImage("/app/backend/assets/letterhead_logo.png", width=48 * mm, height=32 * mm, hAlign="CENTER"))
+    story.append(Spacer(1, 4 * mm))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=GOLD))
+    story.append(Spacer(1, 6 * mm))
+
+    status_lbl = {"draft": "ΠΡΟΣΧΕΔΙΟ", "issued": "ΕΚΔΟΘΕΝ", "cancelled": "ΑΚΥΡΩΜΕΝΟ"}.get(grammatio.get("status"), "")
+    story.append(_p(f"ΓΡΑΜΜΑΤΙΟ ΠΡΟΕΙΣΠΡΑΞΗΣ — {status_lbl}", 13, bold=True, color=NAVY, align=1))
+    story.append(Spacer(1, 2 * mm))
+    story.append(_p(grammatio.get("number") or "—", 11, bold=True, color=GOLD, align=1))
+    story.append(Spacer(1, 6 * mm))
+
+    today = _date.today()
+    rows = [
+        [_p("Ημερομηνία", 9, bold=True), _p(f"{today.day} {GREEK_MONTHS[today.month]} {today.year}", 9)],
+        [_p("Πελάτης / Εντολέας", 9, bold=True), _p(grammatio.get("client_name") or "—", 9)],
+        [_p("Υπόθεση", 9, bold=True), _p(grammatio.get("case_title") or "—", 9)],
+        [_p("Δικαστήριο", 9, bold=True), _p(grammatio.get("court_type") or "—", 9)],
+        [_p("Διαδικασία", 9, bold=True), _p(grammatio.get("procedure") or "—", 9)],
+    ]
+    if grammatio.get("portal_ref"):
+        rows.append([_p("Αρ. Γραμματίου (Portal Ολομέλειας)", 9, bold=True), _p(grammatio["portal_ref"], 9)])
+    info = Table(rows, colWidths=[62 * mm, 104 * mm])
+    info.setStyle(TableStyle([
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LINEBELOW", (0, 0), (-1, -2), 0.3, colors.HexColor("#e0ddd3")),
+    ]))
+    story.append(info)
+    story.append(Spacer(1, 6 * mm))
+
+    amount_rows = [
+        [_p("ΑΝΑΛΥΣΗ", 8, bold=True, color=colors.white), _p("ΠΟΣΟ", 8, bold=True, color=colors.white, align=2)],
+        [_p("Αμοιβή αναφοράς", 9.5), _p(_money(grammatio.get("reference_amount")), 9.5, align=2)],
+        [_p("Εισφορές (ΔΣ/ΕΦΚΑ/Διανεμητικός)", 9.5), _p(_money(grammatio.get("contributions_amount")), 9.5, align=2)],
+        [_p("ΦΠΑ 24% επί αμοιβής", 9.5), _p(_money(grammatio.get("vat_amount")), 9.5, align=2)],
+        [_p("ΣΥΝΟΛΟ ΓΡΑΜΜΑΤΙΟΥ", 10.5, bold=True, color=NAVY), _p(_money(grammatio.get("total")), 11, bold=True, color=GOLD, align=2)],
+    ]
+    amounts = Table(amount_rows, colWidths=[120 * mm, 46 * mm])
+    amounts.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY_LIGHT),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#d9d5c9")),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("BACKGROUND", (0, -1), (-1, -1), LIGHT),
+    ]))
+    story.append(amounts)
+    story.append(Spacer(1, 6 * mm))
+
+    if grammatio.get("notes"):
+        story.append(_p(f"Σημειώσεις: {grammatio['notes']}", 8.5, color=GRAY))
+        story.append(Spacer(1, 4 * mm))
+
+    story.append(_p("Η επίσημη έκδοση του γραμματίου προείσπραξης πραγματοποιείται μέσω portal.olomeleia.gr. Τα ποσά αποτελούν ποσά αναφοράς βάσει Ν.4194/2013 — επιβεβαιώστε με τον πίνακα του οικείου Δικηγορικού Συλλόγου.", 7.5, color=GRAY, align=4))
+    story.append(Spacer(1, 8 * mm))
+    story.append(HRFlowable(width="100%", thickness=0.6, color=GOLD))
+    story.append(Spacer(1, 2 * mm))
+    parts = [settings.get("company_name"), settings.get("address"), f"Τηλ. {settings['phone']}" if settings.get("phone") else None]
+    story.append(_p("  |  ".join([p for p in parts if p]), 8, color=GRAY, align=1))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
 def build_letter_pdf(settings: dict, recipient: str, subject: str, body: str) -> bytes:
     from datetime import date
     from reportlab.platypus import Image as RLImage

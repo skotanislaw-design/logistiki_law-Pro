@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import {
   SquaresFour, FileText, Receipt, ChartLineUp, Users, Calculator,
   CalendarCheck, GearSix, SignOut, CaretLeft, CaretRight, Scales, Sparkle, Files,
+  Briefcase, Scroll, Ticket,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
 
@@ -16,6 +17,14 @@ const NAV_GROUPS = [
     items: [
       { to: "/copilot", label: "Nomos AI", icon: Sparkle, testid: "nav-copilot" },
       { to: "/documents", label: "Έγγραφα", icon: Files, testid: "nav-documents" },
+    ],
+  },
+  {
+    label: "ΔΙΚΑΣΤΙΚΑ",
+    items: [
+      { to: "/cases", label: "Υποθέσεις", icon: Briefcase, testid: "nav-cases" },
+      { to: "/grammatia", label: "Γραμμάτια", icon: Scroll, testid: "nav-grammatia" },
+      { to: "/paravola", label: "Παράβολα", icon: Ticket, testid: "nav-paravola" },
     ],
   },
   {

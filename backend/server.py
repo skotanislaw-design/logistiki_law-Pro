@@ -22,6 +22,9 @@ from routes_mydata import router as mydata_router
 from routes_tax_calendar import router as tax_calendar_router
 from routes_copilot import router as copilot_router
 from routes_documents import router as documents_router
+from routes_cases import router as cases_router
+from routes_grammatia import router as grammatia_router
+from routes_paravola import router as paravola_router
 
 app = FastAPI(title="Logistiki Pro API")
 api_router = APIRouter(prefix="/api")
@@ -37,6 +40,9 @@ api_router.include_router(mydata_router)
 api_router.include_router(tax_calendar_router)
 api_router.include_router(copilot_router)
 api_router.include_router(documents_router)
+api_router.include_router(cases_router)
+api_router.include_router(grammatia_router)
+api_router.include_router(paravola_router)
 
 
 @api_router.get("/")

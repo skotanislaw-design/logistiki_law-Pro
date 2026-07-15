@@ -16,6 +16,10 @@ import TaxCalendar from "@/pages/TaxCalendar";
 import Settings from "@/pages/Settings";
 import Copilot from "@/pages/Copilot";
 import Documents from "@/pages/Documents";
+import Cases from "@/pages/Cases";
+import CaseDetail from "@/pages/CaseDetail";
+import Grammatia from "@/pages/Grammatia";
+import Paravola from "@/pages/Paravola";
 
 function Protected({ children }) {
   return (
@@ -43,6 +47,10 @@ function App() {
             <Route path="/settings" element={<Protected><Settings /></Protected>} />
             <Route path="/copilot" element={<Protected><Copilot /></Protected>} />
             <Route path="/documents" element={<Protected><Documents /></Protected>} />
+            <Route path="/cases" element={<Protected><Cases /></Protected>} />
+            <Route path="/cases/:id" element={<Protected><CaseDetail /></Protected>} />
+            <Route path="/grammatia" element={<Protected><Grammatia /></Protected>} />
+            <Route path="/paravola" element={<Protected><Paravola /></Protected>} />
           </Routes>
         </BrowserRouter>
         <Toaster />
