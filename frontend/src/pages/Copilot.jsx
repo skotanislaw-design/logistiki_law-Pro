@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import axios, { API, money, errMsg } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Sparkle, PaperPlaneRight, FileDoc, FilePdf, ArrowSquareOut, ArrowsClockwise, Scales } from "@phosphor-icons/react";
+import { Sparkle, PaperPlaneRight, FileDoc, FilePdf, ArrowSquareOut, ArrowsClockwise, Scales, Microphone, Stop } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const SUGGESTIONS = [
@@ -69,7 +69,10 @@ export default function Copilot() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const bottomRef = useRef(null);
+  const mediaRef = useRef({ recorder: null, chunks: [] });
 
   useEffect(() => {
     sessionStorage.setItem("copilot_session", sessionId);
@@ -95,6 +98,40 @@ export default function Copilot() {
     } finally {
       setThinking(false);
     }
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      mediaRef.current.chunks = [];
+      recorder.ondataavailable = (e) => mediaRef.current.chunks.push(e.data);
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(mediaRef.current.chunks, { type: "audio/webm" });
+        setTranscribing(true);
+        const fd = new FormData();
+        fd.append("audio", blob, "voice.webm");
+        try {
+          const { data } = await axios.post(`${API}/copilot/voice`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+          setTranscribing(false);
+          send(data.transcript);
+        } catch (e) {
+          setTranscribing(false);
+          toast.error(errMsg(e));
+        }
+      };
+      recorder.start();
+      mediaRef.current.recorder = recorder;
+      setRecording(true);
+    } catch {
+      toast.error("Δεν δόθηκε πρόσβαση στο μικρόφωνο");
+    }
+  };
+
+  const stopRecording = () => {
+    mediaRef.current.recorder?.stop();
+    setRecording(false);
   };
 
   const reset = () => {
@@ -145,10 +182,10 @@ export default function Copilot() {
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
             <div
-              className={`max-w-[75%] rounded-sm px-4 py-3 text-sm whitespace-pre-line leading-relaxed ${
+              className={`max-w-[75%] px-4 py-3 text-sm whitespace-pre-line leading-relaxed ${
                 m.role === "user"
-                  ? "bg-[hsl(var(--gold))]/12 border border-[hsl(var(--gold))]/30"
-                  : "bg-card border border-[hsl(var(--gold))]/10"
+                  ? "bg-[hsl(var(--gold))]/12 border border-[hsl(var(--gold))]/30 rounded-2xl rounded-br-md"
+                  : "bg-card/70 backdrop-blur-md border border-[hsl(var(--gold))]/10 rounded-2xl rounded-bl-md"
               }`}
               data-testid={`copilot-message-${m.role}`}
             >
@@ -166,7 +203,7 @@ export default function Copilot() {
 
         {thinking && (
           <div className="flex justify-start">
-            <div className="bg-card border border-[hsl(var(--gold))]/10 rounded-sm px-4 py-3 text-sm text-muted-foreground animate-pulse" data-testid="copilot-thinking">
+            <div className="bg-card/70 backdrop-blur-md border border-[hsl(var(--gold))]/10 rounded-2xl rounded-bl-md px-4 py-3 text-sm text-muted-foreground animate-pulse" data-testid="copilot-thinking">
               <span className="flex items-center gap-2"><Sparkle size={14} className="text-[hsl(var(--gold))]" /> Το Nomos AI σκέφτεται...</span>
             </div>
           </div>
@@ -177,16 +214,33 @@ export default function Copilot() {
       <div className="mt-4">
         <form
           onSubmit={(e) => { e.preventDefault(); send(); }}
-          className="flex gap-2"
+          className="flex gap-2 items-center"
         >
+          <Button
+            type="button"
+            variant={recording ? "destructive" : "outline"}
+            size="icon"
+            onClick={recording ? stopRecording : startRecording}
+            disabled={thinking || transcribing}
+            className={recording ? "animate-pulse" : ""}
+            title={recording ? "Διακοπή εγγραφής" : "Φωνητική εντολή"}
+            data-testid="copilot-mic-button"
+          >
+            {recording ? <Stop size={17} weight="fill" /> : <Microphone size={17} />}
+          </Button>
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ρώτησε ή δώσε εντολή... π.χ. «Φτιάξε τιμολόγιο 800€ για τον Παπαδόπουλο»"
+            placeholder={
+              recording ? "🔴 Ακούω... μίλησε και πάτα Stop"
+              : transcribing ? "Αναγνώριση ομιλίας..."
+              : "Ρώτησε, δώσε εντολή ή πάτα το μικρόφωνο... π.χ. «Φτιάξε τιμολόγιο 800€ για τον Παπαδόπουλο»"
+            }
             className="flex-1"
+            disabled={recording || transcribing}
             data-testid="copilot-input"
           />
-          <Button type="submit" disabled={thinking || !input.trim()} data-testid="copilot-send-button">
+          <Button type="submit" disabled={thinking || recording || transcribing || !input.trim()} data-testid="copilot-send-button">
             <PaperPlaneRight size={17} />
           </Button>
         </form>

@@ -281,8 +281,8 @@ export default function Invoices() {
                 </div>
                 <div className="col-span-2">
                   <Select value={String(li.vat_rate)} onValueChange={(v) => updateLine(idx, "vat_rate", Number(v))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>{VAT_RATES.map((r) => <SelectItem key={r} value={String(r)}>{r}% ΦΠΑ</SelectItem>)}</SelectContent>
+                    <SelectTrigger className="px-2.5"><SelectValue /></SelectTrigger>
+                    <SelectContent>{VAT_RATES.map((r) => <SelectItem key={r} value={String(r)}>{r}%</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="col-span-1">

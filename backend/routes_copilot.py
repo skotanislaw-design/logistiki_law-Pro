@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from datetime import date, datetime, timezone
-from bson import ObjectId
+import tempfile
+import os
 from db import db
 from auth import get_current_user
 from models import Invoice, InvoiceLineItem
@@ -99,6 +100,26 @@ async def copilot_chat(payload: ChatPayload, user: dict = Depends(get_current_us
 
     await _save_msg(payload.session_id, "assistant", reply, {"invoice": invoice_data, "document": document_data})
     return {"reply": reply, "invoice": invoice_data, "document": document_data}
+
+
+@router.post("/voice")
+async def copilot_voice(audio: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    from ai_helpers import transcribe_audio
+    suffix = os.path.splitext(audio.filename or "audio.webm")[1] or ".webm"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await audio.read())
+        tmp_path = tmp.name
+    try:
+        transcript = await transcribe_audio(tmp_path)
+        if not transcript.strip():
+            raise HTTPException(status_code=400, detail="Δεν αναγνωρίστηκε ομιλία. Δοκιμάστε ξανά.")
+        return {"transcript": transcript}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Αποτυχία αναγνώρισης φωνής: {e}")
+    finally:
+        os.unlink(tmp_path)
 
 
 @router.get("/history/{session_id}")

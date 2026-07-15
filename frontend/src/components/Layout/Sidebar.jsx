@@ -55,7 +55,7 @@ export function Sidebar() {
 
   return (
     <aside
-      className={`h-screen sticky top-0 flex flex-col bg-[hsl(var(--sidebar))] border-r border-[hsl(var(--gold))]/15 transition-[width] duration-200 ${collapsed ? "w-[68px]" : "w-[248px]"}`}
+      className={`h-screen sticky top-0 flex flex-col bg-[hsl(var(--sidebar))]/85 backdrop-blur-xl border-r border-[hsl(var(--gold))]/15 transition-[width] duration-200 ${collapsed ? "w-[68px]" : "w-[248px]"}`}
       data-testid="sidebar"
     >
       <div className="flex items-center gap-3 px-4 h-[72px] border-b border-[hsl(var(--gold))]/15">
@@ -81,10 +81,10 @@ export function Sidebar() {
                   to={to}
                   data-testid={testid}
                   className={({ isActive }) =>
-                    `flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm border-l-2 transition-colors duration-200 ${
+                    `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm transition-colors duration-200 ${
                       isActive
-                        ? "border-[hsl(var(--gold))] bg-gradient-to-r from-[hsl(var(--gold))]/15 to-transparent text-[hsl(var(--gold))] font-medium"
-                        : "border-transparent text-foreground/60 hover:bg-white/5 hover:text-foreground"
+                        ? "bg-gradient-to-r from-[hsl(var(--gold))]/15 to-[hsl(var(--gold))]/[0.03] text-[hsl(var(--gold))] font-medium shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
+                        : "text-foreground/60 hover:bg-white/5 hover:text-foreground"
                     }`
                   }
                 >

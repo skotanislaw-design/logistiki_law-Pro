@@ -49,7 +49,7 @@ body {
         --chart-3: 210 70% 55%;
         --chart-4: 0 62% 55%;
         --chart-5: 280 50% 60%;
-        --radius: 0.2rem;
+        --radius: 1rem;
     }
 }
 
@@ -59,6 +59,10 @@ body {
     }
     body {
         @apply bg-background text-foreground;
+        background-image:
+            radial-gradient(700px 500px at 90% -10%, hsl(43 60% 52% / 0.06), transparent 60%),
+            radial-gradient(900px 700px at -15% 115%, hsl(221 80% 45% / 0.10), transparent 60%);
+        background-attachment: fixed;
     }
     h1, h2, h3, h4 {
         font-family: "Chivo", sans-serif;
@@ -84,16 +88,19 @@ body {
 
 @layer components {
     .lux-card {
-        background-color: hsl(var(--card));
-        border: 1px solid hsl(var(--gold) / 0.12);
-        border-radius: var(--radius);
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+        background: linear-gradient(160deg, hsl(224 40% 12% / 0.72), hsl(225 45% 8% / 0.58));
+        -webkit-backdrop-filter: blur(20px) saturate(140%);
+        backdrop-filter: blur(20px) saturate(140%);
+        border: 1px solid hsl(var(--gold) / 0.14);
+        border-top-color: hsl(0 0% 100% / 0.09);
+        border-radius: 1.25rem;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35), inset 0 1px 0 hsl(0 0% 100% / 0.04);
         transition: border-color 0.3s ease, transform 0.3s ease, box-shadow 0.3s ease;
     }
     .lux-card:hover {
         border-color: hsl(var(--gold) / 0.3);
         transform: translateY(-2px);
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 20px hsl(var(--gold) / 0.06);
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45), 0 0 24px hsl(var(--gold) / 0.07), inset 0 1px 0 hsl(0 0% 100% / 0.06);
     }
     .lux-overline {
         font-size: 10px;
@@ -154,7 +161,12 @@ body {
     }
     [role="dialog"] {
         border-color: hsl(var(--gold) / 0.2) !important;
-        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6), 0 0 40px hsl(var(--gold) / 0.05) !important;
+        border-top-color: hsl(0 0% 100% / 0.1) !important;
+        border-radius: 1.4rem !important;
+        background: linear-gradient(160deg, hsl(224 40% 12% / 0.9), hsl(225 45% 7% / 0.85)) !important;
+        -webkit-backdrop-filter: blur(24px) saturate(140%);
+        backdrop-filter: blur(24px) saturate(140%);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6), 0 0 40px hsl(var(--gold) / 0.05), inset 0 1px 0 hsl(0 0% 100% / 0.05) !important;
     }
 }
 
