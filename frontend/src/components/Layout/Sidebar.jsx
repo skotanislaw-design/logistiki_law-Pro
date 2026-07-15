@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import {
   SquaresFour, FileText, Receipt, ChartLineUp, Users, Calculator,
   CalendarCheck, GearSix, SignOut, CaretLeft, CaretRight, Scales, Sparkle, Files,
-  Briefcase, Scroll, Ticket,
+  Briefcase, Scroll, Ticket, Gavel,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
 
@@ -23,6 +23,7 @@ const NAV_GROUPS = [
     label: "ΔΙΚΑΣΤΙΚΑ",
     items: [
       { to: "/cases", label: "Υποθέσεις", icon: Briefcase, testid: "nav-cases" },
+      { to: "/pinakia", label: "Πινάκια", icon: Gavel, testid: "nav-pinakia" },
       { to: "/grammatia", label: "Γραμμάτια", icon: Scroll, testid: "nav-grammatia" },
       { to: "/paravola", label: "Παράβολα", icon: Ticket, testid: "nav-paravola" },
     ],

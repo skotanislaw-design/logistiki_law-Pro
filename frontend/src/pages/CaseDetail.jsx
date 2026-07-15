@@ -10,10 +10,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { GrammatioFormDialog, GrammatioIssueDialog } from "@/components/GrammatioDialogs";
 import { ParavoloFormDialog, ParavoloIssueDialog } from "@/components/ParavoloDialogs";
+import { HearingFormDialog } from "@/components/HearingFormDialog";
 import { CASE_STATUS } from "./Cases";
 import {
   ArrowLeft, User, Scales, CalendarBlank, PencilSimple, Plus, Archive,
-  Lightning, NotePencil, FilePdf, PaperPlaneTilt, ClockCounterClockwise, CheckCircle,
+  Lightning, NotePencil, FilePdf, PaperPlaneTilt, ClockCounterClockwise, CheckCircle, Gavel,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -24,6 +25,8 @@ export default function CaseDetail() {
   const [noteText, setNoteText] = useState("");
   const [showGrammatio, setShowGrammatio] = useState(false);
   const [showParavolo, setShowParavolo] = useState(false);
+  const [showHearing, setShowHearing] = useState(false);
+  const [hearings, setHearings] = useState([]);
   const [issuingG, setIssuingG] = useState(null);
   const [issuingP, setIssuingP] = useState(null);
   const [editAction, setEditAction] = useState(false);
@@ -34,6 +37,7 @@ export default function CaseDetail() {
       toast.error(errMsg(e));
       navigate("/cases");
     });
+    axios.get(`${API}/hearings?case_id=${id}`).then((r) => setHearings(r.data)).catch(() => {});
   }, [id, navigate]);
 
   useEffect(() => { load(); }, [load]);
@@ -159,6 +163,7 @@ export default function CaseDetail() {
             <TabsList className="mb-4">
               <TabsTrigger value="grammatia" data-testid="tab-grammatia">Γραμμάτια ({data.grammatia.length})</TabsTrigger>
               <TabsTrigger value="paravola" data-testid="tab-paravola">Παράβολα ({data.paravola.length})</TabsTrigger>
+              <TabsTrigger value="pinakia" data-testid="tab-pinakia">Πινάκια ({hearings.length})</TabsTrigger>
               <TabsTrigger value="notes" data-testid="tab-notes">Σημειώσεις ({c.notes?.length || 0})</TabsTrigger>
               <TabsTrigger value="history" data-testid="tab-history">Ιστορικό</TabsTrigger>
             </TabsList>
@@ -198,6 +203,23 @@ export default function CaseDetail() {
                 </div>
               ))}
             </TabsContent>
+
+            <TabsContent value="pinakia" className="space-y-3">
+              {hearings.length === 0 && <p className="text-sm text-muted-foreground py-8 text-center">Δεν υπάρχουν πινάκια για την υπόθεση</p>}
+              {hearings.map((h) => (
+                <Link key={h.id} to="/pinakia" className="border border-[hsl(var(--gold))]/15 rounded-xl p-4 flex items-center justify-between hover:border-[hsl(var(--gold))]/40 transition-colors" data-testid={`case-hearing-${h.id}`}>
+                  <div>
+                    <span className="font-mono text-sm text-[hsl(var(--gold))]">Πινάκιο Νο {h.pinakio_number}</span>
+                    <p className="text-sm">{h.court}{h.room ? ` · Αίθουσα ${h.room}` : ""}</p>
+                    <p className="text-xs text-muted-foreground">{dateFmt(h.date)}{h.time ? ` · ${h.time}` : ""}{h.current_number ? ` · Τρέχον: Νο ${h.current_number}` : ""}</p>
+                  </div>
+                  <Badge variant={h.status === "in_progress" ? "default" : h.status === "postponed" ? "destructive" : "secondary"}>
+                    {{ scheduled: "Προγραμματισμένο", in_progress: "Εκδικάζεται", interrupted: "Διακοπή", completed: "Ολοκληρώθηκε", postponed: "Αναβλήθηκε" }[h.status]}
+                  </Badge>
+                </Link>
+              ))}
+            </TabsContent>
+
 
             <TabsContent value="notes" className="space-y-3">
               <div className="flex gap-2">
@@ -247,6 +269,9 @@ export default function CaseDetail() {
               <Button variant="outline" className="w-full justify-start" onClick={() => setShowParavolo(true)} data-testid="quick-new-paravolo">
                 <Plus size={15} className="mr-2 text-[hsl(var(--gold))]" /> Νέο Παράβολο
               </Button>
+              <Button variant="outline" className="w-full justify-start" onClick={() => setShowHearing(true)} data-testid="quick-new-hearing">
+                <Gavel size={15} className="mr-2 text-[hsl(var(--gold))]" /> Νέο Πινάκιο
+              </Button>
               <Button variant="outline" className="w-full justify-start" onClick={() => document.querySelector('[data-testid="tab-notes"]')?.click()} data-testid="quick-add-note">
                 <NotePencil size={15} className="mr-2 text-[hsl(var(--gold))]" /> Προσθήκη Σημείωσης
               </Button>
@@ -287,6 +312,7 @@ export default function CaseDetail() {
 
       <GrammatioFormDialog open={showGrammatio} onOpenChange={setShowGrammatio} onSaved={load} caseInfo={caseInfo} />
       <ParavoloFormDialog open={showParavolo} onOpenChange={setShowParavolo} onSaved={load} caseInfo={caseInfo} />
+      <HearingFormDialog open={showHearing} onOpenChange={setShowHearing} onSaved={load} caseInfo={caseInfo} />
       <GrammatioIssueDialog grammatio={issuingG} open={!!issuingG} onOpenChange={(v) => !v && setIssuingG(null)} onIssued={load} />
       <ParavoloIssueDialog paravolo={issuingP} open={!!issuingP} onOpenChange={(v) => !v && setIssuingP(null)} onIssued={load} />
     </div>

@@ -19,6 +19,8 @@ async def build_context() -> dict:
     invoices = await db.invoices.find({}).sort("created_at", -1).to_list(500)
     expenses = await db.expenses.find({}).sort("created_at", -1).to_list(500)
     clients = await db.clients.find({}).to_list(200)
+    cases = await db.cases.find({}).sort("created_at", -1).to_list(200)
+    hearings = await db.hearings.find({"status": {"$ne": "completed"}}).sort("date", 1).to_list(100)
 
     issued = [i for i in invoices if i.get("status") in ("issued", "paid")]
     month_inv = [i for i in issued if i.get("date", "") >= month_start]
@@ -42,6 +44,14 @@ async def build_context() -> dict:
         "επόμενη_προθεσμία_ΦΠΑ": next_vat_deadline(today, settings.get("vat_period", "monthly")).isoformat(),
         "επόμενη_προθεσμία_ΕΦΚΑ": next_efka_deadline(today).isoformat(),
         "πελάτες": [c["name"] for c in clients],
+        "υποθέσεις": [
+            {"αριθμός": cs.get("number"), "τίτλος": cs.get("title"), "πελάτης": cs.get("client_name"), "δικαστήριο": cs.get("court"), "κατάσταση": cs.get("status"), "επόμενη_ενέργεια": cs.get("next_action")}
+            for cs in cases[:30]
+        ],
+        "πινάκια_δικάσιμοι": [
+            {"υπόθεση": h.get("case_title"), "δικαστήριο": h.get("court"), "ημερομηνία": h.get("date"), "αριθμός_πινακίου": h.get("pinakio_number"), "τρέχων_αριθμός": h.get("current_number"), "κατάσταση": h.get("status")}
+            for h in hearings[:20]
+        ],
         "ανεξόφλητα_τιμολόγια": [
             {"αριθμός": i.get("number"), "πελάτης": i.get("client_name"), "σύνολο": _fmt(i.get("total")), "ημερομηνία": i.get("date")}
             for i in unpaid[:20]
@@ -70,6 +80,9 @@ SYSTEM_TEMPLATE = """Είσαι ο «Nomos AI» — ο ψηφιακός νομι
    - vat_rate ένα από: 24, 13, 6, 0 (default 24). description σύντομη περιγραφή υπηρεσίας.
 2. Σύνταξη επιστολής/εγγράφου (π.χ. όχληση, ενημέρωση, εξώδικο σχέδιο) → απάντησε ΜΟΝΟ με JSON:
 {{"action":"draft_document","recipient":"...","subject":"...","body":"πλήρες κείμενο σε επίσημα ελληνικά, με παραγράφους χωρισμένες με \\n\\n, ΧΩΡΙΣ χαιρετισμό κλεισίματος/υπογραφή (προστίθενται αυτόματα)"}}
+3. Δημιουργία γραμματίου προείσπραξης για υπόθεση → απάντησε ΜΟΝΟ με JSON:
+{{"action":"create_grammatio","case_ref":"αριθμός ή τίτλος υπόθεσης","court_type":"π.χ. Μονομελές Πρωτοδικείο/Εφετείο/Ειρηνοδικείο","procedure":"π.χ. Τακτική διαδικασία/Έφεση","reference_amount":0.0}}
+(αν δεν δοθεί ποσό, βάλε reference_amount: 0 και θα χρησιμοποιηθεί ο πίνακας αναφοράς. Το γραμμάτιο δημιουργείται ως ΠΡΟΣΧΕΔΙΟ — η έκδοση απαιτεί πάντα επιβεβαίωση του χρήστη.)
 
 Διαφορετικά απάντησε κανονικά με κείμενο (όχι JSON). Αν λείπουν απαραίτητα στοιχεία (πελάτης, ποσό), ζήτησέ τα πρώτα. Μην εκτελείς ενέργεια χωρίς σαφές αίτημα.
 Για νομικά/φορολογικά θέματα δίνεις πληροφόρηση, όχι δεσμευτική συμβουλή — ο τελικός έλεγχος ανήκει σε πιστοποιημένο λογιστή/δικηγόρο."""

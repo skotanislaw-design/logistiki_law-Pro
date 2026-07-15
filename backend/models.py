@@ -167,6 +167,23 @@ class Paravolo(BaseDocument):
     created_at: str = Field(default_factory=now_iso)
 
 
+class Hearing(BaseDocument):
+    case_id: str = ""
+    case_title: str = ""
+    court: str
+    room: str = ""
+    date: str
+    time: str = ""
+    pinakio_number: int
+    current_number: int = 0
+    status: Literal["scheduled", "in_progress", "interrupted", "completed", "postponed"] = "scheduled"
+    notify_threshold: int = 5
+    source_url: str = ""
+    events: List[dict] = Field(default_factory=list)
+    created_by: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
 class Settings(BaseDocument):
     company_name: str = "Δικηγορική Εταιρεία"
     afm: str = ""

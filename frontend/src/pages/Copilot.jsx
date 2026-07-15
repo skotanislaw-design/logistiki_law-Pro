@@ -9,8 +9,8 @@ import { toast } from "sonner";
 const SUGGESTIONS = [
   "Πόσο ΦΠΑ χρωστάω αυτόν τον μήνα;",
   "Ποια τιμολόγια είναι ανεξόφλητα;",
-  "Φτιάξε τιμολόγιο 500€ για νομικές υπηρεσίες",
-  "Σύνταξε επιστολή όχλησης προς πελάτη για οφειλή",
+  "Φτιάξε γραμμάτιο Εφετείου για την υπόθεση FRAPORT",
+  "Πότε έχω δικάσιμο και σε ποιο νούμερο είναι το πινάκιο;",
 ];
 
 function newSessionId() {
@@ -64,6 +64,20 @@ function InvoiceCard({ invoice }) {
   );
 }
 
+function GrammatioCard({ grammatio }) {
+  return (
+    <div className="mt-3 border border-[hsl(var(--gold))]/25 rounded-sm bg-background/50 p-4 flex items-center justify-between" data-testid="copilot-grammatio-card">
+      <div>
+        <p className="text-sm font-semibold text-[hsl(var(--gold))] font-mono">{grammatio.number}</p>
+        <p className="text-xs text-muted-foreground">{grammatio.court_type} — {grammatio.procedure} · {money(grammatio.total)}</p>
+      </div>
+      <Link to="/grammatia" className="text-xs flex items-center gap-1 text-[hsl(var(--gold))] hover:underline" data-testid="copilot-grammatio-link">
+        Προβολή <ArrowSquareOut size={13} />
+      </Link>
+    </div>
+  );
+}
+
 export default function Copilot() {
   const [sessionId, setSessionId] = useState(() => sessionStorage.getItem("copilot_session") || newSessionId());
   const [messages, setMessages] = useState([]);
@@ -91,7 +105,7 @@ export default function Copilot() {
     setThinking(true);
     try {
       const { data } = await axios.post(`${API}/copilot/chat`, { session_id: sessionId, message });
-      setMessages((m) => [...m, { role: "assistant", content: data.reply, invoice: data.invoice, document: data.document }]);
+      setMessages((m) => [...m, { role: "assistant", content: data.reply, invoice: data.invoice, document: data.document, grammatio: data.grammatio }]);
     } catch (e) {
       toast.error(errMsg(e));
       setMessages((m) => m.slice(0, -1));
@@ -196,6 +210,7 @@ export default function Copilot() {
               )}
               {m.content.replace(/\*\*/g, "")}
               {m.invoice && <InvoiceCard invoice={m.invoice} />}
+              {m.grammatio && <GrammatioCard grammatio={m.grammatio} />}
               {m.document && <DocumentCard doc={m.document} />}
             </div>
           </div>

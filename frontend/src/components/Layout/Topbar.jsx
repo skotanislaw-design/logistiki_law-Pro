@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
+import { NotificationBell } from "@/components/NotificationBell";
 
 const TITLES = {
   "/": "Πίνακας Ελέγχου",
@@ -17,6 +18,7 @@ const TITLES = {
   "/cases": "Υποθέσεις",
   "/grammatia": "Γραμμάτια Προείσπραξης",
   "/paravola": "Παράβολα",
+  "/pinakia": "Ηλεκτρονικά Πινάκια",
 };
 
 const ROLE_LABEL = { admin: "Διαχειριστής", accountant: "Λογιστής", lawyer: "Δικηγόρος" };
@@ -42,6 +44,7 @@ export function Topbar() {
         </p>
       </div>
       <div className="flex items-center gap-4">
+        <NotificationBell />
         <div className="hidden sm:flex items-center gap-2 border border-[hsl(var(--gold))]/25 rounded-full px-4 py-1.5 bg-[hsl(var(--gold))]/5" data-testid="topbar-clock">
           <span className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--success))] animate-pulse" />
           <span className="font-mono text-sm text-[hsl(var(--gold))]">{now.toLocaleTimeString("el-GR")}</span>

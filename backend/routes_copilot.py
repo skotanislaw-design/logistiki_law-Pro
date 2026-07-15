@@ -69,6 +69,62 @@ async def _execute_create_invoice(action: dict, user: dict):
     return created, reply
 
 
+async def _execute_create_grammatio(action: dict, user: dict):
+    from models import Grammatio
+    from routes_grammatia import GRAMMATIA_REFERENCE, _next_number as _next_grammatio_number
+    from routes_cases import log_case_event
+    ref = (action.get("case_ref") or "").strip().lower()
+    if not ref:
+        return None, "Για ποια υπόθεση θες το γραμμάτιο; Πες μου τον αριθμό ή τον τίτλο της."
+    cases = await db.cases.find({}).to_list(200)
+    matches = [c for c in cases if ref in (c.get("number") or "").lower() or ref in (c.get("title") or "").lower()]
+    if not matches:
+        available = ", ".join(f"{c['number']} ({c['title'][:30]})" for c in cases[:8]) or "καμία"
+        return None, f"Δεν βρήκα υπόθεση «{action.get('case_ref')}». Διαθέσιμες: {available}"
+    if len(matches) > 1:
+        return None, "Βρήκα πολλές υποθέσεις: " + ", ".join(c["number"] + " — " + c["title"][:40] for c in matches[:5]) + ". Ποια εννοείς;"
+    case = matches[0]
+    court_type = action.get("court_type") or ""
+    procedure = action.get("procedure") or ""
+    amount = float(action.get("reference_amount") or 0)
+    if amount <= 0:
+        found = next((r for r in GRAMMATIA_REFERENCE if court_type.lower() in r["court_type"].lower() or r["court_type"].lower() in court_type.lower()), None)
+        if found:
+            amount = found["amount"]
+            court_type = found["court_type"]
+            procedure = procedure or found["procedure"]
+        else:
+            return None, f"Δεν βρήκα «{court_type}» στον πίνακα αναφοράς. Πες μου το δικαστήριο (π.χ. Ειρηνοδικείο, Μονομελές Πρωτοδικείο, Εφετείο) ή το ποσό."
+    contributions = round(amount * 0.12, 2)
+    vat = round(amount * 0.24, 2)
+    g = Grammatio(
+        case_id=case["id"] if isinstance(case.get("id"), str) else str(case["_id"]),
+        case_title=case.get("title", ""),
+        client_id=case.get("client_id", ""),
+        client_name=case.get("client_name", ""),
+        court_type=court_type,
+        procedure=procedure,
+        reference_amount=amount,
+        contributions_amount=contributions,
+        vat_amount=vat,
+        total=round(amount + contributions + vat, 2),
+        created_by=user["email"],
+    )
+    g.number = await _next_grammatio_number()
+    result = await db.grammatia.insert_one(g.to_mongo())
+    await log_case_event(str(case["_id"]), f"Δημιουργία γραμματίου {g.number} μέσω Nomos AI")
+    doc = await db.grammatia.find_one({"_id": result.inserted_id})
+    from models import Grammatio as _G
+    created = _G.from_mongo(doc)
+    reply = (
+        f"✅ Ετοίμασα το γραμμάτιο **{created.number}** για την υπόθεση **{case['number']} — {case['title']}**:\n"
+        f"• {court_type}{' — ' + procedure if procedure else ''}\n"
+        f"• Αμοιβή αναφοράς: {_fmt(amount)} · Εισφορές: {_fmt(contributions)} · ΦΠΑ: {_fmt(vat)} · Σύνολο: {_fmt(created.total)}\n"
+        f"Είναι ΠΡΟΣΧΕΔΙΟ — για την έκδοση χρειάζεται η επιβεβαίωσή σου (Γραμμάτια → Έκδοση, μέσω portal.olomeleia.gr)."
+    )
+    return created, reply
+
+
 @router.post("/chat")
 async def copilot_chat(payload: ChatPayload, user: dict = Depends(get_current_user)):
     if not payload.message.strip():
@@ -90,6 +146,13 @@ async def copilot_chat(payload: ChatPayload, user: dict = Depends(get_current_us
         created, reply = await _execute_create_invoice(action, user)
         if created:
             invoice_data = {"id": created.id, "number": created.number, "client_name": created.client_name, "total": created.total}
+    elif action and action.get("action") == "create_grammatio":
+        created, reply = await _execute_create_grammatio(action, user)
+        if created:
+            invoice_data = None
+            document_data = None
+            await _save_msg(payload.session_id, "assistant", reply, {"grammatio": {"id": created.id, "number": created.number, "total": created.total}})
+            return {"reply": reply, "invoice": None, "document": None, "grammatio": {"id": created.id, "number": created.number, "total": created.total}}
     elif action and action.get("action") == "draft_document":
         document_data = {
             "recipient": action.get("recipient") or "",
@@ -126,6 +189,6 @@ async def copilot_voice(audio: UploadFile = File(...), user: dict = Depends(get_
 async def copilot_history(session_id: str, user: dict = Depends(get_current_user)):
     msgs = await db.copilot_messages.find({"session_id": session_id}).sort("created_at", 1).to_list(100)
     return [
-        {"role": m["role"], "content": m["content"], "invoice": (m.get("meta") or {}).get("invoice"), "document": (m.get("meta") or {}).get("document")}
+        {"role": m["role"], "content": m["content"], "invoice": (m.get("meta") or {}).get("invoice"), "document": (m.get("meta") or {}).get("document"), "grammatio": (m.get("meta") or {}).get("grammatio")}
         for m in msgs
     ]
