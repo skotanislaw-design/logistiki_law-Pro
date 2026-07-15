@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 2 verified the bug-fix batch (view/edit/delete across Expenses, Invoices, myDATA, Payroll + receipt image persistence + dashboard KPI tooltips). Backend: 21/21 pytest passed - added new tests for expenses PUT/DELETE, /expenses/files/{path} auth+404, invoice PUT/DELETE, employee PUT/DELETE with active toggle. Frontend UI verified end-to-end: Invoice detail dialog opens with MOCK MARK/UID, myDATA invoice view dialog works, Payroll active-toggle flips Ενεργός<->Ανενεργός and disables 'Υπολογισμός' when inactive, payslip detail dialog shows net salary correctly (1.149,86 €), expense edit dialog is prefilled, all 4 dashboard KPI info icons present with tooltips (role=tooltip in DOM). Issued invoices correctly show only view (edit=0, delete=0 in current test data - all invoices in DB are issued).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/expenses/ocr-parse", "issue": "Still returns raw 500 with litellm error message on invalid image (carry-over from iteration 1)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "console_warnings": [
+      {"component": "InvoiceDetailDialog.jsx line 71", "issue": "React hydration warning: <Badge> (renders a <div>) is placed inside a <p> tag. 'In HTML, <div> cannot be a descendant of <p>'. Change the surrounding <p> to a <div>/<span> or make Badge render as span.", "priority": "LOW"}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(LOW) Fix InvoiceDetailDialog.jsx L71: replace the wrapping <p> around <Badge variant='secondary'> with a <div> or <span> to eliminate DOM-nesting hydration warning."
+  ],
+  "critical_code_review_comments": [
+    "storage.py uses module-level cached _storage_key - correct; init_storage() is idempotent and called on FastAPI startup.",
+    "routes_expenses.get_receipt_file requires auth (get_current_user) - correct; verified 401 when unauth and 404 when path missing.",
+    "routes_invoices.PUT preserves original invoice.number and recomputes totals from line_items - correct accounting behavior.",
+    "Frontend Invoices.jsx correctly hides edit/delete when status != 'draft' (issued/paid invoices remain immutable for accounting integrity - matches spec).",
+    "Payroll.jsx run-payroll button is disabled when emp.active === false - verified functionally.",
+    "InvoiceDetailDialog has DOM-nesting issue (div-in-p) - see console_warnings.",
+    "iteration_1 useEffect(async fn) warning appears already fixed (no such warning surfaced this run for Clients/Expenses)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added TestInvoiceCRUD + expense update/delete + receipt file auth/404 + employee update/delete)"
+  ],
+  "success_rate": {"backend": "100% (21/21)", "frontend": "100% (all new view/edit/delete/toggle/tooltip interactions verified)"},
+  "test_credentials": "admin@logistiki.gr / Admin@2026! (verified)",
+  "seed_data_creation": "Tests create TEST_-prefixed clients/employees/invoices/expenses and clean up create->update->delete flows.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All bug-fix items 1-5 from the request are verified working. Only remaining nit is a React DOM-nesting hydration warning inside InvoiceDetailDialog (div Badge inside p). Backend endpoints for storage (/api/expenses/files/{path}) and CRUD on expenses/invoices/employees are all functional. Test data already contains 4 invoices (all issued -> show view only, correctly hiding edit/delete) and 4 expenses (no receipt_image_url so no thumbnail; preview button only appears when receipt_image_url exists by design). To test the receipt-image round trip, upload a real image via 'Ανέβασμα Απόδειξης' - the /api/expenses/ocr-parse returns receipt_image_url and the file is served back by GET /api/expenses/files/{path} (main agent already verified via curl)."
+}

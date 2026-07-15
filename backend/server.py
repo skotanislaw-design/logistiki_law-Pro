@@ -10,6 +10,7 @@ load_dotenv(ROOT_DIR / '.env')
 
 from db import db
 from auth import hash_password, verify_password
+from storage import init_storage
 from routes_auth import router as auth_router
 from routes_clients import router as clients_router
 from routes_invoices import router as invoices_router
@@ -77,6 +78,11 @@ async def startup_event():
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=3600)
     await db.login_attempts.create_index("identifier")
     await seed_admin()
+    try:
+        init_storage()
+        logger.info("Object storage initialized")
+    except Exception as e:
+        logger.error(f"Storage init failed: {e}")
 
 
 @app.on_event("shutdown")

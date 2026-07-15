@@ -3,13 +3,15 @@ import axios, { API, money, errMsg } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { CloudCheck, CloudSlash, ArrowsClockwise, Scales } from "@phosphor-icons/react";
+import { InvoiceDetailDialog } from "@/components/InvoiceDetailDialog";
+import { CloudCheck, CloudSlash, ArrowsClockwise, Scales, Eye } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 export default function MyData() {
   const [status, setStatus] = useState(null);
   const [invoices, setInvoices] = useState([]);
   const [syncing, setSyncing] = useState(null);
+  const [viewing, setViewing] = useState(null);
 
   const load = () => {
     axios.get(`${API}/mydata/status`).then((r) => setStatus(r.data)).catch((e) => toast.error(errMsg(e)));
@@ -87,6 +89,7 @@ export default function MyData() {
                       <ArrowsClockwise size={14} className={`mr-1.5 ${syncing === inv.id ? "animate-spin" : ""}`} /> Αποστολή
                     </Button>
                   )}
+                  <Button variant="ghost" size="icon" onClick={() => setViewing(inv)} data-testid={`view-mydata-invoice-${inv.id}`}><Eye size={16} /></Button>
                 </TableCell>
               </TableRow>
             ))}
@@ -104,6 +107,8 @@ export default function MyData() {
           <strong> Ρυθμίσεις</strong>. Έως τότε, όλα τα MARK/UID που εμφανίζονται είναι <strong>MOCK</strong> δεδομένα προσομοίωσης.
         </p>
       </div>
+
+      <InvoiceDetailDialog invoice={viewing} open={!!viewing} onOpenChange={(v) => !v && setViewing(null)} />
     </div>
   );
 }

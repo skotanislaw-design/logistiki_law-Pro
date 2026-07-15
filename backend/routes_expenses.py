@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+import base64
+import logging
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from bson import ObjectId
 from db import db
 from models import Expense
 from auth import get_current_user
 from ai_helpers import ocr_receipt
+from storage import upload_receipt_image, get_object
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
 
@@ -52,6 +55,21 @@ class OcrRequest(BaseModel):
 async def ocr_parse_expense(payload: OcrRequest, user: dict = Depends(get_current_user)):
     try:
         parsed = await ocr_receipt(payload.image_base64)
-        return {"parsed": parsed}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Αποτυχία ανάλυσης απόδειξης: {e}")
+    receipt_path = None
+    try:
+        image_bytes = base64.b64decode(payload.image_base64)
+        receipt_path = upload_receipt_image(image_bytes)
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Receipt storage failed: {e}")
+    return {"parsed": parsed, "receipt_image_url": receipt_path}
+
+
+@router.get("/files/{path:path}")
+async def get_receipt_file(path: str, user: dict = Depends(get_current_user)):
+    try:
+        data, content_type = get_object(path)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Το αρχείο δεν βρέθηκε")
+    return Response(content=data, media_type=content_type)

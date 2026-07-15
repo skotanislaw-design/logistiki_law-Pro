@@ -10,7 +10,8 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Trash, Microphone, PaperPlaneTilt, CloudCheck } from "@phosphor-icons/react";
+import { InvoiceDetailDialog } from "@/components/InvoiceDetailDialog";
+import { Plus, Trash, Microphone, PaperPlaneTilt, CloudCheck, Eye, PencilSimple } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const VAT_RATES = [24, 13, 6, 0];
@@ -29,9 +30,11 @@ export default function Invoices() {
   const [invoices, setInvoices] = useState([]);
   const [clients, setClients] = useState([]);
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm());
   const [recording, setRecording] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("");
+  const [viewing, setViewing] = useState(null);
   const mediaRef = useState({ recorder: null, chunks: [] })[0];
 
   const load = () => {
@@ -39,7 +42,7 @@ export default function Invoices() {
     axios.get(`${API}/clients`).then((r) => setClients(r.data)).catch(() => {});
   };
 
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
 
   const updateLine = (idx, field, value) => {
     const items = [...form.line_items];
@@ -59,11 +62,19 @@ export default function Invoices() {
     { subtotal: 0, vat: 0 }
   );
 
+  const openNew = () => { setEditing(null); setForm(emptyForm()); setOpen(true); };
+  const openEdit = (inv) => { setEditing(inv); setForm({ client_id: inv.client_id, date: inv.date, line_items: inv.line_items, payment_method: inv.payment_method, notes: inv.notes }); setOpen(true); };
+
   const handleSubmit = async () => {
     if (!form.client_id) return toast.error("Επιλέξτε πελάτη");
     try {
-      await axios.post(`${API}/invoices`, form);
-      toast.success("Το τιμολόγιο δημιουργήθηκε");
+      if (editing) {
+        await axios.put(`${API}/invoices/${editing.id}`, form);
+        toast.success("Το τιμολόγιο ενημερώθηκε");
+      } else {
+        await axios.post(`${API}/invoices`, form);
+        toast.success("Το τιμολόγιο δημιουργήθηκε");
+      }
       setOpen(false);
       setForm(emptyForm());
       load();
@@ -76,6 +87,16 @@ export default function Invoices() {
     try {
       await axios.post(`${API}/invoices/${id}/issue`);
       toast.success("Το τιμολόγιο εκδόθηκε και στάλθηκε (mock) στο myDATA");
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  const deleteInvoice = async (id) => {
+    try {
+      await axios.delete(`${API}/invoices/${id}`);
+      toast.success("Το τιμολόγιο διαγράφηκε");
       load();
     } catch (e) {
       toast.error(errMsg(e));
@@ -127,7 +148,7 @@ export default function Invoices() {
           <h1 className="font-heading text-3xl font-bold tracking-tight">Τιμολόγια</h1>
           <p className="text-sm text-muted-foreground mt-1">Έκδοση & διαχείριση τιμολογίων παροχής υπηρεσιών</p>
         </div>
-        <Button onClick={() => setOpen(true)} data-testid="new-invoice-button"><Plus size={16} className="mr-1.5" /> Νέο Τιμολόγιο</Button>
+        <Button onClick={openNew} data-testid="new-invoice-button"><Plus size={16} className="mr-1.5" /> Νέο Τιμολόγιο</Button>
       </div>
 
       <div className="border border-border rounded-sm bg-card overflow-hidden">
@@ -159,8 +180,13 @@ export default function Invoices() {
                 </TableCell>
                 <TableCell className="text-right font-mono">{money(inv.total)}</TableCell>
                 <TableCell className="text-right">
+                  <Button variant="ghost" size="icon" onClick={() => setViewing(inv)} data-testid={`view-invoice-${inv.id}`}><Eye size={16} /></Button>
                   {inv.status === "draft" && (
-                    <Button size="sm" variant="outline" onClick={() => issueInvoice(inv.id)} data-testid={`issue-invoice-${inv.id}`}>Έκδοση</Button>
+                    <>
+                      <Button variant="ghost" size="icon" onClick={() => openEdit(inv)} data-testid={`edit-invoice-${inv.id}`}><PencilSimple size={16} /></Button>
+                      <Button variant="ghost" size="icon" onClick={() => deleteInvoice(inv.id)} data-testid={`delete-invoice-${inv.id}`}><Trash size={16} /></Button>
+                      <Button size="sm" variant="outline" onClick={() => issueInvoice(inv.id)} data-testid={`issue-invoice-${inv.id}`}>Έκδοση</Button>
+                    </>
                   )}
                 </TableCell>
               </TableRow>
@@ -174,20 +200,22 @@ export default function Invoices() {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Νέο Τιμολόγιο</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{editing ? `Επεξεργασία Τιμολογίου ${editing.number}` : "Νέο Τιμολόγιο"}</DialogTitle></DialogHeader>
 
-          <div className="border border-dashed border-border rounded-sm p-4 bg-muted/40 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium flex items-center gap-2"><Microphone size={16} /> Δημιουργία με φωνή</span>
-              {!recording ? (
-                <Button size="sm" variant="outline" onClick={startRecording} data-testid="voice-record-start">Εκκίνηση Εγγραφής</Button>
-              ) : (
-                <Button size="sm" variant="destructive" onClick={stopRecording} data-testid="voice-record-stop">Διακοπή & Ανάλυση</Button>
-              )}
+          {!editing && (
+            <div className="border border-dashed border-border rounded-sm p-4 bg-muted/40 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium flex items-center gap-2"><Microphone size={16} /> Δημιουργία με φωνή</span>
+                {!recording ? (
+                  <Button size="sm" variant="outline" onClick={startRecording} data-testid="voice-record-start">Εκκίνηση Εγγραφής</Button>
+                ) : (
+                  <Button size="sm" variant="destructive" onClick={stopRecording} data-testid="voice-record-stop">Διακοπή & Ανάλυση</Button>
+                )}
+              </div>
+              {recording && <p className="text-xs text-destructive animate-pulse" aria-live="polite">● Ακούω... πείτε π.χ. "Τιμολόγιο για τον πελάτη Παπαδόπουλο, 500 ευρώ, νομική συμβουλή"</p>}
+              {voiceStatus && <p className="text-xs text-muted-foreground" aria-live="polite" data-testid="voice-status">{voiceStatus}</p>}
             </div>
-            {recording && <p className="text-xs text-destructive animate-pulse" aria-live="polite">● Ακούω... πείτε π.χ. "Τιμολόγιο για τον πελάτη Παπαδόπουλο, 500 ευρώ, νομική συμβουλή"</p>}
-            {voiceStatus && <p className="text-xs text-muted-foreground" aria-live="polite" data-testid="voice-status">{voiceStatus}</p>}
-          </div>
+          )}
 
           <div>
             <Label>Πελάτης</Label>
@@ -245,6 +273,8 @@ export default function Invoices() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <InvoiceDetailDialog invoice={viewing} open={!!viewing} onOpenChange={(v) => !v && setViewing(null)} />
     </div>
   );
 }

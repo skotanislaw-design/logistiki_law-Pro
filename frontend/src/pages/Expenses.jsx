@@ -7,7 +7,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, Camera, Sparkle } from "@phosphor-icons/react";
+import { ImagePreviewDialog } from "@/components/ImagePreviewDialog";
+import { Plus, Camera, Sparkle, Eye, PencilSimple, Trash, ImageSquare } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const VAT_RATES = [24, 13, 6, 0];
@@ -18,14 +19,20 @@ const CATEGORIES = [
 ];
 
 function emptyForm() {
-  return { vendor: "", date: new Date().toISOString().slice(0, 10), amount: 0, vat_amount: 0, vat_rate: 24, category: "Λοιπά", description: "", source: "manual" };
+  return { vendor: "", date: new Date().toISOString().slice(0, 10), amount: 0, vat_amount: 0, vat_rate: 24, category: "Λοιπά", description: "", source: "manual", receipt_image_url: null };
+}
+
+function receiptSrc(path) {
+  return path ? `${API}/expenses/files/${path}` : null;
 }
 
 export default function Expenses() {
   const [expenses, setExpenses] = useState([]);
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm());
   const [ocrLoading, setOcrLoading] = useState(false);
+  const [previewSrc, setPreviewSrc] = useState(null);
   const fileRef = useRef(null);
 
   const load = () => axios.get(`${API}/expenses`).then((r) => setExpenses(r.data)).catch((e) => toast.error(errMsg(e)));
@@ -34,6 +41,7 @@ export default function Expenses() {
   const handleFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setEditing(null);
     setOcrLoading(true);
     setOpen(true);
     const reader = new FileReader();
@@ -46,7 +54,7 @@ export default function Expenses() {
           vendor: p.vendor || "", date: p.date || new Date().toISOString().slice(0, 10),
           amount: p.amount || 0, vat_amount: p.vat_amount || 0, vat_rate: p.vat_rate || 24,
           category: CATEGORIES.includes(p.category) ? p.category : "Λοιπά",
-          description: p.description || "", source: "photo_ocr",
+          description: p.description || "", source: "photo_ocr", receipt_image_url: data.receipt_image_url,
         });
         toast.success("Η απόδειξη αναλύθηκε αυτόματα με AI");
       } catch (err) {
@@ -58,12 +66,30 @@ export default function Expenses() {
     reader.readAsDataURL(file);
   };
 
+  const openNew = () => { setEditing(null); setForm(emptyForm()); setOpen(true); };
+  const openEdit = (ex) => { setEditing(ex); setForm(ex); setOpen(true); };
+  const openPreview = (ex) => setPreviewSrc(receiptSrc(ex.receipt_image_url));
+
   const handleSubmit = async () => {
     try {
-      await axios.post(`${API}/expenses`, form);
-      toast.success("Το έξοδο καταχωρήθηκε");
+      if (editing) {
+        await axios.put(`${API}/expenses/${editing.id}`, form);
+        toast.success("Το έξοδο ενημερώθηκε");
+      } else {
+        await axios.post(`${API}/expenses`, form);
+        toast.success("Το έξοδο καταχωρήθηκε");
+      }
       setOpen(false);
-      setForm(emptyForm());
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      await axios.delete(`${API}/expenses/${id}`);
+      toast.success("Το έξοδο διαγράφηκε");
       load();
     } catch (e) {
       toast.error(errMsg(e));
@@ -82,7 +108,7 @@ export default function Expenses() {
           <Button variant="outline" onClick={() => fileRef.current.click()} data-testid="upload-receipt-button">
             <Camera size={16} className="mr-1.5" /> Ανέβασμα Απόδειξης
           </Button>
-          <Button onClick={() => { setForm(emptyForm()); setOpen(true); }} data-testid="new-expense-button">
+          <Button onClick={openNew} data-testid="new-expense-button">
             <Plus size={16} className="mr-1.5" /> Νέο Έξοδο
           </Button>
         </div>
@@ -92,27 +118,45 @@ export default function Expenses() {
         <Table data-testid="expenses-table">
           <TableHeader>
             <TableRow>
+              <TableHead>Απόδειξη</TableHead>
               <TableHead>Προμηθευτής</TableHead>
               <TableHead>Ημερομηνία</TableHead>
               <TableHead>Κατηγορία</TableHead>
               <TableHead>Πηγή</TableHead>
               <TableHead className="text-right">ΦΠΑ</TableHead>
               <TableHead className="text-right">Ποσό</TableHead>
+              <TableHead className="text-right">Ενέργειες</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {expenses.map((ex) => (
               <TableRow key={ex.id} data-testid={`expense-row-${ex.id}`}>
+                <TableCell>
+                  {ex.receipt_image_url ? (
+                    <button onClick={() => openPreview(ex)} className="block" data-testid={`view-receipt-${ex.id}`}>
+                      <img src={receiptSrc(ex.receipt_image_url)} alt="απόδειξη" className="w-10 h-10 object-cover rounded-sm border border-border hover:opacity-80 transition-opacity duration-200" />
+                    </button>
+                  ) : (
+                    <span className="w-10 h-10 flex items-center justify-center text-muted-foreground/40 border border-dashed border-border rounded-sm"><ImageSquare size={18} /></span>
+                  )}
+                </TableCell>
                 <TableCell>{ex.vendor}</TableCell>
                 <TableCell>{dateFmt(ex.date)}</TableCell>
                 <TableCell>{ex.category}</TableCell>
                 <TableCell className="text-xs text-muted-foreground">{ex.source === "photo_ocr" ? "AI OCR" : "Χειροκίνητα"}</TableCell>
                 <TableCell className="text-right font-mono">{money(ex.vat_amount)}</TableCell>
                 <TableCell className="text-right font-mono">{money(ex.amount)}</TableCell>
+                <TableCell className="text-right">
+                  {ex.receipt_image_url && (
+                    <Button variant="ghost" size="icon" onClick={() => openPreview(ex)} data-testid={`preview-expense-${ex.id}`}><Eye size={16} /></Button>
+                  )}
+                  <Button variant="ghost" size="icon" onClick={() => openEdit(ex)} data-testid={`edit-expense-${ex.id}`}><PencilSimple size={16} /></Button>
+                  <Button variant="ghost" size="icon" onClick={() => handleDelete(ex.id)} data-testid={`delete-expense-${ex.id}`}><Trash size={16} /></Button>
+                </TableCell>
               </TableRow>
             ))}
             {expenses.length === 0 && (
-              <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">Δεν υπάρχουν έξοδα ακόμα.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">Δεν υπάρχουν έξοδα ακόμα.</TableCell></TableRow>
             )}
           </TableBody>
         </Table>
@@ -120,7 +164,7 @@ export default function Expenses() {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>{form.source === "photo_ocr" ? "Επιβεβαίωση Στοιχείων Απόδειξης" : "Νέο Έξοδο"}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{editing ? "Επεξεργασία Εξόδου" : form.source === "photo_ocr" ? "Επιβεβαίωση Στοιχείων Απόδειξης" : "Νέο Έξοδο"}</DialogTitle></DialogHeader>
 
           {ocrLoading ? (
             <div className="space-y-3" data-testid="ocr-loading" aria-live="polite">
@@ -131,6 +175,9 @@ export default function Expenses() {
             </div>
           ) : (
             <div className="space-y-3">
+              {form.receipt_image_url && (
+                <img src={receiptSrc(form.receipt_image_url)} alt="απόδειξη" className="w-full max-h-48 object-contain rounded-sm border border-border bg-muted/30" />
+              )}
               <div>
                 <Label>Προμηθευτής</Label>
                 <Input value={form.vendor} onChange={(e) => setForm({ ...form, vendor: e.target.value })} className="mt-1.5" data-testid="expense-vendor-input" />
@@ -178,6 +225,8 @@ export default function Expenses() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ImagePreviewDialog src={previewSrc} open={!!previewSrc} onOpenChange={(v) => !v && setPreviewSrc(null)} />
     </div>
   );
 }

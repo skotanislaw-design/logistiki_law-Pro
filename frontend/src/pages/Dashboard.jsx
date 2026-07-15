@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
 import { DisclaimerBanner } from "@/components/DisclaimerBanner";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import { TrendUp, TrendDown, Receipt, Clock, CloudArrowUp } from "@phosphor-icons/react";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer, Legend } from "recharts";
+import { TrendUp, TrendDown, Receipt, Clock, CloudArrowUp, Info } from "@phosphor-icons/react";
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 
-function StatCard({ label, value, icon: Icon, testid, tone = "default" }) {
+function StatCard({ label, value, icon: Icon, testid, tone = "default", hint }) {
   const toneClass = {
     default: "text-foreground",
     danger: "text-destructive",
@@ -15,7 +16,19 @@ function StatCard({ label, value, icon: Icon, testid, tone = "default" }) {
   return (
     <div className="border border-border rounded-sm p-5 bg-card flex flex-col gap-2" data-testid={testid}>
       <div className="flex items-center justify-between">
-        <span className="text-xs uppercase tracking-[0.15em] font-semibold text-muted-foreground">{label}</span>
+        <span className="text-xs uppercase tracking-[0.15em] font-semibold text-muted-foreground flex items-center gap-1.5">
+          {label}
+          {hint && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info size={13} className="cursor-help opacity-70" data-testid={`${testid}-info`} />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-[220px] normal-case tracking-normal font-normal">{hint}</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+        </span>
         <Icon size={18} className="text-muted-foreground" />
       </div>
       <span className={`font-mono text-2xl tracking-tight ${toneClass}`}>{value}</span>
@@ -48,10 +61,14 @@ export default function Dashboard() {
       <DisclaimerBanner />
 
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
-        <StatCard label="Έσοδα Μήνα" value={money(data.income_total)} icon={TrendUp} testid="stat-income" tone="success" />
-        <StatCard label="Έξοδα Μήνα" value={money(data.expense_total)} icon={TrendDown} testid="stat-expense" />
-        <StatCard label="ΦΠΑ προς Πληρωμή" value={money(data.vat_due)} icon={Receipt} testid="vat-due-amount" tone={data.vat_due > 0 ? "danger" : "success"} />
-        <StatCard label="Επόμενη Προθεσμία ΦΠΑ" value={dateFmt(data.next_vat_deadline)} icon={Clock} testid="stat-next-deadline" />
+        <StatCard label="Έσοδα Μήνα" value={money(data.income_total)} icon={TrendUp} testid="stat-income" tone="success"
+          hint="Το σύνολο της καθαρής αξίας (χωρίς ΦΠΑ) των εκδοθέντων τιμολογίων τον τρέχοντα μήνα. Αυξάνει το ΦΠΑ Εκροών." />
+        <StatCard label="Έξοδα Μήνα" value={money(data.expense_total)} icon={TrendDown} testid="stat-expense"
+          hint="Το σύνολο των εξόδων (χωρίς ΦΠΑ) τον τρέχοντα μήνα. Αυξάνει το ΦΠΑ Εισροών, μειώνοντας το ΦΠΑ προς πληρωμή." />
+        <StatCard label="ΦΠΑ προς Πληρωμή" value={money(data.vat_due)} icon={Receipt} testid="vat-due-amount" tone={data.vat_due > 0 ? "danger" : "success"}
+          hint="ΦΠΑ Εκροών (από τιμολόγια) μείον ΦΠΑ Εισροών (από έξοδα). Αν είναι αρνητικό, έχετε πιστωτικό υπόλοιπο ΦΠΑ." />
+        <StatCard label="Επόμενη Προθεσμία ΦΠΑ" value={dateFmt(data.next_vat_deadline)} icon={Clock} testid="stat-next-deadline"
+          hint="Ημερομηνία υποβολής & πληρωμής της επόμενης δήλωσης ΦΠΑ, βάσει της περιόδου (μηνιαία/τριμηνιαία) που έχετε ορίσει στις Ρυθμίσεις." />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -62,7 +79,7 @@ export default function Dashboard() {
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
               <XAxis dataKey="month" tick={{ fontSize: 12 }} />
               <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip formatter={(v) => money(v)} contentStyle={{ fontSize: 12 }} />
+              <ChartTooltip formatter={(v) => money(v)} contentStyle={{ fontSize: 12 }} />
               <Legend />
               <Bar dataKey="income" name="Έσοδα" fill="hsl(var(--chart-2))" radius={[2, 2, 0, 0]} />
               <Bar dataKey="expense" name="Έξοδα" fill="hsl(var(--chart-3))" radius={[2, 2, 0, 0]} />

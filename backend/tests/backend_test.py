@@ -147,6 +147,58 @@ class TestExpenses:
         # AI may fail on 1x1 image, but endpoint should respond (not 404/401)
         assert r.status_code in (200, 500), f"unexpected: {r.status_code} {r.text[:200]}"
 
+    def test_update_and_delete_expense(self, auth_client):
+        r = auth_client.post(f"{API}/expenses", json={
+            "vendor": "TEST_UPD", "date": "2026-01-11", "amount": 62.0,
+            "vat_amount": 12.0, "vat_rate": 24, "category": "Γραφική ύλη",
+        })
+        assert r.status_code == 200
+        eid = r.json()["id"]
+        r2 = auth_client.put(f"{API}/expenses/{eid}", json={
+            "vendor": "TEST_UPD_MOD", "date": "2026-01-11", "amount": 70.0,
+            "vat_amount": 13.55, "vat_rate": 24, "category": "Γραφική ύλη",
+        })
+        assert r2.status_code == 200
+        assert r2.json()["vendor"] == "TEST_UPD_MOD"
+        r3 = auth_client.get(f"{API}/expenses")
+        assert any(x["id"] == eid and x["vendor"] == "TEST_UPD_MOD" for x in r3.json())
+        r4 = auth_client.delete(f"{API}/expenses/{eid}")
+        assert r4.status_code == 200
+        r5 = auth_client.get(f"{API}/expenses")
+        assert not any(x["id"] == eid for x in r5.json())
+
+    def test_receipt_file_unauth_and_missing(self, auth_client):
+        # Unauth
+        r = requests.get(f"{API}/expenses/files/nonexistent/x.jpg")
+        assert r.status_code == 401
+        # Missing (authed)
+        r2 = auth_client.get(f"{API}/expenses/files/logistiki-pro/receipts/does-not-exist.jpg")
+        assert r2.status_code == 404
+
+
+class TestInvoiceCRUD:
+    def test_update_and_delete_invoice(self, auth_client):
+        # need a client
+        rc = auth_client.post(f"{API}/clients", json={
+            "name": "TEST_ Inv Upd", "afm": "444555666", "client_type": "company"
+        })
+        cid = rc.json()["id"]
+        r = auth_client.post(f"{API}/invoices", json={
+            "client_id": cid, "date": "2026-01-20",
+            "line_items": [{"description": "svc", "quantity": 1, "unit_price": 200, "vat_rate": 24}],
+        })
+        assert r.status_code == 200
+        iid = r.json()["id"]
+        r2 = auth_client.put(f"{API}/invoices/{iid}", json={
+            "client_id": cid, "date": "2026-01-20", "notes": "updated",
+            "line_items": [{"description": "svc", "quantity": 2, "unit_price": 200, "vat_rate": 24}],
+        })
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["subtotal"] == 400.0
+        assert r2.json()["notes"] == "updated"
+        r3 = auth_client.delete(f"{API}/invoices/{iid}")
+        assert r3.status_code == 200
+
 
 # ---------- Payroll ----------
 class TestPayroll:
@@ -182,6 +234,20 @@ class TestPayroll:
         assert r1.status_code == 200
         r2 = auth_client.post(f"{API}/payroll/run", json={"employee_id": eid, "period": "2026-02"})
         assert r2.status_code == 400
+
+    def test_employee_update_and_delete(self, auth_client):
+        r = auth_client.post(f"{API}/payroll/employees", json={
+            "name": "TEST_ EmpUpd", "gross_salary": 1200.0, "dependents": 0, "position": "Γραμματ."
+        })
+        eid = r.json()["id"]
+        # Toggle inactive via update
+        r2 = auth_client.put(f"{API}/payroll/employees/{eid}", json={
+            "name": "TEST_ EmpUpd", "gross_salary": 1200.0, "dependents": 0, "active": False,
+        })
+        assert r2.status_code == 200
+        assert r2.json()["active"] is False
+        r3 = auth_client.delete(f"{API}/payroll/employees/{eid}")
+        assert r3.status_code == 200
 
 
 # ---------- Dashboard ----------
