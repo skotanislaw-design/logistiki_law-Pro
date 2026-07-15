@@ -18,7 +18,7 @@ export const CASE_STATUS = {
   archived: { label: "Αρχειοθετήθηκε", variant: "destructive" },
 };
 
-const EMPTY = { title: "", case_type: "Αστικό", client_id: "", client_name: "", court: "", opposing_party: "", next_action: "" };
+const EMPTY = { title: "", case_type: "Αστικό", client_id: "", client_name: "", court: "", opposing_party: "", next_action: "", gak: "", eak: "", gak_year: "" };
 
 export default function Cases() {
   const [cases, setCases] = useState([]);
@@ -138,6 +138,20 @@ export default function Cases() {
               <div>
                 <Label>Αντίδικος</Label>
                 <Input value={form.opposing_party} onChange={(e) => setForm({ ...form, opposing_party: e.target.value })} className="mt-1.5" data-testid="case-opposing-input" />
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <Label>ΓΑΚ</Label>
+                <Input value={form.gak} onChange={(e) => setForm({ ...form, gak: e.target.value })} className="mt-1.5" placeholder="π.χ. 12345" data-testid="case-gak-input" />
+              </div>
+              <div>
+                <Label>ΕΑΚ</Label>
+                <Input value={form.eak} onChange={(e) => setForm({ ...form, eak: e.target.value })} className="mt-1.5" placeholder="π.χ. 678" data-testid="case-eak-input" />
+              </div>
+              <div>
+                <Label>Έτος</Label>
+                <Input value={form.gak_year} onChange={(e) => setForm({ ...form, gak_year: e.target.value })} className="mt-1.5" placeholder="2026" data-testid="case-gak-year-input" />
               </div>
             </div>
             <div>

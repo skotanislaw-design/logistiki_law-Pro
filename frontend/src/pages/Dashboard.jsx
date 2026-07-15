@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
 import { DisclaimerBanner } from "@/components/DisclaimerBanner";
+import { OneScreenDashboard } from "@/components/OneScreenDashboard";
+import { useViewMode } from "@/context/ViewModeContext";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer, Legend } from "recharts";
 import { TrendUp, TrendDown, Receipt, Clock, CloudArrowUp, Info } from "@phosphor-icons/react";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
@@ -39,6 +41,7 @@ function StatCard({ label, value, icon: Icon, testid, tone = "default", hint }) 
 export default function Dashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const { oneScreen } = useViewMode();
 
   useEffect(() => {
     axios.get(`${API}/dashboard/summary`)
@@ -50,6 +53,8 @@ export default function Dashboard() {
   if (loading || !data) {
     return <div className="animate-pulse text-muted-foreground" data-testid="dashboard-loading">Φόρτωση...</div>;
   }
+
+  if (oneScreen) return <OneScreenDashboard data={data} />;
 
   return (
     <div className="space-y-8" data-testid="dashboard-page">

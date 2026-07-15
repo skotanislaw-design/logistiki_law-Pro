@@ -2,6 +2,7 @@ import "@/App.css";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider } from "@/context/AuthContext";
+import { ViewModeProvider } from "@/context/ViewModeContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { AppLayout } from "@/components/Layout/AppLayout";
 import Login from "@/pages/Login";
@@ -34,6 +35,7 @@ function App() {
   return (
     <div className="App">
       <AuthProvider>
+        <ViewModeProvider>
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
@@ -55,6 +57,7 @@ function App() {
             <Route path="/pinakia" element={<Protected><Pinakia /></Protected>} />
           </Routes>
         </BrowserRouter>
+        </ViewModeProvider>
         <Toaster />
       </AuthProvider>
     </div>

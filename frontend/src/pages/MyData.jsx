@@ -22,11 +22,12 @@ export default function MyData() {
   const syncInvoice = async (id) => {
     setSyncing(id);
     try {
-      await axios.post(`${API}/mydata/sync/${id}`);
-      toast.success("Στάλθηκε (προσομοίωση) στο myDATA");
+      const { data } = await axios.post(`${API}/mydata/sync/${id}`);
+      toast.success(data.message);
       load();
     } catch (e) {
       toast.error(errMsg(e));
+      load();
     } finally {
       setSyncing(null);
     }
@@ -44,9 +45,12 @@ export default function MyData() {
 
       <div className="lux-card p-6 flex items-center justify-between" data-testid="mydata-connection-panel">
         <div className="flex items-center gap-3">
-          {status.connected ? <CloudCheck size={28} className="text-[hsl(var(--success))]" /> : <CloudSlash size={28} className="text-warning" />}
+          {status.mode === "live" ? <CloudCheck size={28} className="text-[hsl(var(--success))]" /> : <CloudSlash size={28} className="text-warning" />}
           <div>
-            <p className="font-medium" data-testid="mydata-connection-status">{status.connected ? "Συνδεδεμένο (Mock)" : "Λειτουργία Προσομοίωσης (Mock)"}</p>
+            <p className="font-medium flex items-center gap-2" data-testid="mydata-connection-status">
+              {status.mode === "live" ? "Ζωντανή σύνδεση ΑΑΔΕ" : "Λειτουργία Προσομοίωσης (Mock)"}
+              {status.mode === "live" && <Badge variant={status.environment === "production" ? "default" : "secondary"} data-testid="mydata-env-badge">{status.environment_label}</Badge>}
+            </p>
             <p className="text-xs text-muted-foreground max-w-lg">{status.note}</p>
           </div>
         </div>
@@ -55,6 +59,12 @@ export default function MyData() {
             <p className="font-mono text-xl" data-testid="mydata-pending-count">{status.pending_count}</p>
             <p className="text-xs text-muted-foreground">Εκκρεμή</p>
           </div>
+          {status.failed_count > 0 && (
+            <div className="text-center">
+              <p className="font-mono text-xl text-destructive" data-testid="mydata-failed-count">{status.failed_count}</p>
+              <p className="text-xs text-muted-foreground">Σφάλματα</p>
+            </div>
+          )}
           <div className="text-center">
             <p className="font-mono text-xl" data-testid="mydata-synced-count">{status.synced_count}</p>
             <p className="text-xs text-muted-foreground">Σταλμένα</p>
@@ -80,9 +90,12 @@ export default function MyData() {
                 <TableCell>{inv.client_name}</TableCell>
                 <TableCell className="font-mono text-xs">{inv.mydata_mark || "-"}</TableCell>
                 <TableCell>
-                  <Badge variant={inv.mydata_status === "synced" ? "default" : "secondary"}>
-                    {inv.mydata_status === "synced" ? "Σταλμένο" : "Εκκρεμεί"}
+                  <Badge variant={inv.mydata_status === "synced" ? "default" : inv.mydata_status === "failed" ? "destructive" : "secondary"}>
+                    {inv.mydata_status === "synced" ? "Σταλμένο" : inv.mydata_status === "failed" ? "Σφάλμα" : "Εκκρεμεί"}
                   </Badge>
+                  {inv.mydata_status === "failed" && inv.mydata_error && (
+                    <span className="block text-[10px] text-destructive/80 max-w-[220px] truncate mt-0.5" title={inv.mydata_error} data-testid={`mydata-error-${inv.id}`}>{inv.mydata_error}</span>
+                  )}
                 </TableCell>
                 <TableCell className="text-right">
                   {inv.mydata_status !== "synced" && (
@@ -104,8 +117,12 @@ export default function MyData() {
       <div className="lux-card p-6 flex items-start gap-3">
         <Scales size={20} className="text-muted-foreground shrink-0" />
         <p className="text-sm text-muted-foreground">
-          Για πραγματική σύνδεση με το myDATA, καταχωρήστε τα διαπιστευτήρια ΑΑΔΕ (User ID & Subscription Key) στις
-          <strong> Ρυθμίσεις</strong>. Έως τότε, όλα τα MARK/UID που εμφανίζονται είναι <strong>MOCK</strong> δεδομένα προσομοίωσης.
+          {status.mode === "live" ? (
+            <>Η διαβίβαση γίνεται <strong>ζωντανά</strong> μέσω του myDATA REST API ({status.environment_label}). Τα MARK/UID είναι πραγματικοί αριθμοί καταχώρησης της ΑΑΔΕ.</>
+          ) : (
+            <>Για πραγματική σύνδεση με το myDATA, καταχωρήστε τα διαπιστευτήρια ΑΑΔΕ (User ID & Subscription Key) στις
+            <strong> Ρυθμίσεις</strong>. Έως τότε, όλα τα MARK/UID που εμφανίζονται είναι <strong>MOCK</strong> δεδομένα προσομοίωσης.</>
+          )}
         </p>
       </div>
 

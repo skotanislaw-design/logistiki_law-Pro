@@ -77,21 +77,33 @@ async def delete_invoice(invoice_id: str, user: dict = Depends(get_current_user)
 @router.post("/{invoice_id}/issue")
 async def issue_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
     from datetime import datetime, timezone
+    from mydata_client import mydata_ready, send_invoice, MyDataError
     doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
-    mark = f"MOCK-{uuid.uuid4().hex[:16].upper()}"
-    uid = f"UID-{uuid.uuid4().hex[:12].upper()}"
-    await db.invoices.update_one(
-        {"_id": ObjectId(invoice_id)},
-        {"$set": {
-            "status": "issued",
-            "issued_at": datetime.now(timezone.utc).isoformat(),
+    settings = await db.settings.find_one({}) or {}
+    update = {"status": "issued", "issued_at": datetime.now(timezone.utc).isoformat()}
+
+    if mydata_ready(settings):
+        client = None
+        if doc.get("client_id"):
+            try:
+                client = await db.clients.find_one({"_id": ObjectId(doc["client_id"])})
+            except Exception:
+                client = None
+        try:
+            result = await send_invoice(settings, doc, client or {})
+            update.update({"mydata_status": "synced", "mydata_mark": result["mark"], "mydata_uid": result["uid"], "mydata_error": None})
+        except MyDataError as e:
+            update.update({"mydata_status": "failed", "mydata_error": str(e)})
+    else:
+        update.update({
             "mydata_status": "synced",
-            "mydata_mark": mark,
-            "mydata_uid": uid,
-        }},
-    )
+            "mydata_mark": f"MOCK-{uuid.uuid4().hex[:16].upper()}",
+            "mydata_uid": f"UID-{uuid.uuid4().hex[:12].upper()}",
+        })
+
+    await db.invoices.update_one({"_id": ObjectId(invoice_id)}, {"$set": update})
     doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
     return Invoice.from_mongo(doc)
 

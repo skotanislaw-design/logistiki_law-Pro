@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { GrammatioFormDialog, GrammatioIssueDialog } from "@/components/GrammatioDialogs";
-import { Plus, FilePdf, Trash, PaperPlaneTilt, FileText } from "@phosphor-icons/react";
+import { Plus, FilePdf, Trash, PaperPlaneTilt, FileText, ArrowSquareOut } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const STATUS = {
@@ -66,7 +66,12 @@ export default function Grammatia() {
           <h1 className="font-brand text-4xl font-bold tracking-wide">Γραμμάτια Προείσπραξης</h1>
           <p className="text-sm text-muted-foreground mt-1">Υπολογισμός, έκδοση (μέσω portal.olomeleia.gr) και ενσωμάτωση σε τιμολόγια</p>
         </div>
-        <Button onClick={() => setShowForm(true)} data-testid="new-grammatio-button"><Plus size={16} className="mr-1.5" /> Νέο Γραμμάτιο</Button>
+        <div className="flex gap-2">
+          <a href="https://portal.olomeleia.gr" target="_blank" rel="noreferrer" data-testid="olomeleia-portal-link">
+            <Button variant="outline"><ArrowSquareOut size={15} className="mr-1.5" /> portal.olomeleia.gr</Button>
+          </a>
+          <Button onClick={() => setShowForm(true)} data-testid="new-grammatio-button"><Plus size={16} className="mr-1.5" /> Νέο Γραμμάτιο</Button>
+        </div>
       </div>
 
       <div className="lux-card overflow-hidden animate-in-up">

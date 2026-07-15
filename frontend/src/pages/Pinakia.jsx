@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { HearingFormDialog } from "@/components/HearingFormDialog";
 import {
-  Plus, Trash, Play, Pause, CheckCircle, ClockCounterClockwise, Gavel, CalendarX,
+  Plus, Trash, Play, Pause, CheckCircle, ClockCounterClockwise, Gavel, CalendarX, ArrowSquareOut,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -70,7 +70,12 @@ export default function Pinakia() {
           <h1 className="font-brand text-4xl font-bold tracking-wide">Ηλεκτρονικά Πινάκια</h1>
           <p className="text-sm text-muted-foreground mt-1">Ζωντανή παρακολούθηση εκδίκασης — ενημέρωση ροής & ειδοποίηση όταν πλησιάζει η σειρά σας</p>
         </div>
-        <Button onClick={() => setShowForm(true)} data-testid="new-hearing-button"><Plus size={16} className="mr-1.5" /> Νέο Πινάκιο</Button>
+        <div className="flex gap-2">
+          <a href="https://extapps.solon.gov.gr/mojwp/faces/TrackLdoPublic" target="_blank" rel="noreferrer" data-testid="solon-portal-link">
+            <Button variant="outline"><ArrowSquareOut size={15} className="mr-1.5" /> ΣΟΛΩΝ — Πορεία Υπόθεσης</Button>
+          </a>
+          <Button onClick={() => setShowForm(true)} data-testid="new-hearing-button"><Plus size={16} className="mr-1.5" /> Νέο Πινάκιο</Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6 items-start">

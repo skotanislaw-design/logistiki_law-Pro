@@ -3,9 +3,10 @@ import { NavLink, useNavigate } from "react-router-dom";
 import {
   SquaresFour, FileText, Receipt, ChartLineUp, Users, Calculator,
   CalendarCheck, GearSix, SignOut, CaretLeft, CaretRight, Scales, Sparkle, Files,
-  Briefcase, Scroll, Ticket, Gavel,
+  Briefcase, Scroll, Ticket, Gavel, Monitor,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
+import { useViewMode } from "@/context/ViewModeContext";
 
 const NAV_GROUPS = [
   {
@@ -56,6 +57,7 @@ const NAV_GROUPS = [
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const { user, logout } = useAuth();
+  const { oneScreen, toggle } = useViewMode();
   const navigate = useNavigate();
 
   const handleLogout = async () => {
@@ -108,6 +110,15 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t border-[hsl(var(--gold))]/15 p-3 space-y-2">
+        <button
+          onClick={toggle}
+          data-testid="view-mode-toggle"
+          title={oneScreen ? "Κλασική προβολή" : "One-Screen προβολή"}
+          className={`w-full flex items-center ${collapsed ? "justify-center" : ""} gap-2 px-3 py-2 rounded-xl border border-[hsl(var(--gold))]/25 text-xs text-[hsl(var(--gold))] hover:bg-[hsl(var(--gold))]/10 transition-colors duration-200`}
+        >
+          {oneScreen ? <SquaresFour size={15} /> : <Monitor size={15} />}
+          {!collapsed && <span>{oneScreen ? "Κλασική προβολή" : "One-Screen προβολή"}</span>}
+        </button>
         {!collapsed && (
           <div className="text-xs text-muted-foreground truncate" data-testid="current-user-label">
             {user?.name} · {user?.role}

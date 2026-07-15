@@ -54,6 +54,45 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
         m_expense = round(sum(e.get("amount", 0) - e.get("vat_amount", 0) for e in expenses if month_str <= e.get("date", "") < next_month_str), 2)
         chart_data.append({"month": f"{pycal.month_abbr[m]} {y}", "income": m_income, "expense": m_expense})
 
+    year_start = f"{today.year}-01-01"
+    year_invoices = [i for i in invoices if i.get("date", "") >= year_start]
+    year_income = round(sum(i.get("subtotal", 0) for i in year_invoices), 2)
+    year_expense = round(sum(e.get("amount", 0) - e.get("vat_amount", 0) for e in expenses if e.get("date", "") >= year_start), 2)
+    unpaid = [i for i in invoices if i.get("status") == "issued"]
+    unpaid_total = round(sum(i.get("total", 0) for i in unpaid), 2)
+
+    vat_deadline = next_vat_deadline(today, vat_period)
+    efka_deadline = next_efka_deadline(today)
+
+    if vat_due > 0:
+        advice = (
+            f"Τρέχων ΦΠΑ περιόδου: {vat_due:.2f} € πληρωτέος. Έχεις εκροές {income_total:.2f} € (ΦΠΑ {output_vat:.2f} €) "
+            f"και εισροές {expense_total:.2f} € (ΦΠΑ {input_vat:.2f} €). Κάθε τιμολόγιο δαπάνης με ΦΠΑ που καταχωρείς μειώνει την οφειλή."
+        )
+    elif vat_due < 0:
+        advice = f"Έχεις πιστωτικό υπόλοιπο ΦΠΑ {abs(vat_due):.2f} € για την τρέχουσα περίοδο — μεταφέρεται στην επόμενη δήλωση."
+    else:
+        advice = "Δεν προκύπτει ΦΠΑ προς πληρωμή για την τρέχουσα περίοδο."
+    if unpaid_total > 0:
+        advice += f" Υπενθύμιση: {len(unpaid)} ανεξόφλητα τιμολόγια συνολικού ποσού {unpaid_total:.2f} €."
+
+    obligations = [
+        {"date": vat_deadline.isoformat(), "label": "Δήλωση & πληρωμή ΦΠΑ", "amount": vat_due if vat_due > 0 else None},
+        {"date": efka_deadline.isoformat(), "label": f"ΕΦΚΑ εισφορές {today.month:02d}/{today.year}", "amount": None},
+    ]
+    if pending_mydata:
+        obligations.append({"date": today.isoformat(), "label": f"{pending_mydata} παραστατικά εκτός myDATA", "amount": None})
+    upcoming_hearings = await db.hearings.find(
+        {"date": {"$gte": today.isoformat()}, "status": {"$in": ["scheduled", "in_progress", "interrupted"]}}
+    ).sort("date", 1).limit(2).to_list(2)
+    for h in upcoming_hearings:
+        obligations.append({
+            "date": h.get("date", ""),
+            "label": f"Δικάσιμος: {h.get('case_title') or h.get('court')} (Πινάκιο Νο {h.get('pinakio_number')})",
+            "amount": None,
+        })
+    obligations.sort(key=lambda o: o["date"])
+
     return {
         "income_total": income_total,
         "expense_total": expense_total,
@@ -67,4 +106,11 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
         "recent_invoices": recent_invoices,
         "recent_expenses": recent_expenses,
         "chart_data": chart_data,
+        "year_income": year_income,
+        "year_expense": year_expense,
+        "year_profit": round(year_income - year_expense, 2),
+        "unpaid_total": unpaid_total,
+        "unpaid_count": len(unpaid),
+        "advice": advice,
+        "obligations": obligations,
     }

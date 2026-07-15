@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import axios, { API, errMsg } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -10,6 +11,19 @@ import { toast } from "sonner";
 export default function Settings() {
   const [form, setForm] = useState(null);
   const [testingEmail, setTestingEmail] = useState(false);
+  const [testingAade, setTestingAade] = useState(false);
+
+  const testAade = async () => {
+    setTestingAade(true);
+    try {
+      const { data } = await axios.post(`${API}/mydata/test-connection`);
+      toast.success(data.message);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setTestingAade(false);
+    }
+  };
 
   const sendTestEmail = async () => {
     setTestingEmail(true);
@@ -126,9 +140,17 @@ export default function Settings() {
       </div>
 
       <div className="lux-card p-6 space-y-4">
-        <h3 className="font-heading text-lg font-medium">Διαπιστευτήρια ΑΑΔΕ / myDATA</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="font-heading text-lg font-medium">Διαπιστευτήρια ΑΑΔΕ / myDATA</h3>
+          <Badge variant={form.mydata_connected ? "default" : "secondary"} data-testid="settings-mydata-badge">
+            {form.mydata_connected ? "Live σύνδεση" : "Προσομοίωση (Mock)"}
+          </Badge>
+        </div>
         <p className="text-sm text-muted-foreground">
-          Καταχωρήστε τα πραγματικά διαπιστευτήρια σας από το <a href="https://www.aade.gr" target="_blank" rel="noreferrer" className="underline">aade.gr</a> για να ενεργοποιήσετε πραγματική σύνδεση. Χωρίς αυτά, το σύστημα λειτουργεί σε προσομοίωση (mock).
+          Καταχωρήστε τα διαπιστευτήριά σας από το{" "}
+          <a href="https://www1.aade.gr/saadeapps2/bookkeeper-web" target="_blank" rel="noreferrer" className="underline">myDATA portal της ΑΑΔΕ</a>{" "}
+          (ή sandbox κλειδιά από το <a href="https://mydata-register.azurewebsites.net" target="_blank" rel="noreferrer" className="underline">mydata-register</a>).
+          Μόλις αποθηκευτούν, ενεργοποιείται αυτόματα η ζωντανή διαβίβαση παραστατικών.
         </p>
         <div>
           <Label>AADE User ID</Label>
@@ -138,6 +160,20 @@ export default function Settings() {
           <Label>AADE Subscription Key</Label>
           <Input type="password" value={form.aade_subscription_key} onChange={(e) => setForm({ ...form, aade_subscription_key: e.target.value })} className="mt-1.5" data-testid="settings-aade-key" placeholder="Δεν έχει καταχωρηθεί" />
         </div>
+        <div>
+          <Label>Περιβάλλον myDATA</Label>
+          <Select value={form.aade_environment || "sandbox"} onValueChange={(v) => setForm({ ...form, aade_environment: v })}>
+            <SelectTrigger className="mt-1.5" data-testid="settings-aade-env"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="sandbox">Sandbox (δοκιμαστικό — mydataapidev.aade.gr)</SelectItem>
+              <SelectItem value="production">Παραγωγή (mydatapi.aade.gr)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <Button variant="outline" size="sm" onClick={testAade} disabled={testingAade} data-testid="settings-test-aade-button">
+          {testingAade ? "Έλεγχος..." : "Δοκιμή σύνδεσης ΑΑΔΕ"}
+        </Button>
+        <p className="text-[11px] text-muted-foreground/70">Αποθηκεύστε πρώτα τις ρυθμίσεις και μετά πατήστε «Δοκιμή σύνδεσης ΑΑΔΕ».</p>
       </div>
 
       <Button onClick={handleSubmit} data-testid="save-settings-button">Αποθήκευση Ρυθμίσεων</Button>

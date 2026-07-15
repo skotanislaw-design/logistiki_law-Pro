@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ParavoloFormDialog, ParavoloIssueDialog } from "@/components/ParavoloDialogs";
-import { Plus, Trash, PaperPlaneTilt, CheckCircle } from "@phosphor-icons/react";
+import { Plus, Trash, PaperPlaneTilt, CheckCircle, ArrowSquareOut } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const STATUS = {
@@ -51,7 +51,12 @@ export default function Paravola() {
           <h1 className="font-brand text-4xl font-bold tracking-wide">Παράβολα</h1>
           <p className="text-sm text-muted-foreground mt-1">Διαχείριση e-Παραβόλων (ΓΓΠΣ) — έκδοση με επιβεβαίωση & παρακολούθηση πληρωμής</p>
         </div>
-        <Button onClick={() => setShowForm(true)} data-testid="new-paravolo-button"><Plus size={16} className="mr-1.5" /> Νέο Παράβολο</Button>
+        <div className="flex gap-2">
+          <a href="https://www1.gsis.gr/sgsisapps/eparavolo/public/welcome.htm" target="_blank" rel="noreferrer" data-testid="eparavolo-portal-link">
+            <Button variant="outline"><ArrowSquareOut size={15} className="mr-1.5" /> e-Παράβολο (ΓΓΠΣ)</Button>
+          </a>
+          <Button onClick={() => setShowForm(true)} data-testid="new-paravolo-button"><Plus size={16} className="mr-1.5" /> Νέο Παράβολο</Button>
+        </div>
       </div>
 
       <div className="lux-card overflow-hidden animate-in-up">

@@ -15,6 +15,7 @@ import { CASE_STATUS } from "./Cases";
 import {
   ArrowLeft, User, Scales, CalendarBlank, PencilSimple, Plus, Archive,
   Lightning, NotePencil, FilePdf, PaperPlaneTilt, ClockCounterClockwise, CheckCircle, Gavel,
+  Hash, ArrowSquareOut,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -31,6 +32,8 @@ export default function CaseDetail() {
   const [issuingP, setIssuingP] = useState(null);
   const [editAction, setEditAction] = useState(false);
   const [actionForm, setActionForm] = useState({ next_action: "", next_action_date: "" });
+  const [editGak, setEditGak] = useState(false);
+  const [gakForm, setGakForm] = useState({ gak: "", eak: "", gak_year: "" });
 
   const load = useCallback(() => {
     axios.get(`${API}/cases/${id}`).then((r) => setData(r.data)).catch((e) => {
@@ -73,6 +76,17 @@ export default function CaseDetail() {
       await axios.post(`${API}/cases/${id}/next-action`, actionForm);
       setEditAction(false);
       toast.success("Η επόμενη ενέργεια ενημερώθηκε");
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  const saveGak = async () => {
+    try {
+      await axios.put(`${API}/cases/${id}`, { ...c, gak: gakForm.gak, eak: gakForm.eak, gak_year: gakForm.gak_year });
+      setEditGak(false);
+      toast.success("Τα στοιχεία ΣΟΛΩΝ ενημερώθηκαν");
       load();
     } catch (e) {
       toast.error(errMsg(e));
@@ -141,6 +155,30 @@ export default function CaseDetail() {
             <div className="flex items-start gap-2.5">
               <CalendarBlank size={16} className="text-[hsl(var(--gold))] mt-0.5" />
               <div><div className="text-[11px] text-muted-foreground">Δημιουργία</div>{dateFmt(c.created_at)}</div>
+            </div>
+            <div className="flex items-start gap-2.5">
+              <Hash size={16} className="text-[hsl(var(--gold))] mt-0.5" />
+              <div className="flex-1">
+                <div className="text-[11px] text-muted-foreground flex items-center justify-between">
+                  ΓΑΚ / ΕΑΚ (ΣΟΛΩΝ)
+                  <button onClick={() => { setGakForm({ gak: c.gak || "", eak: c.eak || "", gak_year: c.gak_year || "" }); setEditGak(true); }} className="text-muted-foreground hover:text-[hsl(var(--gold))]" data-testid="edit-gak-button">
+                    <PencilSimple size={13} />
+                  </button>
+                </div>
+                <span data-testid="case-gak-display">
+                  {c.gak || c.eak
+                    ? [c.gak && `ΓΑΚ ${c.gak}`, c.eak && `ΕΑΚ ${c.eak}`].filter(Boolean).join(" · ") + (c.gak_year ? `/${c.gak_year}` : "")
+                    : "—"}
+                </span>
+                <a
+                  href="https://extapps.solon.gov.gr/mojwp/faces/TrackLdoPublic"
+                  target="_blank" rel="noreferrer"
+                  className="flex items-center gap-1 text-[11px] text-[hsl(var(--gold))] hover:underline mt-1"
+                  data-testid="solon-link"
+                >
+                  Πορεία υπόθεσης στο ΣΟΛΩΝ <ArrowSquareOut size={11} />
+                </a>
+              </div>
             </div>
           </div>
 
@@ -305,6 +343,21 @@ export default function CaseDetail() {
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setEditAction(false)}>Ακύρωση</Button>
               <Button onClick={saveNextAction} data-testid="next-action-save">Αποθήκευση</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={editGak} onOpenChange={setEditGak}>
+        <DialogContent className="max-w-sm" aria-describedby={undefined}>
+          <DialogHeader><DialogTitle>Στοιχεία ΣΟΛΩΝ (ΓΑΚ / ΕΑΚ)</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <Input value={gakForm.gak} onChange={(e) => setGakForm({ ...gakForm, gak: e.target.value })} placeholder="ΓΑΚ — Γενικός Αριθμός Κατάθεσης" data-testid="gak-input" />
+            <Input value={gakForm.eak} onChange={(e) => setGakForm({ ...gakForm, eak: e.target.value })} placeholder="ΕΑΚ — Ειδικός Αριθμός Κατάθεσης" data-testid="eak-input" />
+            <Input value={gakForm.gak_year} onChange={(e) => setGakForm({ ...gakForm, gak_year: e.target.value })} placeholder="Έτος κατάθεσης (π.χ. 2026)" data-testid="gak-year-input" />
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setEditGak(false)}>Ακύρωση</Button>
+              <Button onClick={saveGak} data-testid="gak-save">Αποθήκευση</Button>
             </div>
           </div>
         </DialogContent>

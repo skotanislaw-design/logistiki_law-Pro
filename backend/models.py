@@ -64,6 +64,7 @@ class Invoice(BaseDocument):
     mydata_status: Literal["not_sent", "pending", "synced", "failed"] = "not_sent"
     mydata_mark: Optional[str] = None
     mydata_uid: Optional[str] = None
+    mydata_error: Optional[str] = None
     payment_method: str = "Τραπεζική κατάθεση"
     notes: str = ""
     source: Literal["manual", "voice"] = "manual"
@@ -123,6 +124,9 @@ class Case(BaseDocument):
     client_name: str = ""
     court: str = ""
     opposing_party: str = ""
+    gak: str = ""
+    eak: str = ""
+    gak_year: str = ""
     status: Literal["active", "pending", "completed", "archived"] = "active"
     next_action: str = ""
     next_action_date: str = ""
@@ -201,5 +205,6 @@ class Settings(BaseDocument):
     vat_period: Literal["monthly", "quarterly"] = "monthly"
     aade_user_id: str = ""
     aade_subscription_key: str = ""
+    aade_environment: Literal["sandbox", "production"] = "sandbox"
     mydata_connected: bool = False
     updated_at: str = Field(default_factory=now_iso)
