@@ -4,6 +4,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "@/index.css";
 import App from "@/App";
 
+window.addEventListener("error", (e) => {
+  if (e.message?.includes("ResizeObserver loop")) e.stopImmediatePropagation();
+});
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

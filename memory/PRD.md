@@ -91,3 +91,15 @@ Testing agent run (iteration_1): Backend 17/17 pytest passed (auth, CRUD, VAT/pa
 - lux-card πιο διάφανο (0.62/0.5) + blur 22px ώστε να αχνοφαίνεται το aurora/watermark από πίσω.
 - **Rebrand σε «NOMOS ONE Personal Logistics (PersAcc)»**: sidebar caption PERSONAL LOGISTICS, login «PERSONAL LOGISTICS · PERSACC», footer «Nomos One PersAcc v1.0», browser title, PDF τιμολογίου header + email HTML header «PERSONAL LOGISTICS · PERSACC».
 - Smoke tested με screenshots: login/dashboard/copilot — watermark & aurora ορατά, όλα λειτουργικά.
+
+## Implemented (2026-06 fork — Υποθέσεις + Γραμμάτια + Παράβολα)
+- **Υποθέσεις (Cases)**: πλήρες CRUD, αρίθμηση ΥΠΘ-YYYY-XXXX, τύποι, πελάτης, δικαστήριο, αντίδικος, status (active/pending/completed/archived), σημειώσεις (embedded), αυτόματο ιστορικό events. Detail page με **3-column χωροθέτηση όπως το screenshot του χρήστη**: αριστερά info cards (υπόθεση/πελάτης/δικαστήριο/ΟΙΚΟΝΟΜΙΚΑ με σύνολα γραμματίων-παραβόλων), κέντρο tabs (Γραμμάτια/Παράβολα/Σημειώσεις/Ιστορικό), δεξιά ΕΠΟΜΕΝΗ ΕΝΕΡΓΕΙΑ (κίτρινη κάρτα, επεξεργάσιμη+ημερομηνία) + ΓΡΗΓΟΡΕΣ ΕΝΕΡΓΕΙΕΣ + ΑΛΛΑΓΗ ΚΑΤΑΣΤΑΣΗΣ + Αρχειοθέτηση.
+- **Γραμμάτια Προείσπραξης**: πίνακας αναφοράς 13 δικαστηρίων/διαδικασιών (Ν.4194/2013, επεξεργάσιμα ποσά), auto-υπολογισμός εισφορών 12% + ΦΠΑ 24%, ΓΡΠ-numbering, **ΕΠΙΒΕΒΑΙΩΣΗ ΠΡΙΝ ΤΟ ΤΕΛΙΚΟ ΒΗΜΑ έκδοσης** (dialog με link portal.olomeleia.gr + optional portal_ref), PDF letterhead, **Ενσωμάτωση σε τιμολόγιο** (0% ΦΠΑ γραμμή όπως το ΑΠΥ template του χρήστη). Routes: /api/grammatia (+/issue,/pdf,/to-invoice,/reference/table).
+- **Παράβολα**: 8 κατηγορίες, ΠΡΒ-numbering, **επιβεβαίωση πριν έκδοση** (dialog με link gsis e-Παράβολο + κωδικός), mark-paid. Routes: /api/paravola (+/issue,/mark-paid,/categories/list).
+- Sidebar νέα ομάδα «ΔΙΚΑΣΤΙΚΑ» (Υποθέσεις/Γραμμάτια/Παράβολα). Routes /cases, /cases/:id, /grammatia, /paravola.
+- ΣΗΜΕΙΩΣΗ: olomeleia.gr & e-paravolo ΔΕΝ έχουν δημόσια APIs — η επίσημη έκδοση γίνεται στο portal (deep links), το app προετοιμάζει/υπολογίζει/παρακολουθεί/τιμολογεί.
+- Testing: backend curl E2E πλήρες + testing_agent iteration_4 frontend 100% pass. ResizeObserver dev-overlay filter προστέθηκε στο index.js.
+- Στα uploads του χρήστη: ΑΠΥ template με ανάλυση κρατήσεων (παρακράτηση 20%, χαρτόσημο 3,6%+ΟΓΑ 20%, εισφορά 0,15%) → BACKLOG: αναβάθμιση PDF τιμολογίου σε πλήρες ΑΠΥ με κρατήσεις.
+
+## Pending
+- SendGrid: playbook ελήφθη — ΕΚΚΡΕΜΕΙ SENDGRID_API_KEY + verified sender από τον χρήστη (εναλλακτικά υπάρχει ήδη SMTP).
