@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import {
   SquaresFour, FileText, Receipt, ChartLineUp, Users, Calculator,
   CalendarCheck, GearSix, SignOut, CaretLeft, CaretRight, Scales, Sparkle, Files,
-  Briefcase, Scroll, Ticket, Gavel, Monitor, Vault,
+  Briefcase, Scroll, Ticket, Gavel, Monitor, Vault, ShieldCheck, ChartPieSlice, Wallet, Signature,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
 import { useViewMode } from "@/context/ViewModeContext";
@@ -40,9 +40,18 @@ const NAV_GROUPS = [
     ],
   },
   {
+    label: "ΕΠΙΧΕΙΡΗΜΑΤΙΚΗ ΕΥΦΥΪΑ",
+    items: [
+      { to: "/cashflow", label: "Πρόβλεψη Ταμείου", icon: Wallet, testid: "nav-cashflow" },
+      { to: "/analytics", label: "Κερδοφορία", icon: ChartPieSlice, testid: "nav-analytics" },
+    ],
+  },
+  {
     label: "ΣΥΜΜΟΡΦΩΣΗ",
     items: [
       { to: "/mydata", label: "myDATA", icon: Scales, testid: "nav-mydata" },
+      { to: "/kyc", label: "KYC / AML", icon: ShieldCheck, testid: "nav-kyc" },
+      { to: "/signatures", label: "Ψηφ. Υπογραφές", icon: Signature, testid: "nav-signatures" },
       { to: "/tax-calendar", label: "Φορολ. Ημερολόγιο", icon: CalendarCheck, testid: "nav-tax-calendar" },
     ],
   },

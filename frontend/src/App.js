@@ -24,6 +24,12 @@ import Paravola from "@/pages/Paravola";
 import Pinakia from "@/pages/Pinakia";
 import TrustAccounts from "@/pages/TrustAccounts";
 import Onboarding from "@/pages/Onboarding";
+import Kyc from "@/pages/Kyc";
+import CashFlow from "@/pages/CashFlow";
+import Analytics from "@/pages/Analytics";
+import Signatures from "@/pages/Signatures";
+import ClientPortal from "@/pages/ClientPortal";
+import PaymentResult from "@/pages/PaymentResult";
 
 function Protected({ children }) {
   return (
@@ -59,6 +65,13 @@ function App() {
             <Route path="/pinakia" element={<Protected><Pinakia /></Protected>} />
             <Route path="/trust" element={<Protected><TrustAccounts /></Protected>} />
             <Route path="/onboarding" element={<Protected><Onboarding /></Protected>} />
+            <Route path="/kyc" element={<Protected><Kyc /></Protected>} />
+            <Route path="/cashflow" element={<Protected><CashFlow /></Protected>} />
+            <Route path="/analytics" element={<Protected><Analytics /></Protected>} />
+            <Route path="/signatures" element={<Protected><Signatures /></Protected>} />
+            <Route path="/portal/:token" element={<ClientPortal />} />
+            <Route path="/payment/success" element={<PaymentResult mode="success" />} />
+            <Route path="/payment/cancel" element={<PaymentResult mode="cancel" />} />
           </Routes>
         </BrowserRouter>
         </ViewModeProvider>

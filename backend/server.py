@@ -29,6 +29,11 @@ from routes_hearings import router as hearings_router
 from routes_trust import router as trust_router
 from routes_import import router as import_router
 from routes_backup import router as backup_router
+from routes_kyc import router as kyc_router
+from routes_analytics import router as analytics_router
+from routes_payments import router as payments_router, public_router as payments_public_router
+from routes_signatures import router as signatures_router
+from routes_client_portal import router as client_portal_router, public_router as client_portal_public_router
 
 app = FastAPI(title="Logistiki Pro API")
 api_router = APIRouter(prefix="/api")
@@ -51,6 +56,12 @@ api_router.include_router(hearings_router)
 api_router.include_router(trust_router)
 api_router.include_router(import_router)
 api_router.include_router(backup_router)
+api_router.include_router(kyc_router)
+api_router.include_router(analytics_router)
+api_router.include_router(payments_router)
+api_router.include_router(signatures_router)
+api_router.include_router(client_portal_router)
+api_router.include_router(client_portal_public_router)
 
 
 @api_router.get("/")
@@ -59,6 +70,8 @@ async def root():
 
 
 app.include_router(api_router)
+# Payment webhook & public status live στη ρίζα (χωρίς /api prefix από router — ήδη ενσωματωμένο)
+app.include_router(payments_public_router)
 
 app.add_middleware(
     CORSMiddleware,

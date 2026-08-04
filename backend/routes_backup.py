@@ -21,6 +21,8 @@ COLLECTIONS = [
     "clients", "invoices", "expenses", "payroll_employees", "payroll_runs",
     "cases", "grammatia", "paravola", "hearings", "settings",
     "trust_accounts", "trust_transactions", "documents", "counters",
+    "kyc", "signatures", "payment_transactions", "client_portal_tokens",
+    "audit_log", "copilot_messages",
 ]
 
 

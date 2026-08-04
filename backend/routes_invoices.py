@@ -247,6 +247,50 @@ async def send_invoice_reminder(invoice_id: str, user: dict = Depends(get_curren
         days_overdue = 0
 
     reminder_count = int(doc.get("reminder_count") or 0)
+
+    # Δημιουργία payment link αν είναι διαθέσιμο Stripe
+    payment_link = ""
+    try:
+        import os
+        import stripe as _stripe
+        _stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or "sk_test_emergent"
+        if _stripe.api_key and not _stripe.api_key.endswith("_emergent"):
+            total = float(doc.get("total", 0))
+            if total > 0:
+                origin = settings.get("public_url") or os.environ.get("PREVIEW_ENDPOINT", "")
+                session = _stripe.checkout.Session.create(
+                    mode="payment",
+                    line_items=[{
+                        "price_data": {
+                            "currency": "eur",
+                            "product_data": {
+                                "name": f"Τιμολόγιο {doc.get('number', '')}",
+                                "description": f"Νομικές υπηρεσίες προς {doc.get('client_name', '')}",
+                            },
+                            "unit_amount": int(round(total * 100)),
+                        },
+                        "quantity": 1,
+                    }],
+                    success_url=(origin or "https://example.com") + "/payment/success?session_id={CHECKOUT_SESSION_ID}",
+                    cancel_url=(origin or "https://example.com") + "/payment/cancel",
+                    metadata={"invoice_id": invoice_id, "invoice_number": doc.get("number", "")},
+                    expires_at=int((datetime.now(timezone.utc).timestamp())) + 60 * 60 * 24 * 7,  # 7 ημέρες
+                )
+                payment_link = session.url
+                from models import PaymentTransaction
+                tx = PaymentTransaction(
+                    session_id=session.id,
+                    invoice_id=invoice_id,
+                    invoice_number=doc.get("number", ""),
+                    client_id=doc.get("client_id", ""),
+                    client_name=doc.get("client_name", ""),
+                    amount=total,
+                    currency="eur",
+                )
+                await db.payment_transactions.insert_one(tx.to_mongo())
+    except Exception:
+        payment_link = ""
+
     pdf_bytes = build_invoice_pdf(doc, client, settings)
     company = settings.get("company_name") or "Nomos One"
     subject = f"Υπενθύμιση εξόφλησης — Τιμολόγιο {doc.get('number')} — {company}"
@@ -254,8 +298,8 @@ async def send_invoice_reminder(invoice_id: str, user: dict = Depends(get_curren
     try:
         await send_email_with_pdf(
             settings, client["email"], subject,
-            reminder_email_text(doc, settings, days_overdue, reminder_count),
-            reminder_email_html(doc, settings, days_overdue, reminder_count),
+            reminder_email_text(doc, settings, days_overdue, reminder_count, payment_link),
+            reminder_email_html(doc, settings, days_overdue, reminder_count, payment_link),
             pdf_bytes=pdf_bytes, pdf_filename=f"{safe_name}.pdf",
         )
     except _smtp.errors.SMTPAuthenticationError:

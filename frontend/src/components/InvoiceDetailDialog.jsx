@@ -3,7 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
-import { CloudCheck, CloudSlash, FilePdf, EnvelopeSimple, BellRinging, CheckCircle } from "@phosphor-icons/react";
+import { CloudCheck, CloudSlash, FilePdf, EnvelopeSimple, BellRinging, CheckCircle, CreditCard } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const STATUS_LABEL = { draft: "Πρόχειρο", issued: "Ανεξόφλητο", paid: "Πληρώθηκε", cancelled: "Ακυρώθηκε" };
@@ -12,7 +12,22 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }
   const [sending, setSending] = useState(false);
   const [reminding, setReminding] = useState(false);
   const [marking, setMarking] = useState(false);
+  const [paying, setPaying] = useState(false);
   if (!invoice) return null;
+
+  const openCheckout = async () => {
+    setPaying(true);
+    try {
+      const { data } = await axios.post(`${API}/payments/checkout`, {
+        invoice_id: invoice.id,
+        origin_url: window.location.origin,
+      });
+      window.open(data.checkout_url, "_blank");
+      toast.success("Άνοιξε η σελίδα πληρωμής σε νέα καρτέλα");
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally { setPaying(false); }
+  };
 
   const sendEmail = async () => {
     setSending(true);
@@ -89,6 +104,9 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }
                 <>
                   <Button size="sm" variant="outline" onClick={sendReminder} disabled={reminding} data-testid="invoice-detail-reminder-button">
                     <BellRinging size={16} className="mr-1.5" /> {reminding ? "Αποστολή..." : (invoice.reminder_count ? `Νέα υπενθύμιση (×${invoice.reminder_count})` : "Υπενθύμιση")}
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={openCheckout} disabled={paying} data-testid="invoice-detail-pay-button">
+                    <CreditCard size={16} className="mr-1.5" /> {paying ? "..." : "Πληρωμή με κάρτα"}
                   </Button>
                   <Button size="sm" onClick={markPaid} disabled={marking} data-testid="invoice-detail-mark-paid-button">
                     <CheckCircle size={16} className="mr-1.5" /> {marking ? "..." : "Πληρώθηκε"}

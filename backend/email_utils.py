@@ -84,7 +84,7 @@ def _fmt_money(v) -> str:
     return f"{(v or 0):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def reminder_email_html(invoice: dict, settings: dict, days_overdue: int, reminder_count: int) -> str:
+def reminder_email_html(invoice: dict, settings: dict, days_overdue: int, reminder_count: int, payment_link: str = "") -> str:
     company = settings.get("company_name") or "Nomos One"
     total = _fmt_money(invoice.get("total"))
     iban_row = ""
@@ -98,6 +98,15 @@ def reminder_email_html(invoice: dict, settings: dict, days_overdue: int, remind
             f'<p style="margin:8px 0;color:#7a5a1a;">'
             f'Η ημερομηνία έκδοσης του τιμολογίου ήταν πριν από <strong>{days_overdue}</strong> ημέρες.'
             f'</p>'
+        )
+    pay_button = ""
+    if payment_link:
+        pay_button = (
+            f'<p style="margin:20px 0;text-align:center;">'
+            f'<a href="{payment_link}" style="background:#c9a227;color:#0a0f1e;padding:14px 32px;'
+            f'text-decoration:none;font-weight:600;border-radius:6px;display:inline-block;">'
+            f'💳 Πληρωμή με κάρτα — {total}</a></p>'
+            f'<p style="text-align:center;font-size:11px;color:#8a93a8;">Ασφαλής πληρωμή μέσω Stripe</p>'
         )
     return f"""
     <html><body style="font-family:Arial,sans-serif;color:#1a2035;max-width:560px;">
@@ -115,6 +124,7 @@ def reminder_email_html(invoice: dict, settings: dict, days_overdue: int, remind
           <p style="margin:4px 0;">Τρόπος πληρωμής: {invoice.get('payment_method') or '—'}</p>
           {iban_row}
         </div>
+        {pay_button}
         <p>Παρακαλούμε να διευθετήσετε την εξόφληση σε σύντομο χρονικό διάστημα. Σε περίπτωση που η πληρωμή έχει ήδη
         πραγματοποιηθεί, αγνοήστε το παρόν μήνυμα και δεχθείτε τις ευχαριστίες μας.</p>
         <p>Για οποιαδήποτε διευκρίνιση παραμένουμε στη διάθεσή σας.</p>
@@ -127,7 +137,7 @@ def reminder_email_html(invoice: dict, settings: dict, days_overdue: int, remind
     """
 
 
-def reminder_email_text(invoice: dict, settings: dict, days_overdue: int, reminder_count: int) -> str:
+def reminder_email_text(invoice: dict, settings: dict, days_overdue: int, reminder_count: int, payment_link: str = "") -> str:
     company = settings.get("company_name") or "Nomos One"
     total = _fmt_money(invoice.get("total"))
     tone = "Ευγενική υπενθύμιση" if reminder_count == 0 else ("Δεύτερη υπενθύμιση" if reminder_count == 1 else "Υπενθύμιση")
@@ -144,6 +154,8 @@ def reminder_email_text(invoice: dict, settings: dict, days_overdue: int, remind
     ]
     if settings.get("iban"):
         lines.append(f"IBAN: {settings['iban']}" + (f" ({settings['bank_name']})" if settings.get("bank_name") else ""))
+    if payment_link:
+        lines += ["", f"💳 Πληρωμή με κάρτα (ασφαλής μέσω Stripe): {payment_link}"]
     lines += [
         "",
         "Σε περίπτωση που η πληρωμή έχει ήδη πραγματοποιηθεί, αγνοήστε το παρόν μήνυμα.",

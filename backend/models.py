@@ -242,3 +242,76 @@ class TrustTransaction(BaseDocument):
     case_id: Optional[str] = None
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
+
+
+class KycRecord(BaseDocument):
+    """KYC/AML — Ν.4557/2018. Ταυτοποίηση πελάτη + Risk Assessment."""
+    client_id: str
+    client_name: str = ""
+    id_type: Literal["passport", "id_card", "residence_permit"] = "id_card"
+    id_number: str = ""
+    id_issue_date: str = ""
+    id_issuer: str = ""
+    birth_date: str = ""
+    nationality: str = "Ελληνική"
+    profession: str = ""
+    pep: bool = False  # Politically Exposed Person
+    high_risk_country: bool = False
+    source_of_funds: str = ""
+    purpose_of_business: str = ""
+    risk_score: int = 0  # 0-10
+    risk_level: Literal["low", "medium", "high"] = "low"
+    verified_at: Optional[str] = None
+    verified_by: Optional[str] = None
+    notes: str = ""
+    documents: List[dict] = Field(default_factory=list)  # [{name, uploaded_at}]
+    updated_at: str = Field(default_factory=now_iso)
+    created_at: str = Field(default_factory=now_iso)
+
+
+class ESignature(BaseDocument):
+    """Ψηφιακή υπογραφή (Ν.4727/2020 απλή ηλεκτρονική υπογραφή)."""
+    document_id: str = ""
+    document_title: str = ""
+    signer_name: str
+    signer_email: str = ""
+    signer_role: Literal["client", "lawyer", "witness"] = "client"
+    signature_data: str  # base64 image
+    signature_hash: str  # SHA-256 hash για ακεραιότητα
+    ip_address: str = ""
+    user_agent: str = ""
+    signed_at: str = Field(default_factory=now_iso)
+
+
+class PaymentTransaction(BaseDocument):
+    session_id: str
+    invoice_id: str = ""
+    invoice_number: str = ""
+    client_id: str = ""
+    client_name: str = ""
+    amount: float
+    currency: str = "eur"
+    status: Literal["initiated", "completed", "failed", "expired", "refunded"] = "initiated"
+    payment_status: Literal["pending", "paid", "failed", "expired", "refunded"] = "pending"
+    stripe_payment_intent_id: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+
+class ClientPortalToken(BaseDocument):
+    """Magic-link token για πρόσβαση πελάτη στο portal του."""
+    token: str
+    client_id: str
+    client_name: str = ""
+    expires_at: str
+    created_at: str = Field(default_factory=now_iso)
+    last_used_at: Optional[str] = None
+
+
+class AuditLog(BaseDocument):
+    action: str
+    entity: str = ""  # π.χ. invoice, case, trust_tx
+    entity_id: str = ""
+    user_email: str = ""
+    details: str = ""
+    created_at: str = Field(default_factory=now_iso)

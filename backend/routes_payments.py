@@ -1,0 +1,207 @@
+"""Stripe Payments — Checkout Session για online εξόφληση τιμολογίων."""
+import os
+import stripe
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+from bson import ObjectId
+from db import db
+from models import PaymentTransaction
+from auth import get_current_user
+
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or "sk_test_emergent"
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "")
+
+router = APIRouter(prefix="/payments", tags=["payments"])
+public_router = APIRouter(tags=["payments-public"])  # για webhook & public status
+
+
+class CheckoutRequest(BaseModel):
+    invoice_id: str
+    origin_url: str
+    client_token: str = ""  # για client portal — αν υπάρχει token, δεν χρειάζεται auth
+
+
+def _stripe_ready() -> bool:
+    return bool(stripe.api_key and not stripe.api_key.endswith("_emergent"))
+
+
+@router.get("/config")
+async def payment_config(user: dict = Depends(get_current_user)):
+    return {
+        "enabled": _stripe_ready(),
+        "publishable_key": STRIPE_PUBLISHABLE_KEY if _stripe_ready() else "",
+        "mode": os.environ.get("STRIPE_MODE", "test"),
+    }
+
+
+async def _validate_invoice_and_get_amount(invoice_id: str) -> tuple[dict, float]:
+    try:
+        inv = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Μη έγκυρο id τιμολογίου")
+    if not inv:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    if inv.get("status") == "paid":
+        raise HTTPException(status_code=400, detail="Το τιμολόγιο είναι ήδη εξοφλημένο")
+    total = float(inv.get("total", 0))
+    if total <= 0:
+        raise HTTPException(status_code=400, detail="Μη έγκυρο ποσό τιμολογίου")
+    return inv, total
+
+
+async def _create_session(inv: dict, amount: float, origin_url: str) -> dict:
+    if not _stripe_ready():
+        raise HTTPException(status_code=400, detail="Οι πληρωμές δεν είναι ενεργοποιημένες. Ρυθμίστε τα κλειδιά Stripe στις Ρυθμίσεις ή επικοινωνήστε με τη διαχείριση.")
+    invoice_id = str(inv["_id"])
+    session = stripe.checkout.Session.create(
+        mode="payment",
+        line_items=[{
+            "price_data": {
+                "currency": "eur",
+                "product_data": {
+                    "name": f"Τιμολόγιο {inv.get('number', '')}",
+                    "description": f"Νομικές υπηρεσίες προς {inv.get('client_name', '')}",
+                },
+                "unit_amount": int(round(amount * 100)),
+            },
+            "quantity": 1,
+        }],
+        success_url=f"{origin_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{origin_url}/payment/cancel?invoice={invoice_id}",
+        metadata={
+            "invoice_id": invoice_id,
+            "invoice_number": inv.get("number", ""),
+            "client_id": inv.get("client_id", ""),
+        },
+        payment_intent_data={
+            "metadata": {"invoice_id": invoice_id, "invoice_number": inv.get("number", "")},
+        },
+        billing_address_collection="auto",
+    )
+    tx = PaymentTransaction(
+        session_id=session.id,
+        invoice_id=invoice_id,
+        invoice_number=inv.get("number", ""),
+        client_id=inv.get("client_id", ""),
+        client_name=inv.get("client_name", ""),
+        amount=amount,
+        currency="eur",
+        status="initiated",
+        payment_status="pending",
+    )
+    await db.payment_transactions.insert_one(tx.to_mongo())
+    return {"checkout_url": session.url, "session_id": session.id}
+
+
+@router.post("/checkout")
+async def create_checkout(req: CheckoutRequest, user: dict = Depends(get_current_user)):
+    inv, amount = await _validate_invoice_and_get_amount(req.invoice_id)
+    return await _create_session(inv, amount, req.origin_url)
+
+
+@public_router.post("/api/payments/portal-checkout")
+async def portal_checkout(req: CheckoutRequest, request: Request):
+    """Public endpoint για client portal — απαιτεί έγκυρο portal token."""
+    if not req.client_token:
+        raise HTTPException(status_code=401, detail="Απαιτείται token πελάτη")
+    token = await db.client_portal_tokens.find_one({"token": req.client_token})
+    if not token:
+        raise HTTPException(status_code=401, detail="Μη έγκυρο ή ληγμένο token")
+    if token.get("expires_at", "") < datetime.now(timezone.utc).isoformat():
+        raise HTTPException(status_code=401, detail="Το token έχει λήξει")
+    inv, amount = await _validate_invoice_and_get_amount(req.invoice_id)
+    if inv.get("client_id") != token["client_id"]:
+        raise HTTPException(status_code=403, detail="Δεν επιτρέπεται η πληρωμή τιμολογίου άλλου πελάτη")
+    return await _create_session(inv, amount, req.origin_url)
+
+
+@public_router.get("/api/payments/status/{session_id}")
+async def get_payment_status(session_id: str):
+    """Public endpoint — επιστρέφει μόνο status πληρωμής."""
+    record = await db.payment_transactions.find_one({"session_id": session_id})
+    if not record:
+        raise HTTPException(status_code=404, detail="Δεν βρέθηκε συναλλαγή")
+    # Webhook fallback
+    if record.get("payment_status") != "paid" and _stripe_ready():
+        try:
+            s = stripe.checkout.Session.retrieve(session_id)
+            if s.payment_status == "paid" or s.status == "complete":
+                await _mark_paid(session_id, s.payment_intent if hasattr(s, "payment_intent") else None)
+                record = await db.payment_transactions.find_one({"session_id": session_id})
+        except stripe.error.StripeError:
+            pass
+    return {
+        "session_id": record["session_id"],
+        "status": record["status"],
+        "payment_status": record["payment_status"],
+        "invoice_number": record.get("invoice_number", ""),
+        "amount": record.get("amount", 0),
+    }
+
+
+async def _mark_paid(session_id: str, payment_intent_id: str = None):
+    """Idempotent — καλείται από webhook & polling fallback."""
+    result = await db.payment_transactions.update_one(
+        {"session_id": session_id, "payment_status": {"$ne": "paid"}},
+        {"$set": {
+            "status": "completed",
+            "payment_status": "paid",
+            "stripe_payment_intent_id": payment_intent_id,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    if result.modified_count > 0:
+        tx = await db.payment_transactions.find_one({"session_id": session_id})
+        if tx and tx.get("invoice_id"):
+            try:
+                await db.invoices.update_one(
+                    {"_id": ObjectId(tx["invoice_id"]), "status": {"$ne": "paid"}},
+                    {"$set": {
+                        "status": "paid",
+                        "paid_at": datetime.now(timezone.utc).isoformat(),
+                    }},
+                )
+            except Exception:
+                pass
+
+
+@public_router.post("/api/stripe/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Webhook error: {e}")
+
+    obj = event["data"]["object"]
+    t = event["type"]
+    if t == "checkout.session.completed":
+        await _mark_paid(obj["id"], obj.get("payment_intent"))
+    elif t == "checkout.session.async_payment_succeeded":
+        await db.payment_transactions.update_one(
+            {"session_id": obj["id"]},
+            {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        await _mark_paid(obj["id"], obj.get("payment_intent"))
+    elif t == "checkout.session.async_payment_failed":
+        await db.payment_transactions.update_one(
+            {"session_id": obj["id"]},
+            {"$set": {"status": "failed", "payment_status": "failed", "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    elif t == "checkout.session.expired":
+        await db.payment_transactions.update_one(
+            {"session_id": obj["id"]},
+            {"$set": {"status": "expired", "payment_status": "expired", "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    return {"status": "ok"}
+
+
+@router.get("/transactions")
+async def list_transactions(user: dict = Depends(get_current_user)):
+    docs = await db.payment_transactions.find({}).sort("created_at", -1).limit(200).to_list(200)
+    return [PaymentTransaction.from_mongo(d) for d in docs]

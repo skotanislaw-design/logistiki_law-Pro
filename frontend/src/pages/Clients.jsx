@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Plus, PencilSimple, Trash } from "@phosphor-icons/react";
+import { Plus, PencilSimple, Trash, Link as LinkIcon, DownloadSimple } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 function emptyForm() {
@@ -52,6 +52,29 @@ export default function Clients() {
     }
   };
 
+  const inviteToPortal = async (c) => {
+    try {
+      const { data } = await axios.post(`${API}/client-portal/invite`, {
+        client_id: c.id,
+        origin_url: window.location.origin,
+      });
+      try { await navigator.clipboard.writeText(data.portal_link); } catch {}
+      toast.success((data.message || "Δημιουργήθηκε σύνδεσμος") + " · Ο σύνδεσμος αντιγράφηκε στο clipboard.");
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+
+  const gdprExport = async (c) => {
+    try {
+      const res = await axios.get(`${API}/backup/gdpr/client/${c.id}`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url; a.download = `gdpr-${c.name}.zip`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Το GDPR export ολοκληρώθηκε");
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+
   return (
     <div className="space-y-8" data-testid="clients-page">
       <div className="flex items-center justify-between">
@@ -84,6 +107,8 @@ export default function Clients() {
                 <TableCell>{c.email || "-"}</TableCell>
                 <TableCell>{c.phone || "-"}</TableCell>
                 <TableCell className="text-right">
+                  <Button variant="ghost" size="icon" onClick={() => inviteToPortal(c)} title="Σύνδεσμος πελατολογικού portal" data-testid={`invite-portal-${c.id}`}><LinkIcon size={16} /></Button>
+                  <Button variant="ghost" size="icon" onClick={() => gdprExport(c)} title="GDPR export (ΓΚΠΔ Άρθρο 15)" data-testid={`gdpr-${c.id}`}><DownloadSimple size={16} /></Button>
                   <Button variant="ghost" size="icon" onClick={() => openEdit(c)} data-testid={`edit-client-${c.id}`}><PencilSimple size={16} /></Button>
                   <Button variant="ghost" size="icon" onClick={() => handleDelete(c.id)} data-testid={`delete-client-${c.id}`}><Trash size={16} /></Button>
                 </TableCell>
