@@ -1,111 +1,121 @@
-# Logistiki.gr — Ψηφιακός Λογιστής για Δικηγορική Εταιρεία
+# Nomos One — Product Requirements Document
 
-## Original Problem Statement (verbatim, Greek)
-Ο χρήστης ζήτησε μία πλήρως λειτουργική, αυτόνομη λογιστική πλατφόρμα που να λειτουργεί σαν έμπειρος λογιστής για τη δικηγορική εταιρεία του χρήστη ("εμείς"). Καλύπτει: ρύθμιση χρεών, ρύθμιση ΦΠΑ, υπολογισμό ΦΠΑ προς πληρωμή, έκδοση τιμολογίων, αγορές/έξοδα, σύνδεση myDATA (ΑΑΔΕ), ΕΦΚΑ, μισθοδοσία, κατηγοριοποίηση παραστατικών, real-time υπολογισμό ΦΠΑ/ΕΦΚΑ/φόρου, έκδοση τιμολογίων με φωνή & φωτο αποδείξεων, προσαρμοσμένη στην ελληνική φορολογία. Ανέφερε επίσης integration με Ολομέλεια.gr (γραμμάτια προείσπραξης δικηγόρων) και αναζήτηση/πληρωμή παραβόλων.
+**Τελευταία ενημέρωση**: Φεβρουάριος 2026 · Version 2.0 (post Batch D)
 
-## User Clarifications (gathered via ask_human)
-1. Χρήστης: Δικηγορική εταιρεία (single-org, multi-user: admin/accountant/lawyer roles)
-2. myDATA/AADE: Δεν υπάρχουν ακόμα real credentials → MOCK/simulated sync flow, clearly labeled, με δυνατότητα real connection μέσω Ρυθμίσεων όταν υπάρχουν credentials
-3. Ολομέλεια.gr / παράβολα: **Phase 2 — δεν υλοποιήθηκε** σε αυτή την έκδοση
-4. Μισθοδοσία: Πλήρες βάθος (gross-to-net, ΕΦΚΑ εργαζ./εργοδότη, προοδευτικά κλιμάκια φόρου) — εκτιμήσεις, όχι πραγματική ΑΠΔ e-filing
-5. AI: OpenAI gpt-5.4-mini (OCR αποδείξεων + φωνητική εντολή τιμολογίου), Whisper (whisper-1) για speech-to-text — μέσω Emergent LLM Key
+## 🎯 Vision
+Ολοκληρωμένη ψηφιακή πλατφόρμα λογιστικών, νομικής διαχείρισης και επιχειρηματικής ευφυΐας για ελληνικά δικηγορικά γραφεία. Απαιτεί εγκατάσταση σε 5 λεπτά (Docker), λειτουργεί offline, συμμορφώνεται με ΓΚΠΔ + Ν.4557/2018 + Ν.4194/2013 + Ν.4727/2020.
 
-## Architecture
-- **Backend**: FastAPI + MongoDB (Motor), JWT httpOnly-cookie auth, modular routers (auth/clients/invoices/expenses/payroll/dashboard/settings/mydata/tax-calendar), `db.py` BaseDocument/PyObjectId pattern, `tax_utils.py` (Greek VAT/EFKA/tax logic), `ai_helpers.py` (LLM OCR + Whisper via emergentintegrations + EMERGENT_LLM_KEY)
-- **Frontend**: React + Tailwind + Shadcn UI, Chivo/IBM Plex Sans/JetBrains Mono fonts, Swiss Brutalist high-contrast theme, collapsible sidebar layout, Recharts for income/expense chart, Sonner toasts, Phosphor icons
-- **Auth**: JWT access(30min)/refresh(7d) httpOnly cookies, bcrypt hashing, brute-force lockout (5 attempts/15min), seeded admin
+## 👥 Personas
+- **Δικηγόρος-Ιδιοκτήτης**: Χρειάζεται overview υπόθεσης, ταμείου, ανείσπρακτων. Θέλει AI Copilot που εκτελεί εργασίες με φωνή.
+- **Δικηγόρος-Συνεργάτης**: Χρειάζεται πινάκιο, γραμμάτια, drafting εγγράφων.
+- **Γραμματέας**: Καταχώρηση εξόδων, ραντεβού, εισαγωγή πελατών.
+- **Πελάτης**: Θέλει να βλέπει τιμολόγιά του και να πληρώνει online.
 
-## Core Requirements (static)
-- Greek VAT (24/13/6/0%) invoicing & expense tracking with automatic VAT breakdown
-- myDATA (AADE) e-invoice submission — MOCK simulation with clear labeling until real credentials provided
-- Payroll: gross-to-net with EFKA (13.87% employee / 22.29% employer) + progressive income tax brackets + tax credits
-- Greek Tax Calendar: VAT filing/payment, EFKA contribution, withholding tax deadlines
-- AI: Photo receipt OCR (gpt-5.4-mini vision) + Voice invoice creation (Whisper + gpt-5.4-mini parsing)
-- Responsibility disclaimer shown throughout app (final accuracy/compliance responsibility remains with certified accountant — addresses user's question about liability)
+---
 
-## Implemented (2026-07-14)
-- Full auth system (login/logout/me/refresh/forgot-reset password), admin seeded: admin@logistiki.gr / Admin@2026!
-- Clients CRUD (ΑΦΜ, ΔΟΥ, τύπος)
-- Invoices: create with multi-line items, auto VAT calc, Issue action → mock myDATA MARK/UID generation, voice-command creation (Whisper transcribe → LLM parse → prefill form)
-- Expenses: manual entry + AI photo OCR (upload receipt → gpt-5.4-mini extracts vendor/date/amount/vat/category)
-- VAT page: output vs input VAT, net due, monthly/quarterly period toggle, next deadline
-- myDATA page: mock connection status, per-invoice sync button
-- Payroll: employee management, run payroll per period, payslip list with EFKA/tax/net breakdown
-- Tax Calendar: dynamic VAT/EFKA/income-tax deadlines
-- Settings: company info, VAT period, AADE credentials fields (mock placeholders)
-- Dashboard: KPIs, 6-month income/expense chart, recent activity, disclaimer banner
-- Fixed: MongoDB `_id`→`id` serialization bug (FastAPI jsonable_encoder by_alias default), useEffect async pattern warnings
+## ✅ Ολοκληρωμένα (2026-02-04)
 
-## Testing Status
-Testing agent run (iteration_1): Backend 17/17 pytest passed (auth, CRUD, VAT/payroll calc, mock myDATA, real AI OCR call verified end-to-end with EMERGENT_LLM_KEY). Frontend smoke-tested (all pages/data-testids present, login/logout flow works). Voice-parse endpoint code-reviewed but not tested with real audio (no sample file available in that run).
+### Batch A — Foundations
+- [x] Trust Accounts (Πελατολογικός Λογαριασμός) — Ν.4194/2013
+- [x] Onboarding Wizard 4 βημάτων
+- [x] Import Πελατολογίου από Excel/CSV
+- [x] Backup / Restore ZIP + GDPR export ανά πελάτη
 
-## Prioritized Backlog
-- **P0**: None outstanding — MVP functional end-to-end
-- **P1**: Real AADE myDATA API integration (once user obtains ΑΑΔΕ API credentials); test voice-invoice flow with real Greek audio; friendly error handling for invalid image uploads in OCR
-- **P2**: Ολομέλεια.gr integration — search & issue γραμμάτια προείσπραξης; παράβολα search & payment; real ΕΦΚΑ ΑΠΔ e-filing; multi-firm/multi-tenant support if needed later; invoice PDF export/print
+### Batch B — Compliance & BI
+- [x] KYC / AML — Ν.4557/2018 (risk scoring, PEP, FATF countries)
+- [x] Cash Flow Forecast 3μήνου
+- [x] Profitability Analytics (top clients, per case type, collection rate)
 
-## Next Tasks
-1. User to review MVP and provide feedback
-2. When ready, gather real ΑΑΔΕ myDATA API credentials to replace mock flow
-3. Plan Phase 2: Ολομέλεια.gr γραμμάτια + παράβολα module (needs research into whether Ολομέλεια.gr / e-paravolo.gr expose any usable API or require scraping — should be scoped carefully due to legal/portal access constraints)
+### Batch C — Client-facing
+- [x] Client Portal με magic link (30 days expiry)
+- [x] Stripe Online Πληρωμές (sandbox provisioned) — checkout + webhook
+- [x] Payment link σε reminder emails
+- [x] E-signature με SHA-256 hash + timestamp (Ν.4727/2020)
 
-## Implemented (2026-06 fork — Rebranding & PDF)
-- **Rebranding σε "Nomos One — Legal Operations Platform"**: dark navy + gold θέμα σε όλη την εφαρμογή (index.css tokens), λογότυπο χρήστη (/public/nomos-logo.png + favicon), sidebar με ομάδες πλοήγησης (ΚΥΡΙΑ/ΟΙΚΟΝΟΜΙΚΑ/ΣΥΜΜΟΡΦΩΣΗ/ΓΡΑΦΕΙΟ) & χρυσά active states, νέο Topbar (τίτλος σελίδας, live ρολόι, avatar χρήστη), footer "Nomos One v1.0 — Σκοτάνης & Συνεργάτες", redesigned Login. Font: Cormorant Garamond (brand).
-- **PDF Export Τιμολογίων**: GET /api/invoices/{id}/pdf (reportlab, FreeSans ελληνικά, navy/gold layout: header, στοιχεία πελάτη, γραμμές, ανάλυση ΦΠΑ, ΠΛΗΡΩΤΕΟ, στοιχεία πληρωμής IBAN/τράπεζα, myDATA MARK). Κουμπί PDF σε κάθε γραμμή τιμολογίου + στο detail dialog + ΑΥΤΟΜΑΤΗ λήψη PDF μετά την έκδοση τιμολογίου.
-- **Settings επεκτάθηκαν**: address, phone, email, IBAN, bank_name (εμφανίζονται στο PDF).
-- Tested: curl login→invoices→PDF (200, έγκυρο PDF, σωστά ελληνικά επιβεβαιωμένα με extraction), settings PUT με νέα πεδία OK, UI smoke screenshots (login/dashboard/invoices) OK.
+### Batch D — AI + Mobile + Deployment
+- [x] AI Drafting με 6 built-in πρότυπα + 8 clause library + custom clauses
+- [x] OCR Νομικών Εγγράφων (PDF/image vision LLM)
+- [x] Νομολογιακή Αναζήτηση (Claude Sonnet 5)
+- [x] PWA — manifest + service worker + installable
+- [x] Πινάκιο Τσέπης — mobile-first live tracking
+- [x] Docker + docker-compose + nginx + auto backup
+- [x] README.md + USER_GUIDE.md στα Ελληνικά
 
-## User decisions (2026-06 fork)
-- Άντληση παραστατικών: ΚΑΙ Telegram bot ΚΑΙ Email (IMAP) → OCR → Έξοδα → αντιπαραβολή με myDATA (πάνω στο mock τώρα, έτοιμο για live AADE μετά).
-- Επιβεβαίωση χρήστη ΠΡΙΝ το τελικό βήμα έκδοσης γραμματίου προείσπραξης (olomeleia.gr) και παραβόλου (e-paravolo) — υποχρεωτικό confirm step στο Phase 2.
-- Ο χρήστης έχει ήδη Telegram (χρειάζεται bot token από @BotFather στο επόμενο βήμα).
+### Προηγούμενα (Phase 1 + 2)
+- [x] JWT Auth + admin bootstrap
+- [x] Dashboard με KPIs + AI advice
+- [x] Τιμολόγηση (atomic numbering, PDF, email, myDATA, reminder, mark-paid)
+- [x] Έξοδα με OCR
+- [x] Μισθοδοσία
+- [x] ΦΠΑ Auto-calc
+- [x] Cases με ΓΑΚ/ΕΑΚ + deep links ΣΟΛΩΝ
+- [x] Πινάκια live tracking + alerts
+- [x] Γραμμάτια + Παράβολα + integration links
+- [x] Nomos AI Copilot (φωνή + κείμενο)
+- [x] Έγγραφα με letterhead (DOCX + PDF)
+- [x] Aurora Glass UI theme
+- [x] Test Connection ΑΑΔΕ
 
-## Next Tasks (updated)
-1. **P0**: Άντληση παραστατικών από Telegram bot + Email (IMAP) → OCR → Έξοδα + αντιπαραβολή myDATA (mock). Χρειάζεται: Telegram bot token, email IMAP credentials.
-2. **P0**: Ολομέλεια.gr γραμμάτια + e-paravolo (με υποχρεωτική επιβεβαίωση πριν το τελικό βήμα έκδοσης).
-3. **P2**: Real AADE myDATA σύνδεση όταν δοθούν διαπιστευτήρια.
+---
 
-## Implemented (2026-06 fork — Email αποστολή + Premium UI)
-- **One-click αποστολή τιμολογίου PDF στον πελάτη**: POST /api/invoices/{id}/send-email (aiosmtplib, SMTP με App Password του γραφείου, STARTTLS 587 / SSL 465 auto). Ελληνικό HTML email με navy/gold branding, ποσό, τρόπο πληρωμής, IBAN + συνημμένο PDF. Κουμπί φακέλου σε κάθε γραμμή τιμολογίου (πράσινο όταν έχει σταλεί, tooltip με παραλήπτη) + κουμπί «Αποστολή στον πελάτη» στο detail dialog. Πεδία email_sent_at/email_sent_to στο Invoice.
-- **SMTP Settings**: νέα κάρτα στις Ρυθμίσεις (host/port/user/app password/όνομα αποστολέα) + κουμπί «Αποστολή δοκιμαστικού email» (POST /api/settings/test-email). Φιλικά ελληνικά μηνύματα λάθους (400, όχι 502 — το Cloudflare καταπίνει 502). SMTP egress 587/465 επιβεβαιωμένα ΑΝΟΙΧΤΑ από το cluster. ΕΚΚΡΕΜΕΙ: ο χρήστης να βάλει πραγματικό App Password για live αποστολή.
-- **Premium UI redesign** (design_agent blueprint στο /app/design_guidelines.json): lux-card (gold-tinted borders, hover lift+glow), stagger entrance animations, font-brand (Cormorant Garamond) σε τίτλους σελίδων με gold overlines «NOMOS ONE · ...», gold-rule διακοσμητικά με ◆, χρυσές μπάρες στο chart, glassmorphic topbar με ρολόι + gold ring avatar, gradient active states στο sidebar, uppercase table headers.
-- **Settings προσυμπληρωμένα** από letterhead: Σκοτάνης & Συνεργάτες, Αθήνα Βαλαωρίτου 17 Κολωνάκι, +30 2289 100 111, info@skotanislaw.gr.
-- Νέα assets χρήστη: 2 Word templates (.dotx), Case Intelligence Engine οδηγός (HTML), SKOTANIS_Letterhead_Premium.pdf — URLs στο chat/artifacts.
-- Testing: testing_agent iteration_3 — frontend 100% pass (όλες οι σελίδες, PDF downloads, email error paths, settings persistence). Radix aria warning διορθώθηκε.
+## 🎨 Design System
+- **Colors**: Deep navy (#0a0f1e), Aged gold (#c9a227), Success #4ade80, Destructive #ef4444
+- **Fonts**: Chivo (brand), IBM Plex Sans (body), JetBrains Mono (numbers), Cormorant Garamond (elegant)
+- **Aesthetic**: Aurora Glass + Liquid — Apple-inspired luxury feel
 
-## Implemented (2026-06 fork — Nomos AI Copilot + Έγγραφα Letterhead)
-- **Nomos AI Copilot** (/copilot, sidebar ομάδα «AI ΕΡΓΑΛΕΙΑ»): chat με gpt-5.4-mini (emergentintegrations, EMERGENT_LLM_KEY) που έχει ΖΩΝΤΑΝΟ οικονομικό context (έσοδα/έξοδα/ΦΠΑ μήνα, ανεξόφλητα, πελάτες, προθεσμίες — copilot.py build_context). Ενέργειες μέσω JSON protocol: create_invoice (φυσική γλώσσα → πραγματικό draft τιμολόγιο με σωστά totals + number) και draft_document (σύνταξη επιστολής → preview card με λήψη Word/PDF). Multi-turn με session_id (sessionStorage), ιστορικό σε db.copilot_messages, GET /api/copilot/history/{session}. Endpoints: POST /api/copilot/chat.
-- **Έγγραφα** (/documents): φόρμα (παραλήπτης/θέμα/περιεχόμενο) + «Σύνταξη με AI» (POST /api/documents/ai-draft) + ζωντανή λευκή προεπισκόπηση letterhead + Λήψη Word (python-docx, POST /api/documents/word) και PDF (reportlab, POST /api/documents/pdf) με το ΠΡΑΓΜΑΤΙΚΟ logo SKOTANIS & ASSOCIATES (εξήχθη από το letterhead PDF του χρήστη → /app/backend/assets/letterhead_logo.png + /app/frontend/public/letterhead-logo.png), χρυσές γραμμές, ελληνική ημερομηνία, footer με στοιχεία από Settings.
-- Tested via curl E2E: ΦΠΑ ερώτηση με σωστά live ποσά, «Φτιάξε τιμολόγιο 800€ για τον Παπαδόπουλο» → ΤΠΥ-2026-0005 (992€ με ΦΠΑ), multi-turn follow-up OK, επιστολή όχλησης → Word 372KB + PDF 445KB με άψογα ελληνικά (verified extraction). UI screenshots: copilot chat στέλνει/λαμβάνει live, documents preview OK.
-- Libraries added: python-docx, pymupdf (logo extraction).
+---
 
-## Implemented (2026-06 fork — Liquid Glass UI + Φωνή στο Nomos AI)
-- **Apple Liquid Glass αισθητική**: --radius 0.2rem→1rem (όλα στρογγυλεμένα), lux-card = frosted glass (gradient + backdrop-blur 20px + top white highlight + inset shadow), dialogs γυάλινα rounded-3xl, κουμπιά pill (rounded-full σε button.jsx base+sm+lg), inputs/textarea/select rounded-xl με bg-white/3%, badges pill, sidebar active = rounded-xl gradient pill (χωρίς border-l), sidebar glass (bg/85 + backdrop-blur-xl), topbar clock chip rounded-full, chat bubbles rounded-2xl με asymmetric corners, body ambient radial gradients (gold + blue orbs, fixed) για να «πιάνει» το blur.
-- **Φωνητικές εντολές στο Nomos AI**: POST /api/copilot/voice (Whisper μέσω transcribe_audio) + κουμπί μικροφώνου στο chat (MediaRecorder → webm → transcript → αυτόματη αποστολή). Recording state με κόκκινο pulse + Stop. Tested: voice endpoint επιστρέφει transcript (πραγματική ομιλία OK, pipeline verified).
-- Fix: VAT select στο dialog τιμολογίου («24% ΦΠΑ» κοβόταν → «24%»).
-- Smoke tested: dashboard/copilot/dialog screenshots — glass UI άψογο.
+## 🔧 Tech Stack
+- **Backend**: FastAPI (Python 3.11), Motor (async MongoDB), Pydantic v2, Uvicorn
+- **Database**: MongoDB 7
+- **Frontend**: React 19, Tailwind CSS, Shadcn UI, Framer Motion, Recharts, Axios
+- **AI**: Emergent LLM Key (OpenAI GPT-5.4-mini, Anthropic Claude Sonnet 5)
+- **PDF/DOCX**: ReportLab, python-docx
+- **Email**: aiosmtplib με ελληνικό branding
+- **Payments**: Stripe (test + live)
+- **Auth**: JWT + bcrypt
+- **Deployment**: Docker + docker-compose + nginx
 
-## Implemented (2026-06 fork — Aurora Glass + PersAcc rebrand)
-- Ο χρήστης διάλεξε concept «Aurora Glass» (από 4 AI-generated mockups: Obsidian Minimal, Art Deco, Executive Print light, Aurora Glass).
-- **Aurora background**: νέο component AuroraBackground.jsx (fixed layer z-0) με 3 blurred κινούμενα radial blobs (χρυσό/μπλε/χρυσό, keyframes auroraDrift1-3, 26-38s) + **watermark λογότυπο NOMOS ONE** κεντραρισμένο (opacity 0.05, min(640px,60vw)). Προστέθηκε σε AppLayout + Login. Content σε z-10, sidebar z-20.
-- lux-card πιο διάφανο (0.62/0.5) + blur 22px ώστε να αχνοφαίνεται το aurora/watermark από πίσω.
-- **Rebrand σε «NOMOS ONE Personal Logistics (PersAcc)»**: sidebar caption PERSONAL LOGISTICS, login «PERSONAL LOGISTICS · PERSACC», footer «Nomos One PersAcc v1.0», browser title, PDF τιμολογίου header + email HTML header «PERSONAL LOGISTICS · PERSACC».
-- Smoke tested με screenshots: login/dashboard/copilot — watermark & aurora ορατά, όλα λειτουργικά.
+---
 
-## Implemented (2026-06 fork — Υποθέσεις + Γραμμάτια + Παράβολα)
-- **Υποθέσεις (Cases)**: πλήρες CRUD, αρίθμηση ΥΠΘ-YYYY-XXXX, τύποι, πελάτης, δικαστήριο, αντίδικος, status (active/pending/completed/archived), σημειώσεις (embedded), αυτόματο ιστορικό events. Detail page με **3-column χωροθέτηση όπως το screenshot του χρήστη**: αριστερά info cards (υπόθεση/πελάτης/δικαστήριο/ΟΙΚΟΝΟΜΙΚΑ με σύνολα γραμματίων-παραβόλων), κέντρο tabs (Γραμμάτια/Παράβολα/Σημειώσεις/Ιστορικό), δεξιά ΕΠΟΜΕΝΗ ΕΝΕΡΓΕΙΑ (κίτρινη κάρτα, επεξεργάσιμη+ημερομηνία) + ΓΡΗΓΟΡΕΣ ΕΝΕΡΓΕΙΕΣ + ΑΛΛΑΓΗ ΚΑΤΑΣΤΑΣΗΣ + Αρχειοθέτηση.
-- **Γραμμάτια Προείσπραξης**: πίνακας αναφοράς 13 δικαστηρίων/διαδικασιών (Ν.4194/2013, επεξεργάσιμα ποσά), auto-υπολογισμός εισφορών 12% + ΦΠΑ 24%, ΓΡΠ-numbering, **ΕΠΙΒΕΒΑΙΩΣΗ ΠΡΙΝ ΤΟ ΤΕΛΙΚΟ ΒΗΜΑ έκδοσης** (dialog με link portal.olomeleia.gr + optional portal_ref), PDF letterhead, **Ενσωμάτωση σε τιμολόγιο** (0% ΦΠΑ γραμμή όπως το ΑΠΥ template του χρήστη). Routes: /api/grammatia (+/issue,/pdf,/to-invoice,/reference/table).
-- **Παράβολα**: 8 κατηγορίες, ΠΡΒ-numbering, **επιβεβαίωση πριν έκδοση** (dialog με link gsis e-Παράβολο + κωδικός), mark-paid. Routes: /api/paravola (+/issue,/mark-paid,/categories/list).
-- Sidebar νέα ομάδα «ΔΙΚΑΣΤΙΚΑ» (Υποθέσεις/Γραμμάτια/Παράβολα). Routes /cases, /cases/:id, /grammatia, /paravola.
-- ΣΗΜΕΙΩΣΗ: olomeleia.gr & e-paravolo ΔΕΝ έχουν δημόσια APIs — η επίσημη έκδοση γίνεται στο portal (deep links), το app προετοιμάζει/υπολογίζει/παρακολουθεί/τιμολογεί.
-- Testing: backend curl E2E πλήρες + testing_agent iteration_4 frontend 100% pass. ResizeObserver dev-overlay filter προστέθηκε στο index.js.
-- Στα uploads του χρήστη: ΑΠΥ template με ανάλυση κρατήσεων (παρακράτηση 20%, χαρτόσημο 3,6%+ΟΓΑ 20%, εισφορά 0,15%) → BACKLOG: αναβάθμιση PDF τιμολογίου σε πλήρες ΑΠΥ με κρατήσεις.
+## 📦 Νέες Συλλογές MongoDB (Batch B+C+D)
+- `kyc` — KYC records ανά πελάτη
+- `trust_accounts` + `trust_transactions`
+- `signatures` — Ψηφιακές υπογραφές
+- `payment_transactions` — Stripe payment tracking
+- `client_portal_tokens` — Magic links
+- `drafting_clauses` + `drafting_templates` — Custom clauses/templates
+- `counters` — Atomic invoice numbering
+- `audit_log` — (placeholder — future)
 
-## Pending
-- SendGrid: playbook ελήφθη — ΕΚΚΡΕΜΕΙ SENDGRID_API_KEY + verified sender από τον χρήστη (εναλλακτικά υπάρχει ήδη SMTP).
+---
 
-## Implemented (2026-06 fork — Live myDATA infra + Portal links/ΓΑΚ-ΕΑΚ + One-Screen)
-- **Live myDATA υποδομή (settings-driven)**: νέο /app/backend/mydata_client.py — build InvoicesDoc XML (τύπος 2.1, vatCategory mapping 24/13/6/0, E3_561_001/category1_3, paymentMethods), POST SendInvoices (sandbox: mydataapidev.aade.gr, production: mydatapi.aade.gr/myDATA), headers aade-user-id + ocp-apim-subscription-key, parsing MARK/UID/errors με ελληνικά μηνύματα. Settings: νέο πεδίο aade_environment (sandbox/production). Όταν αποθηκευτούν credentials → mode=live (auto-switch), αλλιώς mock (MOCK- marks). POST /api/mydata/test-connection (validate via RequestTransmittedDocs). Sync & Issue: live αποστολή με graceful failure (mydata_status=failed + mydata_error, ελληνικό 400). Invoice: νέο πεδίο mydata_error. Settings UI: env select + badge Live/Mock + κουμπί «Δοκιμή σύνδεσης ΑΑΔΕ». MyData UI: live/mock status, env badge, failed count + error στον πίνακα. ΕΚΚΡΕΜΕΙ: πραγματικά AADE κλειδιά από τον χρήστη (mydata-register για sandbox / myDATA portal για production).
-- **Κρατικά portals — πόρισμα διερεύνησης**: ΣΟΛΩΝ (extapps.solon.gov.gr JSF χωρίς API, δεν scrape-άρεται αξιόπιστα), e-Παράβολο (TAXISnet/CAPTCHA), olomeleia (unreachable από server). Υλοποιήθηκαν: πεδία ΓΑΚ/ΕΑΚ/έτος στις Υποθέσεις (μοντέλο+φόρμα Νέας Υπόθεσης+inline edit dialog στο CaseDetail) + deep links: «Πορεία στο ΣΟΛΩΝ» (CaseDetail + Πινάκια), e-Παράβολο ΓΓΠΣ (Παράβολα), portal.olomeleia.gr (Γραμμάτια).
-- **One-Screen προβολή**: toggle στο κάτω μέρος του sidebar (ViewModeContext + localStorage 'nomos_view_mode'). One-screen Dashboard: KPI strip 5 καρτών (Έσοδα Έτους/Ανείσπρακτα/ΦΠΑ Πληρωτέος/Κέρδος Έτους/myDATA Εκκρεμή), κέντρο ΦΠΑ+Πρόσφατα+chart, δεξιά ράγα «Ο ΛΟΓΙΣΤΗΣ ΠΡΟΤΕΙΝΕΙ» (advice) + «ΕΠΟΜΕΝΕΣ ΥΠΟΧΡΕΩΣΕΙΣ» (obligations: ΦΠΑ/ΕΦΚΑ/myDATA pending/επόμενες δικάσιμοι, sorted). /api/dashboard/summary επεκτάθηκε: year_income/year_expense/year_profit/unpaid_total/unpaid_count/advice/obligations.
-- Testing: testing_agent iteration_5 — backend 10/10 pytest + frontend 100% pass, 0 bugs. TEST_ δεδομένα καθαρίστηκαν. AADE settings επαναφέρθηκαν σε mock.
+## 🔮 Backlog / Future
+
+### P1 (πιθανή επόμενη φάση)
+- **Telegram Bot** για push notifications πινακίων
+- **Deadline Calculator** (προθεσμίες Ν.4335/2015)
+- **Conflict-of-interest check** στους πελάτες
+- **Multi-user + roles** με granular permissions
+- **Two-factor auth**
+
+### P2 (nice to have)
+- **Real Isokratis API** integration (αν διαθέσιμο)
+- **Voice-to-drafting** — υπαγόρευση δικογράφου
+- **Time-tracking** με billable hours + auto-invoice generation
+- **iOS/Android native apps** (React Native)
+- **Multi-language** (EN έκδοση)
+
+### P3 (long-term)
+- **Multi-tenant SaaS** μοντέλο
+- **Λογιστική ροή Ε3/Ε5** αυτόματης υποβολής
+- **Trust account με MΟΝΤΕΛΟ blockchain** για audit trail
+
+---
+
+## 📝 Κρίσιμες Σημειώσεις
+- **Emergent LLM Key** στο `/app/backend/.env` — απαιτούμενο για όλα τα AI features
+- **Stripe sandbox** ήδη provisioned — αντικαταστήστε με production keys όταν είστε έτοιμοι
+- **Onboarding** εμφανίζεται αυτόματα την πρώτη είσοδο (settings.onboarding_completed=false)
+- **AI Copilot** πάντα ζητά επιβεβαίωση πριν εκτελέσει ενέργειες (create_invoice, draft_document κ.λπ.)
+- Ο Backup ZIP περιλαμβάνει 20 collections — για πλήρη restore

@@ -1,0 +1,78 @@
+version: "3.9"
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: nomos-mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+      - ./backups:/backups
+    environment:
+      MONGO_INITDB_DATABASE: ${DB_NAME:-nomos_one}
+    ports:
+      - "127.0.0.1:27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: nomos-backend
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URL: "mongodb://mongo:27017"
+      DB_NAME: "${DB_NAME:-nomos_one}"
+      JWT_SECRET: "${JWT_SECRET}"
+      EMERGENT_LLM_KEY: "${EMERGENT_LLM_KEY}"
+      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY}"
+      STRIPE_PUBLISHABLE_KEY: "${STRIPE_PUBLISHABLE_KEY}"
+      STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET}"
+      STRIPE_MODE: "${STRIPE_MODE:-test}"
+    volumes:
+      - uploaded_files:/app/uploads
+      - ./backups:/app/backups
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        REACT_APP_BACKEND_URL: "${PUBLIC_URL}"
+    container_name: nomos-frontend
+    restart: unless-stopped
+    ports:
+      - "${PUBLIC_PORT:-8080}:80"
+    depends_on:
+      - backend
+
+  # Optional — nightly Mongo backup to ./backups
+  backup:
+    image: mongo:7
+    container_name: nomos-backup
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    volumes:
+      - ./backups:/backups
+    environment:
+      DB_NAME: "${DB_NAME:-nomos_one}"
+    entrypoint: >
+      sh -c 'while true; do
+        echo "Starting daily backup at $$(date)";
+        mongodump --host mongo --db $$DB_NAME --archive=/backups/nomos-$$(date +%Y%m%d-%H%M%S).archive --gzip;
+        find /backups -name "nomos-*.archive" -mtime +14 -delete;
+        sleep 86400;
+      done'
+
+volumes:
+  mongo_data:
+  uploaded_files:

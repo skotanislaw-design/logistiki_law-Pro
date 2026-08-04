@@ -1,0 +1,47 @@
+{
+  "name": "Nomos One — Ψηφιακός Λογιστής Δικηγόρου",
+  "short_name": "Nomos One",
+  "description": "Ολοκληρωμένη πλατφόρμα λογιστικών & νομικής διαχείρισης για ελληνικά δικηγορικά γραφεία",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0a0f1e",
+  "theme_color": "#c9a227",
+  "lang": "el",
+  "categories": ["business", "productivity", "finance", "legal"],
+  "icons": [
+    {
+      "src": "/nomos-logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/nomos-logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Πινάκιο Τσέπης",
+      "short_name": "Πινάκιο",
+      "description": "Σημερινά δικαστήρια — γρήγορη πρόσβαση",
+      "url": "/pocket",
+      "icons": [{ "src": "/nomos-logo.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Νέο Τιμολόγιο",
+      "short_name": "Τιμολόγιο",
+      "url": "/invoices",
+      "icons": [{ "src": "/nomos-logo.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Copilot",
+      "short_name": "AI Βοηθός",
+      "url": "/copilot",
+      "icons": [{ "src": "/nomos-logo.png", "sizes": "192x192" }]
+    }
+  ]
+}

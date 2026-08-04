@@ -30,6 +30,10 @@ import Analytics from "@/pages/Analytics";
 import Signatures from "@/pages/Signatures";
 import ClientPortal from "@/pages/ClientPortal";
 import PaymentResult from "@/pages/PaymentResult";
+import Drafting from "@/pages/Drafting";
+import Ocr from "@/pages/Ocr";
+import LegalSearch from "@/pages/LegalSearch";
+import PocketPinakia from "@/pages/PocketPinakia";
 
 function Protected({ children }) {
   return (
@@ -69,6 +73,10 @@ function App() {
             <Route path="/cashflow" element={<Protected><CashFlow /></Protected>} />
             <Route path="/analytics" element={<Protected><Analytics /></Protected>} />
             <Route path="/signatures" element={<Protected><Signatures /></Protected>} />
+            <Route path="/drafting" element={<Protected><Drafting /></Protected>} />
+            <Route path="/ocr" element={<Protected><Ocr /></Protected>} />
+            <Route path="/legal-search" element={<Protected><LegalSearch /></Protected>} />
+            <Route path="/pocket" element={<Protected><PocketPinakia /></Protected>} />
             <Route path="/portal/:token" element={<ClientPortal />} />
             <Route path="/payment/success" element={<PaymentResult mode="success" />} />
             <Route path="/payment/cancel" element={<PaymentResult mode="cancel" />} />

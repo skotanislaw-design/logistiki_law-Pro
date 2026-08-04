@@ -34,6 +34,9 @@ from routes_analytics import router as analytics_router
 from routes_payments import router as payments_router, public_router as payments_public_router
 from routes_signatures import router as signatures_router
 from routes_client_portal import router as client_portal_router, public_router as client_portal_public_router
+from routes_drafting import router as drafting_router
+from routes_ocr import router as ocr_router
+from routes_legal_search import router as legal_search_router
 
 app = FastAPI(title="Logistiki Pro API")
 api_router = APIRouter(prefix="/api")
@@ -62,6 +65,9 @@ api_router.include_router(payments_router)
 api_router.include_router(signatures_router)
 api_router.include_router(client_portal_router)
 api_router.include_router(client_portal_public_router)
+api_router.include_router(drafting_router)
+api_router.include_router(ocr_router)
+api_router.include_router(legal_search_router)
 
 
 @api_router.get("/")

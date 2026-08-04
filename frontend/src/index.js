@@ -8,6 +8,13 @@ window.addEventListener("error", (e) => {
   if (e.message?.includes("ResizeObserver loop")) e.stopImmediatePropagation();
 });
 
+// Register PWA service worker
+if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/service-worker.js").catch(() => {});
+  });
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

@@ -4,6 +4,7 @@ import {
   SquaresFour, FileText, Receipt, ChartLineUp, Users, Calculator,
   CalendarCheck, GearSix, SignOut, CaretLeft, CaretRight, Scales, Sparkle, Files,
   Briefcase, Scroll, Ticket, Gavel, Monitor, Vault, ShieldCheck, ChartPieSlice, Wallet, Signature,
+  MagnifyingGlass, ScanSmiley, PencilRuler,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
 import { useViewMode } from "@/context/ViewModeContext";
@@ -17,6 +18,9 @@ const NAV_GROUPS = [
     label: "AI ΕΡΓΑΛΕΙΑ",
     items: [
       { to: "/copilot", label: "Nomos AI", icon: Sparkle, testid: "nav-copilot" },
+      { to: "/drafting", label: "Σύνταξη Εγγράφων", icon: PencilRuler, testid: "nav-drafting" },
+      { to: "/ocr", label: "OCR Εγγράφων", icon: ScanSmiley, testid: "nav-ocr" },
+      { to: "/legal-search", label: "Νομολογία", icon: MagnifyingGlass, testid: "nav-legal-search" },
       { to: "/documents", label: "Έγγραφα", icon: Files, testid: "nav-documents" },
     ],
   },
@@ -25,6 +29,7 @@ const NAV_GROUPS = [
     items: [
       { to: "/cases", label: "Υποθέσεις", icon: Briefcase, testid: "nav-cases" },
       { to: "/pinakia", label: "Πινάκια", icon: Gavel, testid: "nav-pinakia" },
+      { to: "/pocket", label: "Πινάκιο Τσέπης", icon: Monitor, testid: "nav-pocket" },
       { to: "/grammatia", label: "Γραμμάτια", icon: Scroll, testid: "nav-grammatia" },
       { to: "/paravola", label: "Παράβολα", icon: Ticket, testid: "nav-paravola" },
     ],
