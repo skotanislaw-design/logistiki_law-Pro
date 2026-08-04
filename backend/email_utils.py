@@ -20,7 +20,7 @@ async def send_email_with_pdf(settings: dict, to_email: str, subject: str, body_
     msg = EmailMessage()
     msg["From"] = formataddr((str(Header(from_name, "utf-8")), user))
     msg["To"] = to_email
-    msg["Subject"] = Header(subject, "utf-8")
+    msg["Subject"] = subject
     msg.set_content(body_text, subtype="plain", charset="utf-8")
     msg.add_alternative(body_html, subtype="html", charset="utf-8")
 

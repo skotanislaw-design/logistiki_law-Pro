@@ -1,0 +1,52 @@
+{
+  "summary": "Retested the 4 invoice fixes through the public API and browser UI. GET-by-id, issued-only mark-paid behavior, Subject serialization/SMTP-call reachability, sequential atomic numbering, dialog close/state refresh, KPI update, and reminder-error behavior passed. Previous 21-test regression and 10 additional feature tests passed. Two email/message-contract defects remain.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "email_utils.send_email_with_pdf (used by /api/invoices/{id}/send-email and /send-reminder)",
+        "issue": "The Subject TypeError is fixed and the message reaches mocked aiosmtplib.send, but the PDF is attached directly to a multipart/alternative root. Standard EmailMessage.iter_attachments() returns 0, so clients may treat the PDF as an alternative body rather than a downloadable attachment.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/invoices/{id}/mark-paid",
+        "issue": "Draft rejection returns the required sentence plus an extra sentence: '...εξοφλημένα. Εκδώστε πρώτα το τιμολόγιο.' The explicitly requested strict message without the suffix does not match exactly. State and 400 status are correct."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_invoice_iteration7.py",
+    "/app/backend/tests/test_invoice_reminders.py",
+    "/app/test_reports/pytest/invoice_iteration7.xml",
+    "/app/test_reports/pytest/invoice_reminders_retest.xml",
+    "/app/test_reports/pytest/regression_iteration7.xml",
+    "/app/test_reports/pytest/new_features_iteration7.xml"
+  ],
+  "action_items": [
+    "Build the email as multipart/mixed with a multipart/alternative body, preferably using EmailMessage.add_attachment(..., maintype='application', subtype='pdf', filename=...), then assert iter_attachments() exposes the PDF.",
+    "Return exactly 'Μόνο εκδοθέντα τιμολόγια μπορούν να σημανθούν ως εξοφλημένα' for the strict draft mark-paid contract, without the extra suffix.",
+    "Harden first-use counter seeding against concurrency; the current seq==1 scan followed by $set can race with another allocation when the counter document does not yet exist."
+  ],
+  "critical_code_review_comments": [
+    "Calling add_alternative() makes the root multipart/alternative; attaching MIMEApplication afterward places the PDF inside that alternative container. Use add_attachment() so EmailMessage promotes the root to multipart/mixed.",
+    "The normal counter increment is atomic and all required sequential/delete tests passed, but initialization is not a single atomic operation. A concurrent second allocator can receive seq=2 before the first allocator raises the counter above pre-existing invoice numbers; add a unique index on invoice number and initialize/migrate the counter before serving creates."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_invoice_iteration7.py"
+  ],
+  "success_rate": {
+    "backend": "96.5% (55/57 executed assertions passed; 8/9 focused, 16/17 reminder suite, 21/21 prior regression, 10/10 additional regression)",
+    "frontend": "100% (2/2 requested detail-dialog workflows passed after correcting the test wait)"
+  },
+  "seed_data_creation": "Created isolated TEST_ client/invoices for API and UI flows. Removed all TEST_ invoices, clients, expenses, payroll records, grammatia, paravola, and users at the end. Final state: zero TEST_ records in checked resources; seeded unpaid KPI remains 3 invoices / 1364.0 EUR.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "GET valid/malformed/missing behavior passed. issued->paid persisted; draft/cancelled/paid all return 400, with only the strict draft wording mismatch. Delete then create and 4 sequential allocations were gapless and unique. The Subject serializes and mocked SMTP is reached. Browser detail mark-paid closes the dialog, updates row status to Πληρώθηκε and decreases Ανείσπρακτα; SMTP-missing reminder shows the Greek toast and keeps the dialog open. The first UI run read KPI before the async reload completed; rerun with an explicit KPI wait passed.",
+  "rca_of_the_issue": "The remaining attachment defect is caused by mixing EmailMessage.add_alternative() with legacy MIMEApplication.attach(), producing a multipart/alternative root whose PDF is not enumerated as an attachment. The strict message mismatch is a literal extra explanatory sentence. The counter's steady-state increment is atomic, but its first-use migration scans and sets in separate operations."
+}

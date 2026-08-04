@@ -33,6 +33,7 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }
       const { data } = await axios.post(`${API}/invoices/${invoice.id}/send-reminder`);
       toast.success(`Υπενθύμιση στάλθηκε στο ${data.email_sent_to || "πελάτη"}`);
       onEmailSent?.();
+      onOpenChange?.(false);
     } catch (e) {
       toast.error(errMsg(e));
     } finally {
@@ -46,6 +47,7 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }
       await axios.post(`${API}/invoices/${invoice.id}/mark-paid`);
       toast.success("Το τιμολόγιο σημάνθηκε ως εξοφλημένο");
       onEmailSent?.();
+      onOpenChange?.(false);
     } catch (e) {
       toast.error(errMsg(e));
     } finally {

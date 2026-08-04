@@ -14,14 +14,51 @@ router = APIRouter(prefix="/invoices", tags=["invoices"])
 
 
 async def _next_invoice_number() -> str:
-    count = await db.invoices.count_documents({})
-    return f"ΤΠΥ-{2026}-{count + 1:04d}"
+    from datetime import datetime, timezone
+    from pymongo import ReturnDocument
+    year = datetime.now(timezone.utc).year
+    counter = await db.counters.find_one_and_update(
+        {"_id": f"invoice-{year}"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    seq = counter["seq"]
+    # Seed the counter above any pre-existing max if this is the first use for the year
+    if seq == 1:
+        existing_max = 0
+        async for d in db.invoices.find({"number": {"$regex": f"^ΤΠΥ-{year}-"}}, {"number": 1}):
+            try:
+                n = int(d["number"].rsplit("-", 1)[-1])
+                if n > existing_max:
+                    existing_max = n
+            except Exception:
+                pass
+        if existing_max >= seq:
+            counter = await db.counters.find_one_and_update(
+                {"_id": f"invoice-{year}"},
+                {"$set": {"seq": existing_max + 1}},
+                return_document=ReturnDocument.AFTER,
+            )
+            seq = counter["seq"]
+    return f"ΤΠΥ-{year}-{seq:04d}"
 
 
 @router.get("")
 async def list_invoices(user: dict = Depends(get_current_user)):
     docs = await db.invoices.find({}).sort("created_at", -1).to_list(1000)
     return [Invoice.from_mongo(d) for d in docs]
+
+
+@router.get("/{invoice_id}")
+async def get_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
+    try:
+        doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    except Exception:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    if not doc:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    return Invoice.from_mongo(doc)
 
 
 @router.post("")
@@ -243,8 +280,8 @@ async def mark_invoice_paid(invoice_id: str, user: dict = Depends(get_current_us
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     if doc.get("status") == "paid":
         raise HTTPException(status_code=400, detail="Το τιμολόγιο είναι ήδη εξοφλημένο.")
-    if doc.get("status") not in ("issued", "draft"):
-        raise HTTPException(status_code=400, detail="Δεν μπορεί να σημανθεί ως εξοφλημένο τιμολόγιο σε κατάσταση " + str(doc.get("status")))
+    if doc.get("status") != "issued":
+        raise HTTPException(status_code=400, detail="Μόνο εκδοθέντα τιμολόγια μπορούν να σημανθούν ως εξοφλημένα. Εκδώστε πρώτα το τιμολόγιο.")
     await db.invoices.update_one(
         {"_id": ObjectId(invoice_id)},
         {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc).isoformat()}},
