@@ -81,3 +81,77 @@ def invoice_email_text(invoice: dict, settings: dict) -> str:
         lines.append(f"IBAN: {settings['iban']}" + (f" ({settings['bank_name']})" if settings.get("bank_name") else ""))
     lines += ["", "Με εκτίμηση,", company]
     return "\n".join(lines)
+
+
+def _fmt_money(v) -> str:
+    return f"{(v or 0):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def reminder_email_html(invoice: dict, settings: dict, days_overdue: int, reminder_count: int) -> str:
+    company = settings.get("company_name") or "Nomos One"
+    total = _fmt_money(invoice.get("total"))
+    iban_row = ""
+    if settings.get("iban"):
+        bank = f" ({settings['bank_name']})" if settings.get("bank_name") else ""
+        iban_row = f'<p style="margin:4px 0;">IBAN: <strong>{settings["iban"]}</strong>{bank}</p>'
+    tone = "ευγενική υπενθύμιση" if reminder_count == 0 else ("δεύτερη υπενθύμιση" if reminder_count == 1 else "νέα υπενθύμιση")
+    overdue_note = ""
+    if days_overdue > 0:
+        overdue_note = (
+            f'<p style="margin:8px 0;color:#7a5a1a;">'
+            f'Η ημερομηνία έκδοσης του τιμολογίου ήταν πριν από <strong>{days_overdue}</strong> ημέρες.'
+            f'</p>'
+        )
+    return f"""
+    <html><body style="font-family:Arial,sans-serif;color:#1a2035;max-width:560px;">
+      <div style="background:#0a0f1e;padding:20px 24px;border-bottom:3px solid #c9a227;">
+        <span style="color:#c9a227;font-size:20px;font-weight:bold;letter-spacing:2px;">NOMOS ONE</span><br/>
+        <span style="color:#8a93a8;font-size:10px;letter-spacing:3px;">PERSONAL LOGISTICS · PERSACC</span>
+      </div>
+      <div style="padding:24px;">
+        <p>Αγαπητέ/ή <strong>{invoice.get('client_name') or 'πελάτη'}</strong>,</p>
+        <p>Σας αποστέλλουμε μια <strong>{tone}</strong> για το εκκρεμές τιμολόγιο <strong>{invoice.get('number')}</strong>,
+        το οποίο σύμφωνα με τα αρχεία μας δεν έχει ακόμη εξοφληθεί.</p>
+        {overdue_note}
+        <div style="background:#f4f2ec;border-left:3px solid #c9a227;padding:12px 16px;margin:16px 0;">
+          <p style="margin:4px 0;">Οφειλόμενο ποσό: <strong style="color:#0a0f1e;font-size:16px;">{total}</strong></p>
+          <p style="margin:4px 0;">Τρόπος πληρωμής: {invoice.get('payment_method') or '—'}</p>
+          {iban_row}
+        </div>
+        <p>Παρακαλούμε να διευθετήσετε την εξόφληση σε σύντομο χρονικό διάστημα. Σε περίπτωση που η πληρωμή έχει ήδη
+        πραγματοποιηθεί, αγνοήστε το παρόν μήνυμα και δεχθείτε τις ευχαριστίες μας.</p>
+        <p>Για οποιαδήποτε διευκρίνιση παραμένουμε στη διάθεσή σας.</p>
+        <p>Με εκτίμηση,<br/><strong>{company}</strong></p>
+      </div>
+      <div style="padding:12px 24px;border-top:1px solid #e0ddd3;color:#8a93a8;font-size:11px;">
+        Nomos One — Εμπιστευτικό έγγραφο. Εάν δεν είστε ο παραλήπτης, παρακαλούμε διαγράψτε το παρόν μήνυμα.
+      </div>
+    </body></html>
+    """
+
+
+def reminder_email_text(invoice: dict, settings: dict, days_overdue: int, reminder_count: int) -> str:
+    company = settings.get("company_name") or "Nomos One"
+    total = _fmt_money(invoice.get("total"))
+    tone = "Ευγενική υπενθύμιση" if reminder_count == 0 else ("Δεύτερη υπενθύμιση" if reminder_count == 1 else "Υπενθύμιση")
+    lines = [
+        f"Αγαπητέ/ή {invoice.get('client_name') or 'πελάτη'},",
+        "",
+        f"{tone}: το τιμολόγιο {invoice.get('number')} δεν έχει ακόμη εξοφληθεί.",
+    ]
+    if days_overdue > 0:
+        lines.append(f"Η ημερομηνία έκδοσης ήταν πριν από {days_overdue} ημέρες.")
+    lines += [
+        f"Οφειλόμενο ποσό: {total}",
+        f"Τρόπος πληρωμής: {invoice.get('payment_method') or '—'}",
+    ]
+    if settings.get("iban"):
+        lines.append(f"IBAN: {settings['iban']}" + (f" ({settings['bank_name']})" if settings.get("bank_name") else ""))
+    lines += [
+        "",
+        "Σε περίπτωση που η πληρωμή έχει ήδη πραγματοποιηθεί, αγνοήστε το παρόν μήνυμα.",
+        "",
+        "Με εκτίμηση,",
+        company,
+    ]
+    return "\n".join(lines)

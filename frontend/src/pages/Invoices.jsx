@@ -11,12 +11,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { InvoiceDetailDialog } from "@/components/InvoiceDetailDialog";
-import { Plus, Trash, Microphone, PaperPlaneTilt, CloudCheck, Eye, PencilSimple, FilePdf, EnvelopeSimple } from "@phosphor-icons/react";
+import { Plus, Trash, Microphone, PaperPlaneTilt, CloudCheck, Eye, PencilSimple, FilePdf, EnvelopeSimple, BellRinging, CheckCircle, ArrowClockwise, WarningCircle } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const VAT_RATES = [24, 13, 6, 0];
-const STATUS_LABEL = { draft: "Πρόχειρο", issued: "Εκδόθηκε", paid: "Πληρώθηκε", cancelled: "Ακυρώθηκε" };
-const STATUS_VARIANT = { draft: "secondary", issued: "default", paid: "default", cancelled: "destructive" };
+const STATUS_LABEL = { draft: "Πρόχειρο", issued: "Ανεξόφλητο", paid: "Πληρώθηκε", cancelled: "Ακυρώθηκε" };
+const STATUS_VARIANT = { draft: "secondary", issued: "outline", paid: "default", cancelled: "destructive" };
 
 function emptyForm() {
   return {
@@ -36,6 +36,9 @@ export default function Invoices() {
   const [voiceStatus, setVoiceStatus] = useState("");
   const [viewing, setViewing] = useState(null);
   const [sendingId, setSendingId] = useState(null);
+  const [reminderId, setReminderId] = useState(null);
+  const [markingPaidId, setMarkingPaidId] = useState(null);
+  const [filter, setFilter] = useState("all");
   const mediaRef = useState({ recorder: null, chunks: [] })[0];
 
   const load = () => {
@@ -114,6 +117,45 @@ export default function Invoices() {
     }
   };
 
+  const sendReminder = async (inv) => {
+    setReminderId(inv.id);
+    try {
+      const { data } = await axios.post(`${API}/invoices/${inv.id}/send-reminder`);
+      toast.success(`Υπενθύμιση στάλθηκε στο ${data.email_sent_to || "πελάτη"}`);
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setReminderId(null);
+    }
+  };
+
+  const markPaid = async (inv) => {
+    setMarkingPaidId(inv.id);
+    try {
+      await axios.post(`${API}/invoices/${inv.id}/mark-paid`);
+      toast.success(`Το τιμολόγιο ${inv.number} σημάνθηκε ως εξοφλημένο`);
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setMarkingPaidId(null);
+    }
+  };
+
+  const markUnpaid = async (inv) => {
+    setMarkingPaidId(inv.id);
+    try {
+      await axios.post(`${API}/invoices/${inv.id}/mark-unpaid`);
+      toast.success(`Το τιμολόγιο ${inv.number} επαναφέρθηκε σε ανεξόφλητο`);
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setMarkingPaidId(null);
+    }
+  };
+
   const issueInvoice = async (id) => {
     try {
       const { data } = await axios.post(`${API}/invoices/${id}/issue`);
@@ -173,6 +215,20 @@ export default function Invoices() {
     setRecording(false);
   };
 
+  const unpaidList = invoices.filter((i) => i.status === "issued");
+  const unpaidTotal = unpaidList.reduce((s, i) => s + (i.total || 0), 0);
+  const overdue30 = unpaidList.filter((i) => {
+    if (!i.date) return false;
+    const diff = (new Date() - new Date(i.date)) / (1000 * 60 * 60 * 24);
+    return diff >= 30;
+  }).length;
+  const filteredInvoices = filter === "unpaid" ? unpaidList : (filter === "paid" ? invoices.filter((i) => i.status === "paid") : invoices);
+
+  const daysOverdue = (dateStr) => {
+    if (!dateStr) return 0;
+    return Math.max(0, Math.floor((new Date() - new Date(dateStr)) / (1000 * 60 * 60 * 24)));
+  };
+
   return (
     <div className="space-y-8" data-testid="invoices-page">
       <div className="flex items-center justify-between">
@@ -184,7 +240,58 @@ export default function Invoices() {
         <Button onClick={openNew} data-testid="new-invoice-button"><Plus size={16} className="mr-1.5" /> Νέο Τιμολόγιο</Button>
       </div>
 
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <button
+          onClick={() => setFilter("unpaid")}
+          data-testid="kpi-unpaid"
+          className={`lux-card p-5 text-left transition-all ${filter === "unpaid" ? "ring-1 ring-[hsl(var(--gold))]/60" : ""}`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="lux-overline">Ανείσπρακτα</span>
+            <BellRinging size={18} className="text-[hsl(var(--gold))]" />
+          </div>
+          <div className="mt-2 font-mono text-3xl font-semibold" data-testid="kpi-unpaid-total">{money(unpaidTotal)}</div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            <span data-testid="kpi-unpaid-count">{unpaidList.length}</span> ανεξόφλητα τιμολόγια
+            {overdue30 > 0 && <span className="ml-2 text-[hsl(var(--destructive))]">· {overdue30} με καθυστέρηση 30+ ημερών</span>}
+          </div>
+        </button>
+        <button
+          onClick={() => setFilter("paid")}
+          data-testid="kpi-paid"
+          className={`lux-card p-5 text-left transition-all ${filter === "paid" ? "ring-1 ring-[hsl(var(--gold))]/60" : ""}`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="lux-overline">Εξοφλημένα</span>
+            <CheckCircle size={18} className="text-[hsl(var(--success))]" />
+          </div>
+          <div className="mt-2 font-mono text-3xl font-semibold">{money(invoices.filter((i) => i.status === "paid").reduce((s, i) => s + (i.total || 0), 0))}</div>
+          <div className="mt-1 text-xs text-muted-foreground">{invoices.filter((i) => i.status === "paid").length} τιμολόγια</div>
+        </button>
+        <button
+          onClick={() => setFilter("all")}
+          data-testid="kpi-all"
+          className={`lux-card p-5 text-left transition-all ${filter === "all" ? "ring-1 ring-[hsl(var(--gold))]/60" : ""}`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="lux-overline">Σύνολο</span>
+            <ArrowClockwise size={18} className="text-muted-foreground" />
+          </div>
+          <div className="mt-2 font-mono text-3xl font-semibold">{money(invoices.reduce((s, i) => s + (i.total || 0), 0))}</div>
+          <div className="mt-1 text-xs text-muted-foreground">{invoices.length} τιμολόγια συνολικά</div>
+        </button>
+      </div>
+
       <div className="lux-card overflow-hidden animate-in-up">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border/60">
+          <div className="text-sm text-muted-foreground">
+            Προβολή: <span className="font-medium text-foreground" data-testid="invoices-filter-label">{filter === "unpaid" ? "Ανεξόφλητα" : filter === "paid" ? "Εξοφλημένα" : "Όλα"}</span>
+            <span className="ml-2">· {filteredInvoices.length} εγγραφές</span>
+          </div>
+          {filter !== "all" && (
+            <Button variant="ghost" size="sm" onClick={() => setFilter("all")} data-testid="clear-filter-button">Καθαρισμός φίλτρου</Button>
+          )}
+        </div>
         <Table data-testid="invoices-table">
           <TableHeader>
             <TableRow>
@@ -198,11 +305,20 @@ export default function Invoices() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {invoices.map((inv) => (
+            {filteredInvoices.map((inv) => {
+              const overdue = inv.status === "issued" ? daysOverdue(inv.date) : 0;
+              return (
               <TableRow key={inv.id} data-testid={`invoice-row-${inv.id}`}>
                 <TableCell className="font-mono text-xs">{inv.number}</TableCell>
                 <TableCell>{inv.client_name}</TableCell>
-                <TableCell>{dateFmt(inv.date)}</TableCell>
+                <TableCell>
+                  {dateFmt(inv.date)}
+                  {overdue >= 30 && (
+                    <span className="ml-2 inline-flex items-center gap-1 text-[10px] text-[hsl(var(--destructive))]">
+                      <WarningCircle size={12} weight="fill" /> {overdue}η
+                    </span>
+                  )}
+                </TableCell>
                 <TableCell><Badge variant={STATUS_VARIANT[inv.status]}>{STATUS_LABEL[inv.status]}</Badge></TableCell>
                 <TableCell>
                   {inv.mydata_status === "synced" ? (
@@ -215,6 +331,35 @@ export default function Invoices() {
                 <TableCell className="text-right">
                   <Button variant="ghost" size="icon" onClick={() => setViewing(inv)} data-testid={`view-invoice-${inv.id}`}><Eye size={16} /></Button>
                   <Button variant="ghost" size="icon" onClick={() => downloadPdf(inv)} title="Λήψη PDF" data-testid={`pdf-invoice-${inv.id}`}><FilePdf size={16} /></Button>
+                  {inv.status === "issued" && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => sendReminder(inv)}
+                        disabled={reminderId === inv.id}
+                        title={inv.reminder_sent_at ? `Τελευταία υπενθύμιση: ${dateFmt(inv.reminder_sent_at)} (×${inv.reminder_count || 0})` : "Αποστολή υπενθύμισης εξόφλησης"}
+                        className={inv.reminder_sent_at ? "text-[hsl(var(--gold))]" : ""}
+                        data-testid={`reminder-invoice-${inv.id}`}
+                      >
+                        <BellRinging size={16} />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => markPaid(inv)}
+                        disabled={markingPaidId === inv.id}
+                        data-testid={`mark-paid-${inv.id}`}
+                      >
+                        <CheckCircle size={14} className="mr-1" /> Πληρώθηκε
+                      </Button>
+                    </>
+                  )}
+                  {inv.status === "paid" && (
+                    <Button variant="ghost" size="sm" onClick={() => markUnpaid(inv)} disabled={markingPaidId === inv.id} data-testid={`mark-unpaid-${inv.id}`}>
+                      <ArrowClockwise size={14} className="mr-1" /> Επαναφορά
+                    </Button>
+                  )}
                   {inv.status === "draft" && (
                     <>
                       <Button variant="ghost" size="icon" onClick={() => openEdit(inv)} data-testid={`edit-invoice-${inv.id}`}><PencilSimple size={16} /></Button>
@@ -224,9 +369,12 @@ export default function Invoices() {
                   )}
                 </TableCell>
               </TableRow>
-            ))}
-            {invoices.length === 0 && (
-              <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">Δεν υπάρχουν τιμολόγια ακόμα.</TableCell></TableRow>
+              );
+            })}
+            {filteredInvoices.length === 0 && (
+              <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">
+                {filter === "unpaid" ? "Δεν υπάρχουν ανεξόφλητα τιμολόγια." : filter === "paid" ? "Δεν υπάρχουν εξοφλημένα τιμολόγια." : "Δεν υπάρχουν τιμολόγια ακόμα."}
+              </TableCell></TableRow>
             )}
           </TableBody>
         </Table>

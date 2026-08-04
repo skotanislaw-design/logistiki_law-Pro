@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="3" skipped="0" tests="17" time="3.040" timestamp="2026-08-04T02:50:04.338989+00:00" hostname="agent-env-276d4ab9-c821-4159-8bfa-bc63638ea6e4"><testcase classname="tests.test_invoice_reminders.TestInvoicePaymentState" name="test_mark_paid_issued_sets_paid_at_and_get_persists" time="0.870"><failure message="AssertionError: {&quot;detail&quot;:&quot;Method Not Allowed&quot;}&#10;assert 405 == 200&#10; +  where 405 = &lt;Response [405]&gt;.status_code">tests/test_invoice_reminders.py:101: in test_mark_paid_issued_sets_paid_at_and_get_persists
+    assert get_response.status_code == 200, get_response.text
+E   AssertionError: {"detail":"Method Not Allowed"}
+E   assert 405 == 200
+E    +  where 405 = &lt;Response [405]&gt;.status_code</failure></testcase><testcase classname="tests.test_invoice_reminders.TestInvoicePaymentState" name="test_mark_paid_already_paid_is_greek_400" time="0.052" /><testcase classname="tests.test_invoice_reminders.TestInvoicePaymentState" name="test_mark_unpaid_restores_issued_and_clears_paid_at" time="0.091" /><testcase classname="tests.test_invoice_reminders.TestInvoicePaymentState" name="test_mark_unpaid_non_paid_is_greek_400" time="0.049" /><testcase classname="tests.test_invoice_reminders.TestInvoicePaymentState" name="test_mark_paid_rejects_draft_because_unpaid_means_issued" time="0.051"><failure message="AssertionError: {&quot;id&quot;:&quot;6a71535d800dc10765a7b74d&quot;,&quot;number&quot;:&quot;ΤΠΥ-2026-0009&quot;,&quot;client_id&quot;:&quot;6a71535c800dc10765a7b749&quot;,&quot;client_name&quot;:&quot;TEST_Reminder_WithEmail&quot;,&quot;date&quot;:&quot;2026-01-15&quot;,&quot;line_items&quot;:[{&quot;description&quot;:&quot;TEST_DRAFT_PAYMENT&quot;,&quot;quantity&quot;:1.0,&quot;unit_price&quot;:100.0,&quot;vat_rate&quot;:24}],&quot;subtotal&quot;:100.0,&quot;vat_amount&quot;:24.0,&quot;total&quot;:124.0,&quot;vat_breakdown&quot;:{&quot;24&quot;:24.0},&quot;status&quot;:&quot;paid&quot;,&quot;mydata_status&quot;:&quot;not_sent&quot;,&quot;mydata_mark&quot;:null,&quot;mydata_uid&quot;:null,&quot;mydata_error&quot;:null,&quot;payment_method&quot;:&quot;Τραπεζική κατάθεση&quot;,&quot;notes&quot;:&quot;&quot;,&quot;source&quot;:&quot;manual&quot;,&quot;created_by&quot;:&quot;admin@logistiki.gr&quot;,&quot;created_at&quot;:&quot;2026-08-04T02:50:05.076442+00:00&quot;,&quot;issued_at&quot;:null,&quot;paid_at&quot;:&quot;2026-08-04T02:50:05.543738+00:00&quot;,&quot;email_sent_at&quot;:null,&quot;email_sent_to&quot;:null,&quot;reminder_sent_at&quot;:null,&quot;reminder_count&quot;:0}&#10;assert 200 == 400&#10; +  where 200 = &lt;Response [200]&gt;.status_code">tests/test_invoice_reminders.py:132: in test_mark_paid_rejects_draft_because_unpaid_means_issued
+    assert response.status_code == 400, response.text
+E   AssertionError: {"id":"6a71535d800dc10765a7b74d","number":"ΤΠΥ-2026-0009","client_id":"6a71535c800dc10765a7b749","client_name":"TEST_Reminder_WithEmail","date":"2026-01-15","line_items":[{"description":"TEST_DRAFT_PAYMENT","quantity":1.0,"unit_price":100.0,"vat_rate":24}],"subtotal":100.0,"vat_amount":24.0,"total":124.0,"vat_breakdown":{"24":24.0},"status":"paid","mydata_status":"not_sent","mydata_mark":null,"mydata_uid":null,"mydata_error":null,"payment_method":"Τραπεζική κατάθεση","notes":"","source":"manual","created_by":"admin@logistiki.gr","created_at":"2026-08-04T02:50:05.076442+00:00","issued_at":null,"paid_at":"2026-08-04T02:50:05.543738+00:00","email_sent_at":null,"email_sent_to":null,"reminder_sent_at":null,"reminder_count":0}
+E   assert 200 == 400
+E    +  where 200 = &lt;Response [200]&gt;.status_code</failure></testcase><testcase classname="tests.test_invoice_reminders.TestInvoiceReminderValidation" name="test_reminder_rejects_ineligible_statuses[draft-\u039c\u03cc\u03bd\u03bf \u03b5\u03ba\u03b4\u03bf\u03b8\u03ad\u03bd\u03c4\u03b1 \u03c4\u03b9\u03bc\u03bf\u03bb\u03cc\u03b3\u03b9\u03b1]" time="0.174" /><testcase classname="tests.test_invoice_reminders.TestInvoiceReminderValidation" name="test_reminder_rejects_ineligible_statuses[cancelled-\u039c\u03cc\u03bd\u03bf \u03b5\u03ba\u03b4\u03bf\u03b8\u03ad\u03bd\u03c4\u03b1 \u03c4\u03b9\u03bc\u03bf\u03bb\u03cc\u03b3\u03b9\u03b1]" time="0.054" /><testcase classname="tests.test_invoice_reminders.TestInvoiceReminderValidation" name="test_reminder_rejects_ineligible_statuses[paid-\u03ae\u03b4\u03b7 \u03b5\u03be\u03bf\u03c6\u03bb\u03b7\u03bc\u03ad\u03bd\u03bf]" time="0.045" /><testcase classname="tests.test_invoice_reminders.TestInvoiceReminderValidation" name="test_issued_without_client_email_returns_greek_400" time="0.053" /><testcase classname="tests.test_invoice_reminders.TestInvoiceReminderValidation" name="test_issued_with_email_without_smtp_returns_greek_400" time="0.101" /><testcase classname="tests.test_invoice_reminders" name="test_dashboard_unpaid_summary_matches_invoice_list" time="0.099" /><testcase classname="tests.test_invoice_reminders.TestInvoiceRegression" name="test_pdf_export_returns_valid_pdf" time="0.064" /><testcase classname="tests.test_invoice_reminders.TestInvoiceRegression" name="test_send_email_validation_still_works" time="0.045" /><testcase classname="tests.test_invoice_reminders.TestInvoiceRegression" name="test_mydata_mock_sync_still_works" time="0.051" /><testcase classname="tests.test_invoice_reminders.TestInvoiceRegression" name="test_aade_test_connection_button_endpoint_still_validates" time="0.047" /><testcase classname="tests.test_invoice_reminders.TestInvoiceRegression" name="test_voice_parse_route_is_reachable_and_returns_greek_failure_if_audio_invalid" time="0.602" /><testcase classname="tests.test_invoice_reminders" name="test_email_helper_attaches_pdf" time="0.400"><failure message="TypeError: 'Header' object is not subscriptable">tests/test_invoice_reminders.py:222: in test_email_helper_attaches_pdf
+    asyncio.run(email_utils.send_email_with_pdf(
+/usr/local/lib/python3.11/asyncio/runners.py:190: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/base_events.py:654: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+email_utils.py:23: in send_email_with_pdf
+    msg["Subject"] = Header(subject, "utf-8")
+    ^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/email/message.py:443: in __setitem__
+    self._headers.append(self.policy.header_store_parse(name, val))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/email/policy.py:148: in header_store_parse
+    return (name, self.header_factory(name, value))
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/email/headerregistry.py:604: in __call__
+    return self[name](name, value)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/email/headerregistry.py:192: in __new__
+    cls.parse(value, kwds)
+/usr/local/lib/python3.11/email/headerregistry.py:267: in parse
+    kwds['parse_tree'] = cls.value_parser(value)
+                         ^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/email/_header_value_parser.py:1130: in get_unstructured
+    if value[0] in WSP:
+       ^^^^^^^^
+E   TypeError: 'Header' object is not subscriptable</failure></testcase></testsuite></testsuites>

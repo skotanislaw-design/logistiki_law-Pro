@@ -1,0 +1,75 @@
+{
+  "summary": "Tested unpaid-invoice reminders and payment-state feature across public backend and UI. New backend suite: 14/17 passed; full existing regression: 21/21 passed. Status-specific reminder validation, missing-email/SMTP Greek 400s, dashboard unpaid totals, PDF export, myDATA mock sync, AADE validation, voice route, KPI filters, row actions, row mark-paid/mark-unpaid and Greek labels passed. Found 3 backend defects, 1 frontend stale-state defect, and a CORS configuration issue.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/invoices/{id}",
+        "issue": "Required read-after-update endpoint is missing and returns 405 Method Not Allowed, so mark-paid persistence cannot be verified through the specified resource GET API.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/invoices/{id}/mark-paid",
+        "issue": "Draft invoices are accepted and changed directly to paid (200). The confirmed definition of unpaid is status='issued'; drafts should not be payable and the UI does not expose this transition.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/invoices/{id}/send-reminder and /send-email",
+        "issue": "Configured-SMTP send path fails before SMTP: email_utils assigns email.header.Header to EmailMessage['Subject'], raising TypeError: 'Header' object is not subscriptable. Therefore reminder emails and their PDF attachment cannot actually be sent even with valid SMTP settings.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "CORS middleware",
+        "issue": "Public login response advertises Access-Control-Allow-Origin: * while credential cookies are enabled. The auth playbook requires an explicit origin allowlist; server.py also defaults CORS_ORIGINS to '*'."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "InvoiceDetailDialog → Πληρώθηκε",
+        "issue": "After a successful detail-dialog mark-paid request and success toast, the still-open dialog remains stale: status stays 'Ανεξόφλητο' and invoice-detail-mark-paid-button remains active. Parent reload refreshes the list but not the viewing invoice object, allowing an immediate duplicate action that then returns 400.",
+        "affected_selectors": [
+          "invoice-detail-dialog",
+          "invoice-detail-mark-paid-button"
+        ]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_invoice_reminders.py",
+    "/app/test_reports/pytest/invoice_reminders.xml",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/regression_before_invoice_feature.xml"
+  ],
+  "action_items": [
+    "Add authenticated GET /api/invoices/{invoice_id} returning the invoice or Greek 404.",
+    "Restrict mark-paid to status='issued' only.",
+    "In email_utils, assign Subject as a string (or str(Header(...))) and rerun the attachment test with mocked aiosmtplib.send.",
+    "After detail mark-paid, update/close the dialog or replace its invoice state with the returned paid invoice.",
+    "Configure CORS_ORIGINS as explicit frontend origins when allow_credentials=True.",
+    "Replace count_documents()+1 invoice numbering with an atomic monotonic sequence; duplicate ΤΠΥ-2026-0005 values were observed after deletes."
+  ],
+  "critical_code_review_comments": [
+    "routes_invoices.py has PUT/DELETE and action routes but no GET /{invoice_id}, despite the requested persistence contract.",
+    "mark_invoice_paid explicitly permits ('issued', 'draft'), conflicting with the confirmed domain rule that only issued invoices are unpaid.",
+    "EmailMessage with the default modern policy expects a string Subject; passing Header triggers the reproduced TypeError before the mocked SMTP function is reached.",
+    "InvoiceDetailDialog calls onEmailSent/load after mark-paid but continues rendering its immutable invoice prop from the parent's stale viewing object.",
+    "_next_invoice_number uses total document count + 1. Deleting invoices permits duplicate legal invoice numbers; use an atomic counter and never reuse issued numbers."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_invoice_reminders.py"
+  ],
+  "success_rate": {
+    "backend": "92% overall (35/38: 14/17 feature tests plus 21/21 regression)",
+    "frontend": "90% (all requested list/KPI/row/toast flows passed; detail mark-paid refresh failed)"
+  },
+  "seed_data_creation": "Created temporary TEST_ reminder clients/invoices and one lockout user. All temporary TEST_ invoices, clients, expenses, payroll records, user and login-attempt records were removed. Final verification: 0 TEST_ invoices; seeded ΤΠΥ-2026-0006, 0003 and 0001 are issued; dashboard unpaid_count=3 and unpaid_total=1364.0 exactly match the issued list.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run `cd /app/backend && python -m pytest tests/test_invoice_reminders.py -v --tb=short --junitxml=/app/test_reports/pytest/invoice_reminders.xml -o addopts=''`. Current expected failures are missing GET by id, draft mark-paid acceptance, and email Header TypeError. UI baseline is restored: no paid test invoice remains. Auth checks completed: bcrypt $2b$, HttpOnly cookies, 5-failure lockout and seed_admin password-update logic pass; explicit-origin CORS does not.",
+  "rca_of_the_issue": "GET-by-id was never implemented; mark-paid's allowed-state tuple includes draft; EmailMessage Subject receives an incompatible Header object; detail state reload updates invoices but not viewing; CORS defaults to wildcard; count-based invoice numbering reuses numbers after deletion. Reproduction details and assertions are captured in invoice_reminders.xml and the UI automation runs."
+}

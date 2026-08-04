@@ -71,8 +71,11 @@ class Invoice(BaseDocument):
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
     issued_at: Optional[str] = None
+    paid_at: Optional[str] = None
     email_sent_at: Optional[str] = None
     email_sent_to: Optional[str] = None
+    reminder_sent_at: Optional[str] = None
+    reminder_count: int = 0
 
 
 class Expense(BaseDocument):

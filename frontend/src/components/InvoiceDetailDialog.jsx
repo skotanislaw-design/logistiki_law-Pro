@@ -3,13 +3,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
-import { CloudCheck, CloudSlash, FilePdf, EnvelopeSimple } from "@phosphor-icons/react";
+import { CloudCheck, CloudSlash, FilePdf, EnvelopeSimple, BellRinging, CheckCircle } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
-const STATUS_LABEL = { draft: "Πρόχειρο", issued: "Εκδόθηκε", paid: "Πληρώθηκε", cancelled: "Ακυρώθηκε" };
+const STATUS_LABEL = { draft: "Πρόχειρο", issued: "Ανεξόφλητο", paid: "Πληρώθηκε", cancelled: "Ακυρώθηκε" };
 
 export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }) {
   const [sending, setSending] = useState(false);
+  const [reminding, setReminding] = useState(false);
+  const [marking, setMarking] = useState(false);
   if (!invoice) return null;
 
   const sendEmail = async () => {
@@ -22,6 +24,32 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }
       toast.error(errMsg(e));
     } finally {
       setSending(false);
+    }
+  };
+
+  const sendReminder = async () => {
+    setReminding(true);
+    try {
+      const { data } = await axios.post(`${API}/invoices/${invoice.id}/send-reminder`);
+      toast.success(`Υπενθύμιση στάλθηκε στο ${data.email_sent_to || "πελάτη"}`);
+      onEmailSent?.();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setReminding(false);
+    }
+  };
+
+  const markPaid = async () => {
+    setMarking(true);
+    try {
+      await axios.post(`${API}/invoices/${invoice.id}/mark-paid`);
+      toast.success("Το τιμολόγιο σημάνθηκε ως εξοφλημένο");
+      onEmailSent?.();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setMarking(false);
     }
   };
 
@@ -48,13 +76,23 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }
         <DialogHeader>
           <div className="flex items-center justify-between pr-6">
             <DialogTitle>Τιμολόγιο {invoice.number}</DialogTitle>
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
               <Button size="sm" variant="outline" onClick={downloadPdf} data-testid="invoice-detail-pdf-button">
                 <FilePdf size={16} className="mr-1.5" /> PDF
               </Button>
               <Button size="sm" onClick={sendEmail} disabled={sending} data-testid="invoice-detail-email-button">
                 <EnvelopeSimple size={16} className="mr-1.5" /> {sending ? "Αποστολή..." : "Αποστολή στον πελάτη"}
               </Button>
+              {invoice.status === "issued" && (
+                <>
+                  <Button size="sm" variant="outline" onClick={sendReminder} disabled={reminding} data-testid="invoice-detail-reminder-button">
+                    <BellRinging size={16} className="mr-1.5" /> {reminding ? "Αποστολή..." : (invoice.reminder_count ? `Νέα υπενθύμιση (×${invoice.reminder_count})` : "Υπενθύμιση")}
+                  </Button>
+                  <Button size="sm" onClick={markPaid} disabled={marking} data-testid="invoice-detail-mark-paid-button">
+                    <CheckCircle size={16} className="mr-1.5" /> {marking ? "..." : "Πληρώθηκε"}
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         </DialogHeader>
@@ -111,6 +149,18 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }
         {invoice.email_sent_at && (
           <div className="text-xs text-[hsl(var(--success))] flex items-center gap-1.5" data-testid="invoice-detail-email-status">
             <EnvelopeSimple size={14} /> Εστάλη στο {invoice.email_sent_to} · {dateFmt(invoice.email_sent_at)}
+          </div>
+        )}
+
+        {invoice.reminder_sent_at && (
+          <div className="text-xs text-[hsl(var(--gold))] flex items-center gap-1.5" data-testid="invoice-detail-reminder-status">
+            <BellRinging size={14} /> Τελευταία υπενθύμιση: {dateFmt(invoice.reminder_sent_at)} · Σύνολο: {invoice.reminder_count || 0}
+          </div>
+        )}
+
+        {invoice.paid_at && (
+          <div className="text-xs text-[hsl(var(--success))] flex items-center gap-1.5" data-testid="invoice-detail-paid-status">
+            <CheckCircle size={14} weight="fill" /> Εξοφλήθηκε στις {dateFmt(invoice.paid_at)}
           </div>
         )}
 
