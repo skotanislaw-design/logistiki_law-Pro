@@ -281,7 +281,7 @@ async def mark_invoice_paid(invoice_id: str, user: dict = Depends(get_current_us
     if doc.get("status") == "paid":
         raise HTTPException(status_code=400, detail="Το τιμολόγιο είναι ήδη εξοφλημένο.")
     if doc.get("status") != "issued":
-        raise HTTPException(status_code=400, detail="Μόνο εκδοθέντα τιμολόγια μπορούν να σημανθούν ως εξοφλημένα. Εκδώστε πρώτα το τιμολόγιο.")
+        raise HTTPException(status_code=400, detail="Μόνο εκδοθέντα τιμολόγια μπορούν να σημανθούν ως εξοφλημένα")
     await db.invoices.update_one(
         {"_id": ObjectId(invoice_id)},
         {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc).isoformat()}},

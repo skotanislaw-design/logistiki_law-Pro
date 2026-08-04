@@ -2,7 +2,6 @@ import aiosmtplib
 from email.message import EmailMessage
 from email.header import Header
 from email.utils import formataddr
-from email.mime.application import MIMEApplication
 
 
 def smtp_ready(settings: dict) -> bool:
@@ -25,9 +24,7 @@ async def send_email_with_pdf(settings: dict, to_email: str, subject: str, body_
     msg.add_alternative(body_html, subtype="html", charset="utf-8")
 
     if pdf_bytes:
-        pdf_part = MIMEApplication(pdf_bytes, _subtype="pdf")
-        pdf_part.add_header("Content-Disposition", "attachment", filename=pdf_filename)
-        msg.attach(pdf_part)
+        msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=pdf_filename)
 
     use_tls = port == 465
     await aiosmtplib.send(
