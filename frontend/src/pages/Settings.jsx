@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import axios, { API, errMsg } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -6,12 +6,71 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DisclaimerBanner } from "@/components/DisclaimerBanner";
+import { DownloadSimple, UploadSimple, Database, ShieldCheck } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 export default function Settings() {
   const [form, setForm] = useState(null);
   const [testingEmail, setTestingEmail] = useState(false);
   const [testingAade, setTestingAade] = useState(false);
+  const [exportingBackup, setExportingBackup] = useState(false);
+  const [importingBackup, setImportingBackup] = useState(false);
+  const [importingClients, setImportingClients] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const backupFileRef = useRef();
+  const clientsFileRef = useRef();
+
+  const exportBackup = async () => {
+    setExportingBackup(true);
+    try {
+      const res = await axios.get(`${API}/backup/export`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `nomos-one-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Το backup κατέβηκε επιτυχώς");
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally { setExportingBackup(false); }
+  };
+
+  const importBackup = async (file) => {
+    if (!file) return;
+    if (!window.confirm("Η επαναφορά θα αντικαταστήσει τα δεδομένα με ίδιο id. Συνέχεια;")) return;
+    setImportingBackup(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const { data } = await axios.post(`${API}/backup/import`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+      toast.success(data.message);
+    } catch (e) { toast.error(errMsg(e)); }
+    finally { setImportingBackup(false); }
+  };
+
+  const importClients = async (file) => {
+    if (!file) return;
+    setImportingClients(true); setImportResult(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const { data } = await axios.post(`${API}/import/clients`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+      setImportResult(data);
+      toast.success(data.message);
+    } catch (e) { toast.error(errMsg(e)); }
+    finally { setImportingClients(false); }
+  };
+
+  const downloadClientsTemplate = async () => {
+    try {
+      const res = await axios.get(`${API}/import/clients/template`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url; a.download = "clients_template.csv"; document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) { toast.error(errMsg(e)); }
+  };
 
   const testAade = async () => {
     setTestingAade(true);
@@ -177,6 +236,66 @@ export default function Settings() {
       </div>
 
       <Button onClick={handleSubmit} data-testid="save-settings-button">Αποθήκευση Ρυθμίσεων</Button>
+
+      <div className="lux-card p-6 space-y-4">
+        <div className="flex items-center gap-2">
+          <UploadSimple size={20} className="text-[hsl(var(--gold))]" />
+          <h3 className="font-heading text-lg font-medium">Εισαγωγή Πελατολογίου</h3>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Ανεβάστε πελατολόγιο από .xlsx ή .csv. Στήλες: <span className="text-foreground">Όνομα, ΑΦΜ, ΔΟΥ, Email, Τηλέφωνο, Διεύθυνση, Τύπος</span>.
+          Οι διπλοεγγραφές (με ίδιο ΑΦΜ ή Όνομα) παραλείπονται.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={downloadClientsTemplate} data-testid="download-clients-template">
+            <DownloadSimple size={16} className="mr-1.5" /> Λήψη προτύπου
+          </Button>
+          <input ref={clientsFileRef} type="file" accept=".csv,.xlsx,.xlsm" className="hidden"
+            onChange={(e) => importClients(e.target.files?.[0])} data-testid="import-clients-input" />
+          <Button onClick={() => clientsFileRef.current?.click()} disabled={importingClients} data-testid="import-clients-button">
+            <UploadSimple size={16} className="mr-1.5" /> {importingClients ? "Εισαγωγή..." : "Ανέβασμα αρχείου"}
+          </Button>
+        </div>
+        {importResult && (
+          <div className="text-sm p-3 rounded-xl bg-[hsl(var(--success))]/5 border border-[hsl(var(--success))]/25" data-testid="import-result">
+            <div className="text-[hsl(var(--success))]">✓ {importResult.message}</div>
+            <div className="text-xs text-muted-foreground mt-1">Σύνολο γραμμών: {importResult.total_rows}</div>
+            {importResult.errors?.length > 0 && (
+              <details className="mt-1 text-xs">
+                <summary className="cursor-pointer text-[hsl(var(--destructive))]">Σφάλματα ({importResult.errors.length})</summary>
+                <ul className="mt-1">{importResult.errors.map((e, i) => <li key={i}>· {e}</li>)}</ul>
+              </details>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="lux-card p-6 space-y-4">
+        <div className="flex items-center gap-2">
+          <Database size={20} className="text-[hsl(var(--gold))]" />
+          <h3 className="font-heading text-lg font-medium">Backup & Επαναφορά</h3>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Πλήρες αντίγραφο ασφαλείας των δεδομένων σας σε αρχείο ZIP. Προτείνεται εβδομαδιαία λήψη και αποθήκευση σε δεύτερο μέσο.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={exportBackup} disabled={exportingBackup} data-testid="export-backup-button">
+            <DownloadSimple size={16} className="mr-1.5" /> {exportingBackup ? "Δημιουργία..." : "Λήψη Backup (.zip)"}
+          </Button>
+          <input ref={backupFileRef} type="file" accept=".zip" className="hidden"
+            onChange={(e) => importBackup(e.target.files?.[0])} data-testid="import-backup-input" />
+          <Button variant="ghost" onClick={() => backupFileRef.current?.click()} disabled={importingBackup} data-testid="import-backup-button">
+            <UploadSimple size={16} className="mr-1.5" /> {importingBackup ? "Επαναφορά..." : "Επαναφορά από Backup"}
+          </Button>
+        </div>
+        <div className="flex items-start gap-2 text-xs text-muted-foreground border-t border-border/50 pt-3">
+          <ShieldCheck size={14} className="shrink-0 mt-0.5 text-[hsl(var(--gold))]" />
+          <span>
+            GDPR: Στην καρτέλα κάθε πελάτη μπορείτε να κατεβάσετε σε ZIP όλα τα δεδομένα του
+            (Άρθρο 15 &amp; 20 ΓΚΠΔ — Data Subject Access Request).
+          </span>
+        </div>
+      </div>
     </div>
   );
 }

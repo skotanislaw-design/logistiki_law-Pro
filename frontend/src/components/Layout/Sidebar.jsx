@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import {
   SquaresFour, FileText, Receipt, ChartLineUp, Users, Calculator,
   CalendarCheck, GearSix, SignOut, CaretLeft, CaretRight, Scales, Sparkle, Files,
-  Briefcase, Scroll, Ticket, Gavel, Monitor,
+  Briefcase, Scroll, Ticket, Gavel, Monitor, Vault,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
 import { useViewMode } from "@/context/ViewModeContext";
@@ -34,6 +34,7 @@ const NAV_GROUPS = [
     items: [
       { to: "/invoices", label: "Τιμολόγια", icon: FileText, testid: "nav-invoices" },
       { to: "/expenses", label: "Έξοδα", icon: Receipt, testid: "nav-expenses" },
+      { to: "/trust", label: "Πελατολ. Λογ/σμοί", icon: Vault, testid: "nav-trust" },
       { to: "/vat", label: "ΦΠΑ", icon: ChartLineUp, testid: "nav-vat" },
       { to: "/payroll", label: "Μισθοδοσία", icon: Calculator, testid: "nav-payroll" },
     ],

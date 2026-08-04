@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
 import { DisclaimerBanner } from "@/components/DisclaimerBanner";
 import { OneScreenDashboard } from "@/components/OneScreenDashboard";
@@ -42,13 +43,20 @@ export default function Dashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const { oneScreen } = useViewMode();
+  const navigate = useNavigate();
 
   useEffect(() => {
+    // First-time onboarding check
+    axios.get(`${API}/settings`).then((r) => {
+      if (r.data && r.data.onboarding_completed === false) {
+        navigate("/onboarding", { replace: true });
+      }
+    }).catch(() => {});
     axios.get(`${API}/dashboard/summary`)
       .then((res) => setData(res.data))
       .catch((e) => toast.error(errMsg(e)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [navigate]);
 
   if (loading || !data) {
     return <div className="animate-pulse text-muted-foreground" data-testid="dashboard-loading">Φόρτωση...</div>;

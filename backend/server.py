@@ -26,6 +26,9 @@ from routes_cases import router as cases_router
 from routes_grammatia import router as grammatia_router
 from routes_paravola import router as paravola_router
 from routes_hearings import router as hearings_router
+from routes_trust import router as trust_router
+from routes_import import router as import_router
+from routes_backup import router as backup_router
 
 app = FastAPI(title="Logistiki Pro API")
 api_router = APIRouter(prefix="/api")
@@ -45,6 +48,9 @@ api_router.include_router(cases_router)
 api_router.include_router(grammatia_router)
 api_router.include_router(paravola_router)
 api_router.include_router(hearings_router)
+api_router.include_router(trust_router)
+api_router.include_router(import_router)
+api_router.include_router(backup_router)
 
 
 @api_router.get("/")

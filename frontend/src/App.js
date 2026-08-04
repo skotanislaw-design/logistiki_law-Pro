@@ -22,6 +22,8 @@ import CaseDetail from "@/pages/CaseDetail";
 import Grammatia from "@/pages/Grammatia";
 import Paravola from "@/pages/Paravola";
 import Pinakia from "@/pages/Pinakia";
+import TrustAccounts from "@/pages/TrustAccounts";
+import Onboarding from "@/pages/Onboarding";
 
 function Protected({ children }) {
   return (
@@ -55,6 +57,8 @@ function App() {
             <Route path="/grammatia" element={<Protected><Grammatia /></Protected>} />
             <Route path="/paravola" element={<Protected><Paravola /></Protected>} />
             <Route path="/pinakia" element={<Protected><Pinakia /></Protected>} />
+            <Route path="/trust" element={<Protected><TrustAccounts /></Protected>} />
+            <Route path="/onboarding" element={<Protected><Onboarding /></Protected>} />
           </Routes>
         </BrowserRouter>
         </ViewModeProvider>

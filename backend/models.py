@@ -210,4 +210,35 @@ class Settings(BaseDocument):
     aade_subscription_key: str = ""
     aade_environment: Literal["sandbox", "production"] = "sandbox"
     mydata_connected: bool = False
+    onboarding_completed: bool = False
     updated_at: str = Field(default_factory=now_iso)
+
+
+class TrustAccount(BaseDocument):
+    """Ξεχωριστός λογαριασμός πελάτη — Ν.4194/2013 άρθρο 32.
+    Παρακολουθεί χρήματα που ανήκουν στον πελάτη και τηρούνται από τη δικηγορική εταιρεία
+    (προκαταβολές, εγγυοδοσίες, εισπραχθέντα ποσά από αντιδίκους κτλ)."""
+    client_id: str
+    client_name: str = ""
+    balance: float = 0.0
+    total_deposits: float = 0.0
+    total_withdrawals: float = 0.0
+    notes: str = ""
+    created_at: str = Field(default_factory=now_iso)
+
+
+class TrustTransaction(BaseDocument):
+    account_id: str
+    client_id: str = ""
+    client_name: str = ""
+    type: Literal["deposit", "withdrawal", "apply_to_invoice", "refund"]
+    amount: float
+    balance_after: float = 0.0
+    date: str
+    description: str = ""
+    reference: str = ""  # π.χ. αριθμός επιταγής, IBAN, κτλ
+    invoice_id: Optional[str] = None
+    invoice_number: Optional[str] = None
+    case_id: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
