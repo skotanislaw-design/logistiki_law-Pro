@@ -315,3 +315,47 @@ class AuditLog(BaseDocument):
     user_email: str = ""
     details: str = ""
     created_at: str = Field(default_factory=now_iso)
+
+
+class CaseTrackerEvent(BaseDocument):
+    """Καταγραφή αλλαγής σε ΣΟΛΩΝ/εξωτερικό portal για συγκεκριμένη υπόθεση."""
+    case_id: str
+    case_number: str = ""
+    case_title: str = ""
+    source: str = "solon"  # solon / e-justice / custom
+    change_type: str = "content_change"  # content_change / new_document / status_change
+    old_hash: str = ""
+    new_hash: str = ""
+    diff_summary: str = ""  # AI-generated summary of what changed
+    fetched_at: str = Field(default_factory=now_iso)
+    read: bool = False
+
+
+class BankTransaction(BaseDocument):
+    """Τραπεζική κίνηση από CSV/OFX import."""
+    date: str
+    description: str
+    amount: float  # + κατάθεση, − χρέωση
+    balance_after: Optional[float] = None
+    reference: str = ""
+    bank: str = ""  # Piraeus / Alpha / Eurobank / NBG / Other
+    account: str = ""
+    external_id: str = ""  # για deduplication
+    matched_invoice_id: Optional[str] = None
+    matched_invoice_number: Optional[str] = None
+    match_confidence: int = 0  # 0-100
+    match_status: Literal["unmatched", "auto_matched", "manual_matched", "ignored"] = "unmatched"
+    imported_at: str = Field(default_factory=now_iso)
+    imported_by: Optional[str] = None
+
+
+class PortalMessage(BaseDocument):
+    """Ασφαλής συνομιλία δικηγόρου ↔ πελάτη μέσω portal."""
+    client_id: str
+    client_name: str = ""
+    sender: Literal["lawyer", "client"]
+    sender_name: str = ""
+    text: str
+    read_at: Optional[str] = None
+    case_id: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)

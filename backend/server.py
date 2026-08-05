@@ -37,6 +37,9 @@ from routes_client_portal import router as client_portal_router, public_router a
 from routes_drafting import router as drafting_router
 from routes_ocr import router as ocr_router
 from routes_legal_search import router as legal_search_router
+from routes_case_tracker import router as case_tracker_router, run_all_tracked_checks
+from routes_bank import router as bank_router
+from routes_portal_chat import router as portal_chat_router, public_router as portal_chat_public_router
 
 app = FastAPI(title="Logistiki Pro API")
 api_router = APIRouter(prefix="/api")
@@ -68,6 +71,10 @@ api_router.include_router(client_portal_public_router)
 api_router.include_router(drafting_router)
 api_router.include_router(ocr_router)
 api_router.include_router(legal_search_router)
+api_router.include_router(case_tracker_router)
+api_router.include_router(bank_router)
+api_router.include_router(portal_chat_router)
+api_router.include_router(portal_chat_public_router)
 
 
 @api_router.get("/")
@@ -114,6 +121,9 @@ async def startup_event():
     await db.users.create_index("email", unique=True)
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=3600)
     await db.login_attempts.create_index("identifier")
+    await db.bank_transactions.create_index("external_id", unique=True, sparse=True)
+    await db.case_tracker_events.create_index([("fetched_at", -1)])
+    await db.portal_messages.create_index([("client_id", 1), ("created_at", 1)])
     await seed_admin()
     try:
         init_storage()
@@ -121,7 +131,23 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Storage init failed: {e}")
 
+    # Case tracker scheduler — τρέχει κάθε 12 ώρες
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        scheduler = AsyncIOScheduler(timezone="Europe/Athens")
+        scheduler.add_job(run_all_tracked_checks, "interval", hours=12, id="case_tracker", replace_existing=True)
+        scheduler.start()
+        app.state.scheduler = scheduler
+        logger.info("Case tracker scheduler started (every 12h)")
+    except Exception as e:
+        logger.error(f"Scheduler start failed: {e}")
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    try:
+        if hasattr(app.state, "scheduler"):
+            app.state.scheduler.shutdown(wait=False)
+    except Exception:
+        pass
     db.client.close()
