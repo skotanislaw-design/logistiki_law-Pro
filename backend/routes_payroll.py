@@ -4,6 +4,7 @@ from bson import ObjectId
 from db import db
 from models import PayrollEmployee, PayrollRun
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 from tax_utils import calculate_payroll
 
 router = APIRouter(prefix="/payroll", tags=["payroll"])
@@ -11,15 +12,16 @@ router = APIRouter(prefix="/payroll", tags=["payroll"])
 
 @router.get("/employees")
 async def list_employees(user: dict = Depends(get_current_user)):
-    docs = await db.payroll_employees.find({}).sort("name", 1).to_list(500)
+    docs = await db.payroll_employees.find(tenant_query(user)).sort("name", 1).to_list(500)
     return [PayrollEmployee.from_mongo(d) for d in docs]
 
 
 @router.post("/employees")
 async def create_employee(payload: PayrollEmployee, user: dict = Depends(get_current_user)):
     payload.id = None
+    payload.firm_id = firm_id_for(user)
     result = await db.payroll_employees.insert_one(payload.to_mongo())
-    doc = await db.payroll_employees.find_one({"_id": result.inserted_id})
+    doc = await db.payroll_employees.find_one(tenant_query(user, {"_id": result.inserted_id}))
     return PayrollEmployee.from_mongo(doc)
 
 
@@ -28,16 +30,17 @@ async def update_employee(employee_id: str, payload: PayrollEmployee, user: dict
     payload.id = employee_id
     data = payload.to_mongo()
     data.pop("_id", None)
-    result = await db.payroll_employees.update_one({"_id": ObjectId(employee_id)}, {"$set": data})
+    data.pop("firm_id", None)
+    result = await db.payroll_employees.update_one(tenant_query(user, {"_id": ObjectId(employee_id)}), {"$set": data})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Ο εργαζόμενος δεν βρέθηκε")
-    doc = await db.payroll_employees.find_one({"_id": ObjectId(employee_id)})
+    doc = await db.payroll_employees.find_one(tenant_query(user, {"_id": ObjectId(employee_id)}))
     return PayrollEmployee.from_mongo(doc)
 
 
 @router.delete("/employees/{employee_id}")
 async def delete_employee(employee_id: str, user: dict = Depends(get_current_user)):
-    result = await db.payroll_employees.delete_one({"_id": ObjectId(employee_id)})
+    result = await db.payroll_employees.delete_one(tenant_query(user, {"_id": ObjectId(employee_id)}))
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Ο εργαζόμενος δεν βρέθηκε")
     return {"message": "Ο εργαζόμενος διαγράφηκε"}
@@ -50,25 +53,26 @@ class RunPayrollRequest(BaseModel):
 
 @router.post("/run")
 async def run_payroll(payload: RunPayrollRequest, user: dict = Depends(get_current_user)):
-    employee = await db.payroll_employees.find_one({"_id": ObjectId(payload.employee_id)})
+    employee = await db.payroll_employees.find_one(tenant_query(user, {"_id": ObjectId(payload.employee_id)}))
     if not employee:
         raise HTTPException(status_code=404, detail="Ο εργαζόμενος δεν βρέθηκε")
     calc = calculate_payroll(employee["gross_salary"], employee.get("dependents", 0))
     run = PayrollRun(
         employee_id=payload.employee_id,
+        firm_id=firm_id_for(user),
         employee_name=employee["name"],
         period=payload.period,
         **calc,
     )
-    existing = await db.payroll_runs.find_one({"employee_id": payload.employee_id, "period": payload.period})
+    existing = await db.payroll_runs.find_one(tenant_query(user, {"employee_id": payload.employee_id, "period": payload.period}))
     if existing:
         raise HTTPException(status_code=400, detail="Η μισθοδοσία για αυτή την περίοδο έχει ήδη υπολογιστεί")
     result = await db.payroll_runs.insert_one(run.to_mongo())
-    doc = await db.payroll_runs.find_one({"_id": result.inserted_id})
+    doc = await db.payroll_runs.find_one(tenant_query(user, {"_id": result.inserted_id}))
     return PayrollRun.from_mongo(doc)
 
 
 @router.get("/runs")
 async def list_runs(user: dict = Depends(get_current_user)):
-    docs = await db.payroll_runs.find({}).sort("created_at", -1).to_list(1000)
+    docs = await db.payroll_runs.find(tenant_query(user)).sort("created_at", -1).to_list(1000)
     return [PayrollRun.from_mongo(d) for d in docs]

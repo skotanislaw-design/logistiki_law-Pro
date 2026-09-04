@@ -8,6 +8,8 @@ from bson import ObjectId
 from db import db
 from models import ESignature
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
+from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/signatures", tags=["signatures"])
 
@@ -24,21 +26,22 @@ async def create_signature(payload: ESignature, request: Request, user: dict = D
     payload.ip_address = request.client.host if request.client else ""
     payload.user_agent = request.headers.get("user-agent", "")[:200]
     payload.signed_at = datetime.now(timezone.utc).isoformat()
+    payload.firm_id = firm_id_for(user)
     result = await db.signatures.insert_one(payload.to_mongo())
-    doc = await db.signatures.find_one({"_id": result.inserted_id})
+    doc = await db.signatures.find_one(tenant_query(user, {"_id": result.inserted_id}))
     return ESignature.from_mongo(doc)
 
 
 @router.get("")
 async def list_signatures(user: dict = Depends(get_current_user)):
-    docs = await db.signatures.find({}).sort("signed_at", -1).limit(200).to_list(200)
+    docs = await db.signatures.find(tenant_query(user, {})).sort("signed_at", -1).limit(200).to_list(200)
     return [ESignature.from_mongo(d) for d in docs]
 
 
 @router.get("/{signature_id}")
 async def get_signature(signature_id: str, user: dict = Depends(get_current_user)):
     try:
-        doc = await db.signatures.find_one({"_id": ObjectId(signature_id)})
+        doc = await db.signatures.find_one(tenant_query(user, {"_id": ObjectId(signature_id)}))
     except Exception:
         raise HTTPException(status_code=404, detail="Η υπογραφή δεν βρέθηκε")
     if not doc:
@@ -50,7 +53,7 @@ async def get_signature(signature_id: str, user: dict = Depends(get_current_user
 async def verify_signature(signature_id: str, user: dict = Depends(get_current_user)):
     """Επαληθεύει ότι το hash της αποθηκευμένης υπογραφής ταιριάζει με το SHA-256 του δεδομένου."""
     try:
-        doc = await db.signatures.find_one({"_id": ObjectId(signature_id)})
+        doc = await db.signatures.find_one(tenant_query(user, {"_id": ObjectId(signature_id)}))
     except Exception:
         raise HTTPException(status_code=404, detail="Η υπογραφή δεν βρέθηκε")
     if not doc:

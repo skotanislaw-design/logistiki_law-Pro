@@ -9,6 +9,7 @@ from models import Invoice, InvoiceLineItem
 from tax_utils import calculate_invoice_totals
 from copilot import copilot_llm, _try_action
 from routes_invoices import _next_invoice_number
+from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/copilot", tags=["copilot"])
 
@@ -22,10 +23,11 @@ def _fmt(v):
     return f"{(v or 0):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-async def _save_msg(session_id: str, role: str, content: str, meta: dict = None):
+async def _save_msg(session_id: str, role: str, content: str, user: dict, meta: dict = None):
     await db.copilot_messages.insert_one({
         "session_id": session_id, "role": role, "content": content,
         "meta": meta or {}, "created_at": datetime.now(timezone.utc).isoformat(),
+        "firm_id": firm_id_for(user),
     })
 
 
@@ -33,7 +35,7 @@ async def _execute_create_invoice(action: dict, user: dict):
     name = (action.get("client_name") or "").strip().lower()
     if not name:
         return None, "Δεν κατάλαβα για ποιον πελάτη. Πες μου το όνομα του πελάτη."
-    clients = await db.clients.find({}).to_list(200)
+    clients = await db.clients.find(tenant_query(user)).to_list(200)
     matches = [c for c in clients if name in c["name"].lower() or c["name"].lower() in name]
     if not matches:
         available = ", ".join(c["name"] for c in clients[:10]) or "κανένας"
@@ -53,12 +55,13 @@ async def _execute_create_invoice(action: dict, user: dict):
         date=date.today().isoformat(),
         line_items=[InvoiceLineItem(description=action.get("description") or "Νομικές υπηρεσίες", quantity=1, unit_price=amount, vat_rate=vat_rate)],
         created_by=user["email"],
+        firm_id=firm_id_for(user),
     )
     totals = calculate_invoice_totals(inv.line_items)
     inv.subtotal, inv.vat_amount, inv.total, inv.vat_breakdown = totals["subtotal"], totals["vat_amount"], totals["total"], totals["vat_breakdown"]
-    inv.number = await _next_invoice_number()
+    inv.number = await _next_invoice_number(firm_id_for(user))
     result = await db.invoices.insert_one(inv.to_mongo())
-    doc = await db.invoices.find_one({"_id": result.inserted_id})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": result.inserted_id}))
     created = Invoice.from_mongo(doc)
     reply = (
         f"✅ Δημιούργησα το τιμολόγιο **{created.number}** για τον πελάτη **{client['name']}**:\n"
@@ -76,7 +79,7 @@ async def _execute_create_grammatio(action: dict, user: dict):
     ref = (action.get("case_ref") or "").strip().lower()
     if not ref:
         return None, "Για ποια υπόθεση θες το γραμμάτιο; Πες μου τον αριθμό ή τον τίτλο της."
-    cases = await db.cases.find({}).to_list(200)
+    cases = await db.cases.find(tenant_query(user, {})).to_list(200)
     matches = [c for c in cases if ref in (c.get("number") or "").lower() or ref in (c.get("title") or "").lower()]
     if not matches:
         available = ", ".join(f"{c['number']} ({c['title'][:30]})" for c in cases[:8]) or "καμία"
@@ -110,10 +113,11 @@ async def _execute_create_grammatio(action: dict, user: dict):
         total=round(amount + contributions + vat, 2),
         created_by=user["email"],
     )
-    g.number = await _next_grammatio_number()
+    g.firm_id = firm_id_for(user)
+    g.number = await _next_grammatio_number(firm_id_for(user))
     result = await db.grammatia.insert_one(g.to_mongo())
-    await log_case_event(str(case["_id"]), f"Δημιουργία γραμματίου {g.number} μέσω Nomos AI")
-    doc = await db.grammatia.find_one({"_id": result.inserted_id})
+    await log_case_event(str(case["_id"]), f"Δημιουργία γραμματίου {g.number} μέσω Nomos AI", user)
+    doc = await db.grammatia.find_one(tenant_query(user, {"_id": result.inserted_id}))
     from models import Grammatio as _G
     created = _G.from_mongo(doc)
     reply = (
@@ -129,8 +133,8 @@ async def _execute_create_grammatio(action: dict, user: dict):
 async def copilot_chat(payload: ChatPayload, user: dict = Depends(get_current_user)):
     if not payload.message.strip():
         raise HTTPException(status_code=400, detail="Κενό μήνυμα")
-    history = await db.copilot_messages.find({"session_id": payload.session_id}).sort("created_at", 1).to_list(50)
-    await _save_msg(payload.session_id, "user", payload.message)
+    history = await db.copilot_messages.find(tenant_query(user, {"session_id": payload.session_id})).sort("created_at", 1).to_list(50)
+    await _save_msg(payload.session_id, "user", payload.message, user)
 
     try:
         raw = await copilot_llm([{"role": m["role"], "content": m["content"]} for m in history], payload.message)
@@ -151,7 +155,7 @@ async def copilot_chat(payload: ChatPayload, user: dict = Depends(get_current_us
         if created:
             invoice_data = None
             document_data = None
-            await _save_msg(payload.session_id, "assistant", reply, {"grammatio": {"id": created.id, "number": created.number, "total": created.total}})
+            await _save_msg(payload.session_id, "assistant", reply, user, {"grammatio": {"id": created.id, "number": created.number, "total": created.total}})
             return {"reply": reply, "invoice": None, "document": None, "grammatio": {"id": created.id, "number": created.number, "total": created.total}}
     elif action and action.get("action") == "draft_document":
         document_data = {
@@ -161,7 +165,7 @@ async def copilot_chat(payload: ChatPayload, user: dict = Depends(get_current_us
         }
         reply = f"📄 Συνέταξα το έγγραφο «{document_data['subject']}». Δες την προεπισκόπηση — μπορείς να το κατεβάσεις σε Word ή PDF με το letterhead της εταιρείας."
 
-    await _save_msg(payload.session_id, "assistant", reply, {"invoice": invoice_data, "document": document_data})
+    await _save_msg(payload.session_id, "assistant", reply, user, {"invoice": invoice_data, "document": document_data})
     return {"reply": reply, "invoice": invoice_data, "document": document_data}
 
 
@@ -187,7 +191,7 @@ async def copilot_voice(audio: UploadFile = File(...), user: dict = Depends(get_
 
 @router.get("/history/{session_id}")
 async def copilot_history(session_id: str, user: dict = Depends(get_current_user)):
-    msgs = await db.copilot_messages.find({"session_id": session_id}).sort("created_at", 1).to_list(100)
+    msgs = await db.copilot_messages.find(tenant_query(user, {"session_id": session_id})).sort("created_at", 1).to_list(100)
     return [
         {"role": m["role"], "content": m["content"], "invoice": (m.get("meta") or {}).get("invoice"), "document": (m.get("meta") or {}).get("document"), "grammatio": (m.get("meta") or {}).get("grammatio")}
         for m in msgs

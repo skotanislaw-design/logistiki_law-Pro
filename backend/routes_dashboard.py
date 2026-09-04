@@ -3,6 +3,7 @@ import calendar as pycal
 from fastapi import APIRouter, Depends
 from db import db
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 from tax_utils import next_vat_deadline, next_efka_deadline
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -12,11 +13,11 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 async def dashboard_summary(user: dict = Depends(get_current_user)):
     today = date.today()
     month_start = today.replace(day=1).isoformat()
-    settings = await db.settings.find_one({})
+    settings = await db.settings.find_one(tenant_query(user, {}))
     vat_period = settings.get("vat_period", "monthly") if settings else "monthly"
 
-    invoices = await db.invoices.find({"status": {"$in": ["issued", "paid"]}}).to_list(2000)
-    expenses = await db.expenses.find({}).to_list(2000)
+    invoices = await db.invoices.find(tenant_query(user, {"status": {"$in": ["issued", "paid"]}})).to_list(2000)
+    expenses = await db.expenses.find(tenant_query(user, {})).to_list(2000)
 
     month_invoices = [i for i in invoices if i.get("date", "") >= month_start]
     month_expenses = [e for e in expenses if e.get("date", "") >= month_start]
@@ -27,11 +28,11 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
     input_vat = round(sum(e.get("vat_amount", 0) for e in month_expenses), 2)
     vat_due = round(output_vat - input_vat, 2)
 
-    pending_mydata = await db.invoices.count_documents({"mydata_status": {"$in": ["not_sent", "pending", "failed"]}})
-    draft_invoices = await db.invoices.count_documents({"status": "draft"})
+    pending_mydata = await db.invoices.count_documents(tenant_query(user, {"mydata_status": {"$in": ["not_sent", "pending", "failed"]}}))
+    draft_invoices = await db.invoices.count_documents(tenant_query(user, {"status": "draft"}))
 
-    recent_invoices = await db.invoices.find({}).sort("created_at", -1).limit(5).to_list(5)
-    recent_expenses = await db.expenses.find({}).sort("created_at", -1).limit(5).to_list(5)
+    recent_invoices = await db.invoices.find(tenant_query(user, {})).sort("created_at", -1).limit(5).to_list(5)
+    recent_expenses = await db.expenses.find(tenant_query(user, {})).sort("created_at", -1).limit(5).to_list(5)
 
     for d in recent_invoices + recent_expenses:
         d["id"] = str(d.pop("_id"))
@@ -83,7 +84,7 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
     if pending_mydata:
         obligations.append({"date": today.isoformat(), "label": f"{pending_mydata} παραστατικά εκτός myDATA", "amount": None})
     upcoming_hearings = await db.hearings.find(
-        {"date": {"$gte": today.isoformat()}, "status": {"$in": ["scheduled", "in_progress", "interrupted"]}}
+        tenant_query(user, {"date": {"$gte": today.isoformat()}, "status": {"$in": ["scheduled", "in_progress", "interrupted"]}})
     ).sort("date", 1).limit(2).to_list(2)
     for h in upcoming_hearings:
         obligations.append({

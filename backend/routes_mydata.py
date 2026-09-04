@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from bson import ObjectId
 from db import db
 from auth import get_current_user, require_admin
+from tenant import tenant_query
 from mydata_client import mydata_ready, send_invoice, validate_credentials, MyDataError
 
 router = APIRouter(prefix="/mydata", tags=["mydata"])
@@ -13,7 +14,7 @@ ENV_LABEL = {"sandbox": "Sandbox (δοκιμαστικό)", "production": "Πα�
 
 @router.get("/status")
 async def mydata_status(user: dict = Depends(get_current_user)):
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     live = mydata_ready(settings)
     env = settings.get("aade_environment", "sandbox")
     pending = await db.invoices.count_documents({"mydata_status": {"$in": ["not_sent", "pending"]}})
@@ -37,7 +38,7 @@ async def mydata_status(user: dict = Depends(get_current_user)):
 
 @router.post("/test-connection")
 async def test_connection(user: dict = Depends(require_admin)):
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     if not mydata_ready(settings):
         raise HTTPException(status_code=400, detail="Καταχωρήστε και αποθηκεύστε πρώτα AADE User ID & Subscription Key στις Ρυθμίσεις.")
     try:
@@ -53,7 +54,7 @@ async def sync_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
     doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
 
     if mydata_ready(settings):
         client = None

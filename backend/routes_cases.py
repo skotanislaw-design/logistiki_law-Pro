@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 from bson import ObjectId
 from db import db
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 from models import Case
 
 router = APIRouter(prefix="/cases", tags=["cases"])
@@ -16,15 +17,18 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _next_case_number():
-    count = await db.cases.count_documents({})
+async def _next_case_number(firm_id: str):
+    count = await db.cases.count_documents({"firm_id": firm_id})
     return f"ΥΠΘ-{date.today().year}-{count + 1:04d}"
 
 
-async def log_case_event(case_id: str, event: str):
+async def log_case_event(case_id: str, event: str, user: dict | None = None):
     try:
+        if user is None:
+            case = await db.cases.find_one({"_id": ObjectId(case_id)}, {"firm_id": 1})
+            user = {"firm_id": (case or {}).get("firm_id")}
         await db.cases.update_one(
-            {"_id": ObjectId(case_id)},
+            tenant_query(user, {"_id": ObjectId(case_id)}),
             {"$push": {"history": {"event": event, "at": _now()}}},
         )
     except Exception:
@@ -51,27 +55,28 @@ async def case_types(user: dict = Depends(get_current_user)):
 
 @router.get("")
 async def list_cases(user: dict = Depends(get_current_user)):
-    docs = await db.cases.find({}).sort("created_at", -1).to_list(500)
+    docs = await db.cases.find(tenant_query(user)).sort("created_at", -1).to_list(500)
     return [Case.from_mongo(d) for d in docs]
 
 
 @router.post("")
 async def create_case(payload: Case, user: dict = Depends(get_current_user)):
-    payload.number = await _next_case_number()
+    payload.number = await _next_case_number(firm_id_for(user))
+    payload.firm_id = firm_id_for(user)
     payload.created_by = user["email"]
     payload.history = [{"event": "Δημιουργία υπόθεσης", "at": _now()}]
     result = await db.cases.insert_one(payload.to_mongo())
-    doc = await db.cases.find_one({"_id": result.inserted_id})
+    doc = await db.cases.find_one(tenant_query(user, {"_id": result.inserted_id}))
     return Case.from_mongo(doc)
 
 
 @router.get("/{case_id}")
 async def get_case(case_id: str, user: dict = Depends(get_current_user)):
-    doc = await db.cases.find_one({"_id": ObjectId(case_id)})
+    doc = await db.cases.find_one(tenant_query(user, {"_id": ObjectId(case_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Η υπόθεση δεν βρέθηκε")
-    grammatia = await db.grammatia.find({"case_id": case_id}).sort("created_at", -1).to_list(100)
-    paravola = await db.paravola.find({"case_id": case_id}).sort("created_at", -1).to_list(100)
+    grammatia = await db.grammatia.find(tenant_query(user, {"case_id": case_id})).sort("created_at", -1).to_list(100)
+    paravola = await db.paravola.find(tenant_query(user, {"case_id": case_id})).sort("created_at", -1).to_list(100)
     from models import Grammatio, Paravolo
     return {
         "case": Case.from_mongo(doc),
@@ -84,19 +89,19 @@ async def get_case(case_id: str, user: dict = Depends(get_current_user)):
 
 @router.put("/{case_id}")
 async def update_case(case_id: str, payload: Case, user: dict = Depends(get_current_user)):
-    doc = await db.cases.find_one({"_id": ObjectId(case_id)})
+    doc = await db.cases.find_one(tenant_query(user, {"_id": ObjectId(case_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Η υπόθεση δεν βρέθηκε")
-    data = payload.model_dump(exclude={"id", "number", "history", "notes", "created_at", "created_by"})
-    await db.cases.update_one({"_id": ObjectId(case_id)}, {"$set": data})
-    await log_case_event(case_id, "Επεξεργασία στοιχείων υπόθεσης")
-    doc = await db.cases.find_one({"_id": ObjectId(case_id)})
+    data = payload.model_dump(exclude={"id", "number", "history", "notes", "created_at", "created_by", "firm_id"})
+    await db.cases.update_one(tenant_query(user, {"_id": ObjectId(case_id)}), {"$set": data})
+    await log_case_event(case_id, "Επεξεργασία στοιχείων υπόθεσης", user)
+    doc = await db.cases.find_one(tenant_query(user, {"_id": ObjectId(case_id)}))
     return Case.from_mongo(doc)
 
 
 @router.delete("/{case_id}")
 async def delete_case(case_id: str, user: dict = Depends(get_current_user)):
-    result = await db.cases.delete_one({"_id": ObjectId(case_id)})
+    result = await db.cases.delete_one(tenant_query(user, {"_id": ObjectId(case_id)}))
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Η υπόθεση δεν βρέθηκε")
     return {"message": "Η υπόθεση διαγράφηκε"}
@@ -107,11 +112,11 @@ async def add_note(case_id: str, payload: NotePayload, user: dict = Depends(get_
     if not payload.text.strip():
         raise HTTPException(status_code=400, detail="Κενή σημείωση")
     note = {"text": payload.text.strip(), "author": user.get("name") or user["email"], "at": _now()}
-    result = await db.cases.update_one({"_id": ObjectId(case_id)}, {"$push": {"notes": note}})
+    result = await db.cases.update_one(tenant_query(user, {"_id": ObjectId(case_id)}), {"$push": {"notes": note}})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Η υπόθεση δεν βρέθηκε")
-    await log_case_event(case_id, "Προσθήκη σημείωσης")
-    doc = await db.cases.find_one({"_id": ObjectId(case_id)})
+    await log_case_event(case_id, "Προσθήκη σημείωσης", user)
+    doc = await db.cases.find_one(tenant_query(user, {"_id": ObjectId(case_id)}))
     return Case.from_mongo(doc)
 
 
@@ -119,22 +124,22 @@ async def add_note(case_id: str, payload: NotePayload, user: dict = Depends(get_
 async def change_status(case_id: str, payload: StatusPayload, user: dict = Depends(get_current_user)):
     if payload.status not in STATUS_LABELS:
         raise HTTPException(status_code=400, detail="Μη έγκυρη κατάσταση")
-    result = await db.cases.update_one({"_id": ObjectId(case_id)}, {"$set": {"status": payload.status}})
+    result = await db.cases.update_one(tenant_query(user, {"_id": ObjectId(case_id)}), {"$set": {"status": payload.status}})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Η υπόθεση δεν βρέθηκε")
-    await log_case_event(case_id, f"Αλλαγή κατάστασης σε «{STATUS_LABELS[payload.status]}»")
-    doc = await db.cases.find_one({"_id": ObjectId(case_id)})
+    await log_case_event(case_id, f"Αλλαγή κατάστασης σε «{STATUS_LABELS[payload.status]}»", user)
+    doc = await db.cases.find_one(tenant_query(user, {"_id": ObjectId(case_id)}))
     return Case.from_mongo(doc)
 
 
 @router.post("/{case_id}/next-action")
 async def set_next_action(case_id: str, payload: NextActionPayload, user: dict = Depends(get_current_user)):
     result = await db.cases.update_one(
-        {"_id": ObjectId(case_id)},
+        tenant_query(user, {"_id": ObjectId(case_id)}),
         {"$set": {"next_action": payload.next_action, "next_action_date": payload.next_action_date}},
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Η υπόθεση δεν βρέθηκε")
-    await log_case_event(case_id, f"Ορισμός επόμενης ενέργειας: {payload.next_action}" if payload.next_action else "Καθαρισμός επόμενης ενέργειας")
-    doc = await db.cases.find_one({"_id": ObjectId(case_id)})
+    await log_case_event(case_id, f"Ορισμός επόμενης ενέργειας: {payload.next_action}" if payload.next_action else "Καθαρισμός επόμενης ενέργειας", user)
+    doc = await db.cases.find_one(tenant_query(user, {"_id": ObjectId(case_id)}))
     return Case.from_mongo(doc)

@@ -12,6 +12,7 @@ from bson import ObjectId
 from db import db
 from models import BankTransaction
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/bank", tags=["bank"])
 
@@ -213,18 +214,19 @@ async def import_bank_statement(bank: str = "Άγνωστη", file: UploadFile =
     if not parsed:
         raise HTTPException(status_code=400, detail="Δεν βρέθηκαν εγκυρες κινήσεις.")
 
-    unpaid_invoices = await db.invoices.find({"status": "issued"}).to_list(2000)
+    unpaid_invoices = await db.invoices.find(tenant_query(user, {"status": "issued"})).to_list(2000)
 
     created, skipped, auto_matched = 0, 0, 0
     for rec in parsed:
         # Dedup με βάση (date, amount, description)
         dedup_key = f"{rec['date']}|{rec['amount']:.2f}|{rec['description'][:80]}"
-        existing = await db.bank_transactions.find_one({"external_id": dedup_key})
+        existing = await db.bank_transactions.find_one(tenant_query(user, {"external_id": dedup_key}))
         if existing:
             skipped += 1
             continue
 
         tx = BankTransaction(
+            firm_id=firm_id_for(user),
             date=rec["date"],
             description=rec["description"][:500],
             reference=rec["reference"],
@@ -260,14 +262,14 @@ async def list_transactions(status: str = "all", user: dict = Depends(get_curren
     query = {}
     if status != "all":
         query["match_status"] = status
-    docs = await db.bank_transactions.find(query).sort("date", -1).limit(500).to_list(500)
+    docs = await db.bank_transactions.find(tenant_query(user, query)).sort("date", -1).limit(500).to_list(500)
     return [BankTransaction.from_mongo(d) for d in docs]
 
 
 @router.post("/reconcile/{tx_id}")
 async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, user: dict = Depends(get_current_user)):
     try:
-        tx = await db.bank_transactions.find_one({"_id": ObjectId(tx_id)})
+        tx = await db.bank_transactions.find_one(tenant_query(user, {"_id": ObjectId(tx_id)}))
     except Exception:
         raise HTTPException(status_code=404, detail="Δεν βρέθηκε")
     if not tx:
@@ -275,7 +277,7 @@ async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, user
 
     if ignore:
         await db.bank_transactions.update_one(
-            {"_id": ObjectId(tx_id)},
+            tenant_query(user, {"_id": ObjectId(tx_id)}),
             {"$set": {"match_status": "ignored", "matched_invoice_id": None, "matched_invoice_number": None}},
         )
         return {"message": "Η κίνηση σημειώθηκε ως αγνοητέα"}
@@ -284,14 +286,14 @@ async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, user
         raise HTTPException(status_code=400, detail="Δώστε invoice_id")
 
     try:
-        inv = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+        inv = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     except Exception:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     if not inv:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
 
     await db.bank_transactions.update_one(
-        {"_id": ObjectId(tx_id)},
+        tenant_query(user, {"_id": ObjectId(tx_id)}),
         {"$set": {
             "matched_invoice_id": invoice_id,
             "matched_invoice_number": inv.get("number", ""),
@@ -302,7 +304,7 @@ async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, user
     # Auto-mark το τιμολόγιο ως εξοφλημένο αν είναι σε issued
     if inv.get("status") == "issued":
         await db.invoices.update_one(
-            {"_id": ObjectId(invoice_id)},
+            tenant_query(user, {"_id": ObjectId(invoice_id)}),
             {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc).isoformat()}},
         )
     return {"message": "Συνδέθηκε και το τιμολόγιο σημειώθηκε ως εξοφλημένο."}
@@ -313,17 +315,17 @@ async def confirm_auto_matches(user: dict = Depends(get_current_user)):
     """Επιβεβαιώνει όλα τα auto_matched — σημαίνει τα τιμολόγια ως paid."""
     now = datetime.now(timezone.utc).isoformat()
     confirmed = 0
-    async for tx in db.bank_transactions.find({"match_status": "auto_matched"}):
+    async for tx in db.bank_transactions.find(tenant_query(user, {"match_status": "auto_matched"})):
         if tx.get("matched_invoice_id"):
             try:
                 result = await db.invoices.update_one(
-                    {"_id": ObjectId(tx["matched_invoice_id"]), "status": "issued"},
+                    tenant_query(user, {"_id": ObjectId(tx["matched_invoice_id"]), "status": "issued"}),
                     {"$set": {"status": "paid", "paid_at": now}},
                 )
                 if result.modified_count > 0:
                     confirmed += 1
                 await db.bank_transactions.update_one(
-                    {"_id": tx["_id"]},
+                    tenant_query(user, {"_id": tx["_id"]}),
                     {"$set": {"match_status": "manual_matched", "match_confidence": 100}},
                 )
             except Exception:
@@ -333,9 +335,9 @@ async def confirm_auto_matches(user: dict = Depends(get_current_user)):
 
 @router.get("/summary")
 async def summary(user: dict = Depends(get_current_user)):
-    total = await db.bank_transactions.count_documents({})
-    unmatched = await db.bank_transactions.count_documents({"match_status": "unmatched"})
-    auto = await db.bank_transactions.count_documents({"match_status": "auto_matched"})
-    manual = await db.bank_transactions.count_documents({"match_status": "manual_matched"})
-    ignored = await db.bank_transactions.count_documents({"match_status": "ignored"})
+    total = await db.bank_transactions.count_documents(tenant_query(user))
+    unmatched = await db.bank_transactions.count_documents(tenant_query(user, {"match_status": "unmatched"}))
+    auto = await db.bank_transactions.count_documents(tenant_query(user, {"match_status": "auto_matched"}))
+    manual = await db.bank_transactions.count_documents(tenant_query(user, {"match_status": "manual_matched"}))
+    ignored = await db.bank_transactions.count_documents(tenant_query(user, {"match_status": "ignored"}))
     return {"total": total, "unmatched": unmatched, "auto_matched": auto, "manual_matched": manual, "ignored": ignored}

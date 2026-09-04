@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup
 from db import db
 from models import CaseTrackerEvent
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/case-tracker", tags=["case-tracker"])
 
@@ -178,14 +179,14 @@ async def _run_check(case: dict) -> dict:
 @router.get("/events")
 async def list_events(unread_only: bool = False, user: dict = Depends(get_current_user)):
     query = {"read": False} if unread_only else {}
-    docs = await db.case_tracker_events.find(query).sort("fetched_at", -1).limit(100).to_list(100)
+    docs = await db.case_tracker_events.find(tenant_query(user, query)).sort("fetched_at", -1).limit(100).to_list(100)
     return [CaseTrackerEvent.from_mongo(d) for d in docs]
 
 
 @router.post("/events/{event_id}/read")
 async def mark_read(event_id: str, user: dict = Depends(get_current_user)):
     try:
-        await db.case_tracker_events.update_one({"_id": ObjectId(event_id)}, {"$set": {"read": True}})
+        await db.case_tracker_events.update_one(tenant_query(user, {"_id": ObjectId(event_id)}), {"$set": {"read": True}})
     except Exception:
         raise HTTPException(status_code=404, detail="Δεν βρέθηκε")
     return {"message": "OK"}
@@ -193,15 +194,15 @@ async def mark_read(event_id: str, user: dict = Depends(get_current_user)):
 
 @router.post("/events/mark-all-read")
 async def mark_all_read(user: dict = Depends(get_current_user)):
-    result = await db.case_tracker_events.update_many({"read": False}, {"$set": {"read": True}})
+    result = await db.case_tracker_events.update_many(tenant_query(user, {"read": False}), {"$set": {"read": True}})
     return {"marked": result.modified_count}
 
 
 @router.get("/status")
 async def tracker_status(user: dict = Depends(get_current_user)):
-    tracked = await db.cases.count_documents({"tracker_enabled": True})
-    unread = await db.case_tracker_events.count_documents({"read": False})
-    total_events = await db.case_tracker_events.count_documents({})
+    tracked = await db.cases.count_documents(tenant_query(user, {"tracker_enabled": True}))
+    unread = await db.case_tracker_events.count_documents(tenant_query(user, {"read": False}))
+    total_events = await db.case_tracker_events.count_documents(tenant_query(user))
     return {"tracked_cases": tracked, "unread_events": unread, "total_events": total_events}
 
 

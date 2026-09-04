@@ -8,27 +8,28 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 @router.get("")
 async def get_settings(user: dict = Depends(get_current_user)):
-    doc = await db.settings.find_one({})
+    doc = await db.settings.find_one(tenant_query(user, {}))
     if not doc:
-        default = Settings()
+        default = Settings(firm_id=firm_id_for(user))
         result = await db.settings.insert_one(default.to_mongo())
-        doc = await db.settings.find_one({"_id": result.inserted_id})
+        doc = await db.settings.find_one(tenant_query(user, {"_id": result.inserted_id}))
     return Settings.from_mongo(doc)
 
 
 @router.put("")
 async def update_settings(payload: Settings, user: dict = Depends(require_admin)):
     from datetime import datetime, timezone
-    doc = await db.settings.find_one({})
-    data = payload.model_dump(exclude={"id"})
+    doc = await db.settings.find_one(tenant_query(user, {}))
+    data = payload.model_dump(exclude={"id", "firm_id"})
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
     data["mydata_connected"] = bool(payload.aade_user_id and payload.aade_subscription_key)
     if doc:
-        await db.settings.update_one({"_id": doc["_id"]}, {"$set": data})
-        doc = await db.settings.find_one({"_id": doc["_id"]})
+        await db.settings.update_one(tenant_query(user, {"_id": doc["_id"]}), {"$set": data})
+        doc = await db.settings.find_one(tenant_query(user, {"_id": doc["_id"]}))
     else:
+        data["firm_id"] = firm_id_for(user)
         result = await db.settings.insert_one(data)
-        doc = await db.settings.find_one({"_id": result.inserted_id})
+        doc = await db.settings.find_one(tenant_query(user, {"_id": result.inserted_id}))
     return Settings.from_mongo(doc)
 
 
@@ -36,7 +37,7 @@ async def update_settings(payload: Settings, user: dict = Depends(require_admin)
 async def send_test_email(user: dict = Depends(require_admin)):
     from email_utils import smtp_ready, send_email_with_pdf
     import aiosmtplib as _smtp
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     if not smtp_ready(settings):
         raise HTTPException(status_code=400, detail="Συμπληρώστε πρώτα email και App Password στις ρυθμίσεις SMTP.")
     to = settings["smtp_user"]

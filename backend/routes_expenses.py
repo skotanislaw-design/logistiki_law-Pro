@@ -6,6 +6,7 @@ from bson import ObjectId
 from db import db
 from models import Expense
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 from ai_helpers import ocr_receipt
 from storage import upload_receipt_image, get_object
 
@@ -14,16 +15,17 @@ router = APIRouter(prefix="/expenses", tags=["expenses"])
 
 @router.get("")
 async def list_expenses(user: dict = Depends(get_current_user)):
-    docs = await db.expenses.find({}).sort("created_at", -1).to_list(1000)
+    docs = await db.expenses.find(tenant_query(user)).sort("created_at", -1).to_list(1000)
     return [Expense.from_mongo(d) for d in docs]
 
 
 @router.post("")
 async def create_expense(payload: Expense, user: dict = Depends(get_current_user)):
     payload.id = None
+    payload.firm_id = firm_id_for(user)
     payload.created_by = user["email"]
     result = await db.expenses.insert_one(payload.to_mongo())
-    doc = await db.expenses.find_one({"_id": result.inserted_id})
+    doc = await db.expenses.find_one(tenant_query(user, {"_id": result.inserted_id}))
     return Expense.from_mongo(doc)
 
 
@@ -32,16 +34,17 @@ async def update_expense(expense_id: str, payload: Expense, user: dict = Depends
     payload.id = expense_id
     data = payload.to_mongo()
     data.pop("_id", None)
-    result = await db.expenses.update_one({"_id": ObjectId(expense_id)}, {"$set": data})
+    data.pop("firm_id", None)
+    result = await db.expenses.update_one(tenant_query(user, {"_id": ObjectId(expense_id)}), {"$set": data})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Το έξοδο δεν βρέθηκε")
-    doc = await db.expenses.find_one({"_id": ObjectId(expense_id)})
+    doc = await db.expenses.find_one(tenant_query(user, {"_id": ObjectId(expense_id)}))
     return Expense.from_mongo(doc)
 
 
 @router.delete("/{expense_id}")
 async def delete_expense(expense_id: str, user: dict = Depends(get_current_user)):
-    result = await db.expenses.delete_one({"_id": ObjectId(expense_id)})
+    result = await db.expenses.delete_one(tenant_query(user, {"_id": ObjectId(expense_id)}))
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Το έξοδο δεν βρέθηκε")
     return {"message": "Το έξοδο διαγράφηκε"}

@@ -10,6 +10,7 @@ load_dotenv(ROOT_DIR / '.env')
 
 from db import db
 from auth import hash_password, verify_password
+from tenant import LEGACY_FIRM_ID
 from storage import init_storage
 from routes_auth import router as auth_router
 from routes_clients import router as clients_router
@@ -109,6 +110,7 @@ async def seed_admin():
             "password_hash": hash_password(admin_password),
             "name": "Διαχειριστής",
             "role": "admin",
+            "firm_id": LEGACY_FIRM_ID,
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
         logger.info(f"Seeded admin user: {admin_email}")
@@ -118,7 +120,35 @@ async def seed_admin():
 
 @app.on_event("startup")
 async def startup_event():
+    # Existing deployments were single-tenant. Keep their records together
+    # under a stable tenant rather than exposing unscoped legacy documents.
+    # Backfill the tenant marker for every persisted firm-owned collection.
+    for collection in (
+        db.users, db.clients, db.invoices, db.expenses, db.payroll_employees,
+        db.payroll_runs, db.cases, db.grammatia, db.paravola, db.hearings,
+        db.settings, db.trust_accounts, db.trust_transactions, db.kyc,
+        db.signatures, db.payment_transactions, db.client_portal_tokens,
+        db.audit_logs, db.case_tracker_events, db.bank_transactions,
+        db.portal_messages, db.copilot_messages, db.drafting_templates,
+        db.drafting_clauses,
+    ):
+        await collection.update_many(
+            {"firm_id": {"$exists": False}},
+            {"$set": {"firm_id": LEGACY_FIRM_ID}},
+        )
     await db.users.create_index("email", unique=True)
+    await db.users.create_index("firm_id")
+    await db.clients.create_index("firm_id")
+    await db.invoices.create_index("firm_id")
+    for collection in (
+        db.expenses, db.payroll_employees, db.payroll_runs, db.cases,
+        db.grammatia, db.paravola, db.hearings, db.settings,
+        db.trust_accounts, db.trust_transactions, db.kyc, db.signatures,
+        db.payment_transactions, db.client_portal_tokens, db.audit_logs,
+        db.case_tracker_events, db.bank_transactions, db.portal_messages,
+        db.copilot_messages, db.drafting_templates, db.drafting_clauses,
+    ):
+        await collection.create_index("firm_id")
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=3600)
     await db.login_attempts.create_index("identifier")
     await db.bank_transactions.create_index("external_id", unique=True, sparse=True)

@@ -9,6 +9,7 @@ from bson import ObjectId
 from db import db
 from models import ClientPortalToken
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/client-portal", tags=["client-portal"])
 public_router = APIRouter(prefix="/portal", tags=["portal-public"])
@@ -23,7 +24,7 @@ class InviteRequest(BaseModel):
 async def invite_client(payload: InviteRequest, user: dict = Depends(get_current_user)):
     """Δημιουργεί magic link για πρόσβαση πελάτη και στέλνει email."""
     try:
-        client = await db.clients.find_one({"_id": ObjectId(payload.client_id)})
+        client = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(payload.client_id)}))
     except Exception:
         raise HTTPException(status_code=400, detail="Μη έγκυρο id πελάτη")
     if not client:
@@ -38,13 +39,14 @@ async def invite_client(payload: InviteRequest, user: dict = Depends(get_current
         client_id=payload.client_id,
         client_name=client.get("name", ""),
         expires_at=expires.isoformat(),
+        firm_id=firm_id_for(user),
     )
     await db.client_portal_tokens.insert_one(tk.to_mongo())
 
     portal_link = f"{payload.origin_url}/portal/{token}" if payload.origin_url else f"/portal/{token}"
 
     # Στείλε email αν είναι διαθέσιμο SMTP
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     email_sent = False
     from email_utils import smtp_ready, send_email_with_pdf
     if smtp_ready(settings):
@@ -87,7 +89,7 @@ async def invite_client(payload: InviteRequest, user: dict = Depends(get_current
 @router.get("/tokens/{client_id}")
 async def list_client_tokens(client_id: str, user: dict = Depends(get_current_user)):
     now = datetime.now(timezone.utc).isoformat()
-    tokens = await db.client_portal_tokens.find({"client_id": client_id}).sort("created_at", -1).to_list(20)
+    tokens = await db.client_portal_tokens.find(tenant_query(user, {"client_id": client_id})).sort("created_at", -1).to_list(20)
     return [{
         "id": str(t["_id"]),
         "token": t["token"][:8] + "…" + t["token"][-4:],
@@ -101,7 +103,7 @@ async def list_client_tokens(client_id: str, user: dict = Depends(get_current_us
 @router.delete("/tokens/{token_id}")
 async def revoke_token(token_id: str, user: dict = Depends(get_current_user)):
     try:
-        result = await db.client_portal_tokens.delete_one({"_id": ObjectId(token_id)})
+        result = await db.client_portal_tokens.delete_one(tenant_query(user, {"_id": ObjectId(token_id)}))
     except Exception:
         raise HTTPException(status_code=404, detail="Το token δεν βρέθηκε")
     if result.deleted_count == 0:
@@ -130,17 +132,18 @@ async def portal_data(token: str):
     tk = await _validate_token(token)
     client_id = tk["client_id"]
 
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one({"firm_id": tk.get("firm_id", "legacy-default-firm")}) or {}
     try:
-        client = await db.clients.find_one({"_id": ObjectId(client_id)})
+        client = await db.clients.find_one({"_id": ObjectId(client_id), "firm_id": tk.get("firm_id", "legacy-default-firm")})
     except Exception:
         client = None
     if not client:
         raise HTTPException(status_code=404, detail="Ο πελάτης δεν βρέθηκε")
 
-    invoices = await db.invoices.find({"client_id": client_id, "status": {"$in": ["issued", "paid"]}}).sort("date", -1).to_list(200)
-    cases = await db.cases.find({"client_id": client_id}).sort("created_at", -1).to_list(50)
-    trust = await db.trust_accounts.find_one({"client_id": client_id})
+    firm = tk.get("firm_id", "legacy-default-firm")
+    invoices = await db.invoices.find({"client_id": client_id, "firm_id": firm, "status": {"$in": ["issued", "paid"]}}).sort("date", -1).to_list(200)
+    cases = await db.cases.find({"client_id": client_id, "firm_id": firm}).sort("created_at", -1).to_list(50)
+    trust = await db.trust_accounts.find_one({"client_id": client_id, "firm_id": firm})
 
     return {
         "firm": {
@@ -193,13 +196,13 @@ async def portal_invoice_pdf(token: str, invoice_id: str):
     from pdf_utils import build_invoice_pdf
     tk = await _validate_token(token)
     try:
-        inv = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+        inv = await db.invoices.find_one({"_id": ObjectId(invoice_id), "firm_id": tk.get("firm_id", "legacy-default-firm")})
     except Exception:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     if not inv or inv.get("client_id") != tk["client_id"]:
         raise HTTPException(status_code=403, detail="Δεν επιτρέπεται η πρόσβαση σε αυτό το τιμολόγιο.")
-    client = await db.clients.find_one({"_id": ObjectId(tk["client_id"])})
-    settings = await db.settings.find_one({}) or {}
+    client = await db.clients.find_one({"_id": ObjectId(tk["client_id"]), "firm_id": tk.get("firm_id", "legacy-default-firm")})
+    settings = await db.settings.find_one({"firm_id": tk.get("firm_id", "legacy-default-firm")}) or {}
     pdf_bytes = build_invoice_pdf(inv, client or {}, settings)
     safe = (inv.get("number") or "invoice").replace("ΤΠΥ", "TPY")
     return Response(content=pdf_bytes, media_type="application/pdf",

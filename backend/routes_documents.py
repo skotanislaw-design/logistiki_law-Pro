@@ -3,6 +3,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from db import db
 from auth import get_current_user
+from tenant import tenant_query
 from docx_utils import build_letter_docx
 from copilot import draft_letter_llm
 
@@ -23,7 +24,7 @@ class DraftPayload(BaseModel):
 async def letter_word(payload: LetterPayload, user: dict = Depends(get_current_user)):
     if not payload.body.strip():
         raise HTTPException(status_code=400, detail="Το περιεχόμενο του εγγράφου είναι κενό")
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     docx_bytes = build_letter_docx(settings, payload.recipient, payload.subject, payload.body)
     return Response(
         content=docx_bytes,
@@ -37,7 +38,7 @@ async def letter_pdf(payload: LetterPayload, user: dict = Depends(get_current_us
     from pdf_utils import build_letter_pdf
     if not payload.body.strip():
         raise HTTPException(status_code=400, detail="Το περιεχόμενο του εγγράφου είναι κενό")
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     pdf_bytes = build_letter_pdf(settings, payload.recipient, payload.subject, payload.body)
     return Response(
         content=pdf_bytes,

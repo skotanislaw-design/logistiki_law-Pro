@@ -2,6 +2,7 @@ from typing import Optional, List, Literal
 from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 from db import BaseDocument, PyObjectId
+from tenant import LEGACY_FIRM_ID
 
 VAT_RATES = [24, 13, 6, 0]
 EXPENSE_CATEGORIES = [
@@ -16,6 +17,7 @@ def now_iso() -> str:
 
 
 class User(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     email: str
     password_hash: str
     name: str
@@ -29,9 +31,11 @@ class UserPublic(BaseModel):
     name: str
     role: str
     created_at: str
+    firm_id: str = LEGACY_FIRM_ID
 
 
 class Client(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     name: str
     afm: str = ""
     doy: str = ""
@@ -51,6 +55,7 @@ class InvoiceLineItem(BaseModel):
 
 
 class Invoice(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     number: str = ""
     client_id: str
     client_name: str = ""
@@ -79,6 +84,7 @@ class Invoice(BaseDocument):
 
 
 class Expense(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     vendor: str
     date: str
     amount: float
@@ -93,6 +99,7 @@ class Expense(BaseDocument):
 
 
 class PayrollEmployee(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     name: str
     afm: str = ""
     amka: str = ""
@@ -105,6 +112,7 @@ class PayrollEmployee(BaseDocument):
 
 
 class PayrollRun(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     employee_id: str
     employee_name: str = ""
     period: str
@@ -120,6 +128,7 @@ class PayrollRun(BaseDocument):
 
 
 class Case(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     number: str = ""
     title: str
     case_type: str = "Αστικό"
@@ -140,6 +149,7 @@ class Case(BaseDocument):
 
 
 class Grammatio(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     number: str = ""
     case_id: str = ""
     case_title: str = ""
@@ -161,6 +171,7 @@ class Grammatio(BaseDocument):
 
 
 class Paravolo(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     number: str = ""
     case_id: str = ""
     case_title: str = ""
@@ -175,6 +186,7 @@ class Paravolo(BaseDocument):
 
 
 class Hearing(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     case_id: str = ""
     case_title: str = ""
     court: str
@@ -192,6 +204,7 @@ class Hearing(BaseDocument):
 
 
 class Settings(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     company_name: str = "Δικηγορική Εταιρεία"
     afm: str = ""
     doy: str = ""
@@ -215,6 +228,7 @@ class Settings(BaseDocument):
 
 
 class TrustAccount(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     """Ξεχωριστός λογαριασμός πελάτη — Ν.4194/2013 άρθρο 32.
     Παρακολουθεί χρήματα που ανήκουν στον πελάτη και τηρούνται από τη δικηγορική εταιρεία
     (προκαταβολές, εγγυοδοσίες, εισπραχθέντα ποσά από αντιδίκους κτλ)."""
@@ -228,6 +242,7 @@ class TrustAccount(BaseDocument):
 
 
 class TrustTransaction(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     account_id: str
     client_id: str = ""
     client_name: str = ""
@@ -245,6 +260,7 @@ class TrustTransaction(BaseDocument):
 
 
 class KycRecord(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     """KYC/AML — Ν.4557/2018. Ταυτοποίηση πελάτη + Risk Assessment."""
     client_id: str
     client_name: str = ""
@@ -270,6 +286,7 @@ class KycRecord(BaseDocument):
 
 
 class ESignature(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     """Ψηφιακή υπογραφή (Ν.4727/2020 απλή ηλεκτρονική υπογραφή)."""
     document_id: str = ""
     document_title: str = ""
@@ -284,6 +301,7 @@ class ESignature(BaseDocument):
 
 
 class PaymentTransaction(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     session_id: str
     invoice_id: str = ""
     invoice_number: str = ""
@@ -299,6 +317,7 @@ class PaymentTransaction(BaseDocument):
 
 
 class ClientPortalToken(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     """Magic-link token για πρόσβαση πελάτη στο portal του."""
     token: str
     client_id: str
@@ -309,6 +328,7 @@ class ClientPortalToken(BaseDocument):
 
 
 class AuditLog(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     action: str
     entity: str = ""  # π.χ. invoice, case, trust_tx
     entity_id: str = ""
@@ -318,6 +338,7 @@ class AuditLog(BaseDocument):
 
 
 class CaseTrackerEvent(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     """Καταγραφή αλλαγής σε ΣΟΛΩΝ/εξωτερικό portal για συγκεκριμένη υπόθεση."""
     case_id: str
     case_number: str = ""
@@ -332,6 +353,7 @@ class CaseTrackerEvent(BaseDocument):
 
 
 class BankTransaction(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     """Τραπεζική κίνηση από CSV/OFX import."""
     date: str
     description: str
@@ -350,6 +372,7 @@ class BankTransaction(BaseDocument):
 
 
 class PortalMessage(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     """Ασφαλής συνομιλία δικηγόρου ↔ πελάτη μέσω portal."""
     client_id: str
     client_name: str = ""
