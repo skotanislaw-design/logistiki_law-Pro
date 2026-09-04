@@ -7,8 +7,35 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
 from reportlab.lib.styles import ParagraphStyle
 
-pdfmetrics.registerFont(TTFont("Free", "/usr/share/fonts/truetype/freefont/FreeSans.ttf"))
-pdfmetrics.registerFont(TTFont("FreeB", "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"))
+# Greek-capable TrueType fonts. The first pair that exists on the host wins; without any
+# of them we fall back to ReportLab's built-in Helvetica so the API never fails to import
+# (the original hard-coded FreeSans path crashed the whole backend on hosts without it).
+_FONT_CANDIDATES = [
+    ("/usr/share/fonts/truetype/freefont/FreeSans.ttf", "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+    ("/usr/share/fonts/dejavu/DejaVuSans.ttf", "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"),
+    ("/Library/Fonts/Arial Unicode.ttf", "/Library/Fonts/Arial Unicode.ttf"),
+]
+
+
+def _register_fonts() -> tuple[str, str]:
+    import os
+    custom = os.environ.get("PDF_FONT_REGULAR"), os.environ.get("PDF_FONT_BOLD")
+    for regular, bold in ([custom] if all(custom) else []) + _FONT_CANDIDATES:
+        if os.path.isfile(regular) and os.path.isfile(bold):
+            try:
+                pdfmetrics.registerFont(TTFont("Free", regular))
+                pdfmetrics.registerFont(TTFont("FreeB", bold))
+                return "Free", "FreeB"
+            except Exception:
+                continue
+    import logging
+    logging.getLogger(__name__).warning("No Greek TrueType font found for PDFs; falling back to Helvetica (set PDF_FONT_REGULAR/PDF_FONT_BOLD)")
+    return "Helvetica", "Helvetica-Bold"
+
+
+FONT, FONT_BOLD = _register_fonts()
 
 NAVY = colors.HexColor("#0a0f1e")
 NAVY_LIGHT = colors.HexColor("#141b30")
@@ -25,7 +52,7 @@ def _money(v):
 
 def _p(text, size=9, bold=False, color=colors.black, align=0, leading=None):
     style = ParagraphStyle(
-        "s", fontName="FreeB" if bold else "Free", fontSize=size,
+        "s", fontName=FONT_BOLD if bold else FONT, fontSize=size,
         textColor=color, alignment=align, leading=leading or size * 1.35,
     )
     return Paragraph(text, style)
