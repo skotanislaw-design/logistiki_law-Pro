@@ -32,6 +32,29 @@ def create_access_token(user_id: str, email: str) -> str:
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
 
 
+def create_mfa_token(user_id: str) -> str:
+    """Βραχύβιο token που πιστοποιεί «σωστός κωδικός, εκκρεμεί ο 2ος παράγοντας».
+    Δεν δίνει καμία πρόσβαση σε δεδομένα — μόνο στο endpoint επαλήθευσης."""
+    payload = {
+        "sub": user_id,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+        "type": "mfa",
+    }
+    return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
+
+
+def decode_mfa_token(token: str) -> str:
+    try:
+        payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Η σύνδεση έληξε. Ξεκινήστε ξανά.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Μη έγκυρο token επαλήθευσης")
+    if payload.get("type") != "mfa":
+        raise HTTPException(status_code=401, detail="Μη έγκυρος τύπος token")
+    return payload["sub"]
+
+
 def create_refresh_token(user_id: str) -> str:
     payload = {
         "sub": user_id,
@@ -62,7 +85,10 @@ async def get_current_user(request: Request) -> dict:
         if not user:
             raise HTTPException(status_code=401, detail="Ο χρήστης δεν βρέθηκε")
         user["_id"] = str(user["_id"])
-        user.pop("password_hash", None)
+        # Τα μυστικά δεν ταξιδεύουν με το request-scoped user object: όποιο endpoint τα
+        # χρειάζεται τα φορτώνει ρητά από τη βάση.
+        for secret_field in ("password_hash", "mfa_secret", "mfa_pending_secret", "mfa_backup_codes"):
+            user.pop(secret_field, None)
         return user
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Η συνεδρία έληξε")

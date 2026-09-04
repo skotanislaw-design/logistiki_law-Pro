@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 from bson import ObjectId
 
 from db import db
+from crypto import decrypt
 from models import Notification, AutomationRun, VatPeriod, Expense
 from tax_utils import generate_tax_calendar, next_vat_deadline
 from email_utils import smtp_ready, send_email_with_pdf
@@ -468,7 +469,7 @@ def _fetch_unseen_attachments(settings: dict, limit: int = 20) -> list[dict]:
     out = []
     conn = imaplib.IMAP4_SSL(settings.get("imap_host") or "imap.gmail.com", int(settings.get("imap_port") or 993))
     try:
-        conn.login(settings["imap_user"], settings["imap_password"])
+        conn.login(settings["imap_user"], decrypt(settings["imap_password"]))
         conn.select(settings.get("imap_folder") or "INBOX")
         status, data = conn.search(None, "UNSEEN")
         if status != "OK":

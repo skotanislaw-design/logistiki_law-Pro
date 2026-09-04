@@ -31,6 +31,7 @@ services:
       MONGO_URL: "mongodb://mongo:27017"
       DB_NAME: "${DB_NAME:-nomos_one}"
       JWT_SECRET: "${JWT_SECRET}"
+      SECRETS_KEY: "${SECRETS_KEY:-}"
       EMERGENT_LLM_KEY: "${EMERGENT_LLM_KEY}"
       STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY}"
       STRIPE_PUBLISHABLE_KEY: "${STRIPE_PUBLISHABLE_KEY}"

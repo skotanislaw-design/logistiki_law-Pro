@@ -20,6 +20,8 @@ from xml.etree.ElementTree import fromstring
 
 import httpx
 
+from crypto import decrypt
+
 INVOICE_NS = "http://www.aade.gr/myDATA/invoice/v1.0"
 ICLS_NS = "https://www.aade.gr/myDATA/incomeClassificaton/v1.0"
 SANDBOX_BASE = "https://mydataapidev.aade.gr"
@@ -77,7 +79,7 @@ def _urls(settings: dict) -> dict:
 def _headers(settings: dict) -> dict:
     return {
         "aade-user-id": settings["aade_user_id"].strip(),
-        "ocp-apim-subscription-key": settings["aade_subscription_key"].strip(),
+        "ocp-apim-subscription-key": decrypt(settings["aade_subscription_key"]).strip(),
         "Content-Type": "application/xml",
         "Accept": "application/xml",
     }
