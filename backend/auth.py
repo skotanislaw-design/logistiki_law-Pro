@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import Request, HTTPException, Depends
 from db import db
 from bson import ObjectId
+from tenant import LEGACY_FIRM_ID, firm_id_for
 
 JWT_ALGORITHM = "HS256"
 

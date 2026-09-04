@@ -10,6 +10,7 @@ from auth import (
     set_auth_cookies, get_current_user, check_lockout, record_failed_attempt, clear_attempts,
     get_jwt_secret, JWT_ALGORITHM,
 )
+from tenant import LEGACY_FIRM_ID, new_firm_id, firm_id_for, tenant_query
 import jwt
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -28,7 +29,7 @@ class RegisterRequest(BaseModel):
 
 
 def to_public(user: dict) -> dict:
-    return {"id": str(user["_id"]) if "_id" in user else user.get("id"), "email": user["email"], "name": user["name"], "role": user["role"], "created_at": user.get("created_at", "")}
+    return {"id": str(user["_id"]) if "_id" in user else user.get("id"), "email": user["email"], "name": user["name"], "role": user["role"], "created_at": user.get("created_at", ""), "firm_id": firm_id_for(user)}
 
 
 @router.post("/register")
@@ -37,8 +38,9 @@ async def register(payload: RegisterRequest, response: Response):
     existing = await db.users.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=400, detail="Υπάρχει ήδη χρήστης με αυτό το email")
-    role = payload.role if payload.role in ("admin", "accountant", "lawyer") else "lawyer"
-    user = User(email=email, password_hash=hash_password(payload.password), name=payload.name, role=role)
+    # Public registration must never grant elevated privileges.  A new
+    # registration starts a separate firm; invitations can provision members.
+    user = User(email=email, password_hash=hash_password(payload.password), name=payload.name, role="lawyer", firm_id=new_firm_id())
     result = await db.users.insert_one(user.to_mongo())
     user_id = str(result.inserted_id)
     access = create_access_token(user_id, email)
@@ -139,5 +141,5 @@ async def reset_password(payload: ResetPasswordRequest):
 
 @router.get("/users")
 async def list_users(user: dict = Depends(get_current_user)):
-    users = await db.users.find({}).to_list(200)
+    users = await db.users.find(tenant_query(user)).to_list(200)
     return [to_public(u) for u in users]

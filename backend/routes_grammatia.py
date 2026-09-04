@@ -6,6 +6,7 @@ from typing import Optional
 from bson import ObjectId
 from db import db
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 from models import Grammatio, Invoice, InvoiceLineItem
 from routes_cases import log_case_event
 
@@ -132,6 +133,7 @@ async def grammatio_to_invoice(gid: str, user: dict = Depends(get_current_user))
     if doc.get("invoice_id"):
         raise HTTPException(status_code=400, detail="Το γραμμάτιο έχει ήδη ενσωματωθεί σε τιμολόγιο")
     inv = Invoice(
+        firm_id=firm_id_for(user),
         client_id=doc["client_id"],
         client_name=doc.get("client_name", ""),
         date=date.today().isoformat(),
@@ -145,8 +147,8 @@ async def grammatio_to_invoice(gid: str, user: dict = Depends(get_current_user))
     from tax_utils import calculate_invoice_totals
     totals = calculate_invoice_totals(inv.line_items)
     inv.subtotal, inv.vat_amount, inv.total, inv.vat_breakdown = totals["subtotal"], totals["vat_amount"], totals["total"], totals["vat_breakdown"]
-    inv.number = await _next_invoice_number()
+    inv.number = await _next_invoice_number(firm_id_for(user))
     result = await db.invoices.insert_one(inv.to_mongo())
     await db.grammatia.update_one({"_id": ObjectId(gid)}, {"$set": {"invoice_id": str(result.inserted_id)}})
-    inv_doc = await db.invoices.find_one({"_id": result.inserted_id})
+    inv_doc = await db.invoices.find_one(tenant_query(user, {"_id": result.inserted_id}))
     return Invoice.from_mongo(inv_doc)

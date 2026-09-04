@@ -9,6 +9,7 @@ from models import Invoice, InvoiceLineItem
 from tax_utils import calculate_invoice_totals
 from copilot import copilot_llm, _try_action
 from routes_invoices import _next_invoice_number
+from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/copilot", tags=["copilot"])
 
@@ -33,7 +34,7 @@ async def _execute_create_invoice(action: dict, user: dict):
     name = (action.get("client_name") or "").strip().lower()
     if not name:
         return None, "Δεν κατάλαβα για ποιον πελάτη. Πες μου το όνομα του πελάτη."
-    clients = await db.clients.find({}).to_list(200)
+    clients = await db.clients.find(tenant_query(user)).to_list(200)
     matches = [c for c in clients if name in c["name"].lower() or c["name"].lower() in name]
     if not matches:
         available = ", ".join(c["name"] for c in clients[:10]) or "κανένας"
@@ -53,12 +54,13 @@ async def _execute_create_invoice(action: dict, user: dict):
         date=date.today().isoformat(),
         line_items=[InvoiceLineItem(description=action.get("description") or "Νομικές υπηρεσίες", quantity=1, unit_price=amount, vat_rate=vat_rate)],
         created_by=user["email"],
+        firm_id=firm_id_for(user),
     )
     totals = calculate_invoice_totals(inv.line_items)
     inv.subtotal, inv.vat_amount, inv.total, inv.vat_breakdown = totals["subtotal"], totals["vat_amount"], totals["total"], totals["vat_breakdown"]
-    inv.number = await _next_invoice_number()
+    inv.number = await _next_invoice_number(firm_id_for(user))
     result = await db.invoices.insert_one(inv.to_mongo())
-    doc = await db.invoices.find_one({"_id": result.inserted_id})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": result.inserted_id}))
     created = Invoice.from_mongo(doc)
     reply = (
         f"✅ Δημιούργησα το τιμολόγιο **{created.number}** για τον πελάτη **{client['name']}**:\n"

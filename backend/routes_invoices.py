@@ -7,18 +7,19 @@ from bson import ObjectId
 from db import db
 from models import Invoice
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 from tax_utils import calculate_invoice_totals
 from ai_helpers import transcribe_audio, parse_invoice_from_text
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
 
-async def _next_invoice_number() -> str:
+async def _next_invoice_number(firm_id: str) -> str:
     from datetime import datetime, timezone
     from pymongo import ReturnDocument
     year = datetime.now(timezone.utc).year
     counter = await db.counters.find_one_and_update(
-        {"_id": f"invoice-{year}"},
+        {"_id": f"invoice-{firm_id}-{year}"},
         {"$inc": {"seq": 1}},
         upsert=True,
         return_document=ReturnDocument.AFTER,
@@ -27,7 +28,7 @@ async def _next_invoice_number() -> str:
     # Seed the counter above any pre-existing max if this is the first use for the year
     if seq == 1:
         existing_max = 0
-        async for d in db.invoices.find({"number": {"$regex": f"^ΤΠΥ-{year}-"}}, {"number": 1}):
+        async for d in db.invoices.find({"firm_id": firm_id, "number": {"$regex": f"^ΤΠΥ-{year}-"}}, {"number": 1}):
             try:
                 n = int(d["number"].rsplit("-", 1)[-1])
                 if n > existing_max:
@@ -36,7 +37,7 @@ async def _next_invoice_number() -> str:
                 pass
         if existing_max >= seq:
             counter = await db.counters.find_one_and_update(
-                {"_id": f"invoice-{year}"},
+                {"_id": f"invoice-{firm_id}-{year}"},
                 {"$set": {"seq": existing_max + 1}},
                 return_document=ReturnDocument.AFTER,
             )
@@ -46,14 +47,14 @@ async def _next_invoice_number() -> str:
 
 @router.get("")
 async def list_invoices(user: dict = Depends(get_current_user)):
-    docs = await db.invoices.find({}).sort("created_at", -1).to_list(1000)
+    docs = await db.invoices.find(tenant_query(user)).sort("created_at", -1).to_list(1000)
     return [Invoice.from_mongo(d) for d in docs]
 
 
 @router.get("/{invoice_id}")
 async def get_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
     try:
-        doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+        doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     except Exception:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     if not doc:
@@ -64,32 +65,38 @@ async def get_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
 @router.post("")
 async def create_invoice(payload: Invoice, user: dict = Depends(get_current_user)):
     payload.id = None
-    client_doc = await db.clients.find_one({"_id": ObjectId(payload.client_id)})
+    client_doc = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(payload.client_id)}))
     if not client_doc:
         raise HTTPException(status_code=404, detail="Ο πελάτης δεν βρέθηκε")
     payload.client_name = client_doc["name"]
+    payload.firm_id = firm_id_for(user)
     totals = calculate_invoice_totals(payload.line_items)
     payload.subtotal = totals["subtotal"]
     payload.vat_amount = totals["vat_amount"]
     payload.total = totals["total"]
     payload.vat_breakdown = totals["vat_breakdown"]
-    payload.number = await _next_invoice_number()
+    payload.number = await _next_invoice_number(firm_id_for(user))
     payload.created_by = user["email"]
     result = await db.invoices.insert_one(payload.to_mongo())
-    doc = await db.invoices.find_one({"_id": result.inserted_id})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": result.inserted_id}))
     return Invoice.from_mongo(doc)
 
 
 @router.put("/{invoice_id}")
 async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends(get_current_user)):
-    existing = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    try:
+        invoice_oid = ObjectId(invoice_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    existing = await db.invoices.find_one(tenant_query(user, {"_id": invoice_oid}))
     if not existing:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
-    client_doc = await db.clients.find_one({"_id": ObjectId(payload.client_id)})
+    client_doc = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(payload.client_id)}))
     if not client_doc:
         raise HTTPException(status_code=404, detail="Ο πελάτης δεν βρέθηκε")
     totals = calculate_invoice_totals(payload.line_items)
     payload.id = invoice_id
+    payload.firm_id = firm_id_for(user)
     payload.client_name = client_doc["name"]
     payload.subtotal = totals["subtotal"]
     payload.vat_amount = totals["vat_amount"]
@@ -98,14 +105,18 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
     payload.number = existing["number"]
     data = payload.to_mongo()
     data.pop("_id", None)
-    await db.invoices.update_one({"_id": ObjectId(invoice_id)}, {"$set": data})
-    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    await db.invoices.update_one(tenant_query(user, {"_id": invoice_oid}), {"$set": data})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": invoice_oid}))
     return Invoice.from_mongo(doc)
 
 
 @router.delete("/{invoice_id}")
 async def delete_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
-    result = await db.invoices.delete_one({"_id": ObjectId(invoice_id)})
+    try:
+        invoice_oid = ObjectId(invoice_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    result = await db.invoices.delete_one(tenant_query(user, {"_id": invoice_oid}))
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     return {"message": "Το τιμολόγιο διαγράφηκε"}
@@ -115,7 +126,7 @@ async def delete_invoice(invoice_id: str, user: dict = Depends(get_current_user)
 async def issue_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
     from datetime import datetime, timezone
     from mydata_client import mydata_ready, send_invoice, MyDataError
-    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     settings = await db.settings.find_one({}) or {}
@@ -125,7 +136,7 @@ async def issue_invoice(invoice_id: str, user: dict = Depends(get_current_user))
         client = None
         if doc.get("client_id"):
             try:
-                client = await db.clients.find_one({"_id": ObjectId(doc["client_id"])})
+                client = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(doc["client_id"])}))
             except Exception:
                 client = None
         try:
@@ -140,21 +151,21 @@ async def issue_invoice(invoice_id: str, user: dict = Depends(get_current_user))
             "mydata_uid": f"UID-{uuid.uuid4().hex[:12].upper()}",
         })
 
-    await db.invoices.update_one({"_id": ObjectId(invoice_id)}, {"$set": update})
-    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    await db.invoices.update_one(tenant_query(user, {"_id": ObjectId(invoice_id)}), {"$set": update})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     return Invoice.from_mongo(doc)
 
 
 @router.get("/{invoice_id}/pdf")
 async def invoice_pdf(invoice_id: str, user: dict = Depends(get_current_user)):
     from pdf_utils import build_invoice_pdf
-    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     client = None
     if doc.get("client_id"):
         try:
-            client = await db.clients.find_one({"_id": ObjectId(doc["client_id"])})
+            client = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(doc["client_id"])}))
         except Exception:
             client = None
     settings = await db.settings.find_one({}) or {}
@@ -174,13 +185,13 @@ async def send_invoice_by_email(invoice_id: str, user: dict = Depends(get_curren
     from email_utils import smtp_ready, send_email_with_pdf, invoice_email_html, invoice_email_text
     import aiosmtplib as _smtp
 
-    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     client = None
     if doc.get("client_id"):
         try:
-            client = await db.clients.find_one({"_id": ObjectId(doc["client_id"])})
+            client = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(doc["client_id"])}))
         except Exception:
             client = None
     if not client or not client.get("email"):
@@ -205,10 +216,10 @@ async def send_invoice_by_email(invoice_id: str, user: dict = Depends(get_curren
         raise HTTPException(status_code=400, detail=f"Αποτυχία αποστολής email: {e}")
 
     await db.invoices.update_one(
-        {"_id": ObjectId(invoice_id)},
+        tenant_query(user, {"_id": ObjectId(invoice_id)}),
         {"$set": {"email_sent_at": datetime.now(timezone.utc).isoformat(), "email_sent_to": client["email"]}},
     )
-    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     return Invoice.from_mongo(doc)
 
 
@@ -219,7 +230,7 @@ async def send_invoice_reminder(invoice_id: str, user: dict = Depends(get_curren
     from email_utils import smtp_ready, send_email_with_pdf, reminder_email_html, reminder_email_text
     import aiosmtplib as _smtp
 
-    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     if doc.get("status") == "paid":
@@ -230,7 +241,7 @@ async def send_invoice_reminder(invoice_id: str, user: dict = Depends(get_curren
     client = None
     if doc.get("client_id"):
         try:
-            client = await db.clients.find_one({"_id": ObjectId(doc["client_id"])})
+            client = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(doc["client_id"])}))
         except Exception:
             client = None
     if not client or not client.get("email"):
@@ -308,18 +319,18 @@ async def send_invoice_reminder(invoice_id: str, user: dict = Depends(get_curren
         raise HTTPException(status_code=400, detail=f"Αποτυχία αποστολής υπενθύμισης: {e}")
 
     await db.invoices.update_one(
-        {"_id": ObjectId(invoice_id)},
+        tenant_query(user, {"_id": ObjectId(invoice_id)}),
         {"$set": {"reminder_sent_at": datetime.now(timezone.utc).isoformat(), "email_sent_to": client["email"]},
          "$inc": {"reminder_count": 1}},
     )
-    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     return Invoice.from_mongo(doc)
 
 
 @router.post("/{invoice_id}/mark-paid")
 async def mark_invoice_paid(invoice_id: str, user: dict = Depends(get_current_user)):
     from datetime import datetime, timezone
-    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     if doc.get("status") == "paid":
@@ -327,25 +338,25 @@ async def mark_invoice_paid(invoice_id: str, user: dict = Depends(get_current_us
     if doc.get("status") != "issued":
         raise HTTPException(status_code=400, detail="Μόνο εκδοθέντα τιμολόγια μπορούν να σημανθούν ως εξοφλημένα")
     await db.invoices.update_one(
-        {"_id": ObjectId(invoice_id)},
+        tenant_query(user, {"_id": ObjectId(invoice_id)}),
         {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc).isoformat()}},
     )
-    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     return Invoice.from_mongo(doc)
 
 
 @router.post("/{invoice_id}/mark-unpaid")
 async def mark_invoice_unpaid(invoice_id: str, user: dict = Depends(get_current_user)):
-    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     if doc.get("status") != "paid":
         raise HTTPException(status_code=400, detail="Το τιμολόγιο δεν είναι σε κατάσταση εξοφλημένο.")
     await db.invoices.update_one(
-        {"_id": ObjectId(invoice_id)},
+        tenant_query(user, {"_id": ObjectId(invoice_id)}),
         {"$set": {"status": "issued", "paid_at": None}},
     )
-    doc = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     return Invoice.from_mongo(doc)
 
 
@@ -357,7 +368,7 @@ async def voice_parse_invoice(audio: UploadFile = File(...), user: dict = Depend
         tmp_path = tmp.name
     try:
         transcript = await transcribe_audio(tmp_path)
-        clients = await db.clients.find({}).to_list(200)
+        clients = await db.clients.find(tenant_query(user)).to_list(200)
         client_names = [c["name"] for c in clients]
         parsed = await parse_invoice_from_text(transcript, client_names)
         matched_client = None

@@ -2,6 +2,7 @@ from typing import Optional, List, Literal
 from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 from db import BaseDocument, PyObjectId
+from tenant import LEGACY_FIRM_ID
 
 VAT_RATES = [24, 13, 6, 0]
 EXPENSE_CATEGORIES = [
@@ -16,6 +17,7 @@ def now_iso() -> str:
 
 
 class User(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     email: str
     password_hash: str
     name: str
@@ -29,9 +31,11 @@ class UserPublic(BaseModel):
     name: str
     role: str
     created_at: str
+    firm_id: str = LEGACY_FIRM_ID
 
 
 class Client(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     name: str
     afm: str = ""
     doy: str = ""
@@ -51,6 +55,7 @@ class InvoiceLineItem(BaseModel):
 
 
 class Invoice(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
     number: str = ""
     client_id: str
     client_name: str = ""
