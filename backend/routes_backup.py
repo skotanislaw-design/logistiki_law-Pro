@@ -5,6 +5,7 @@
 """
 
 import io
+import re
 import json
 import zipfile
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ from fastapi.responses import Response
 from bson import ObjectId
 from db import db
 from auth import get_current_user, require_admin
+from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/backup", tags=["backup"])
 
@@ -24,6 +26,13 @@ COLLECTIONS = [
     "kyc", "signatures", "payment_transactions", "client_portal_tokens",
     "audit_log", "copilot_messages",
 ]
+
+
+def _scope(user: dict, collection: str) -> dict:
+    """Counters are keyed by firm in their _id; everything else carries firm_id."""
+    if collection == "counters":
+        return {"_id": {"$regex": f"-{re.escape(firm_id_for(user))}-"}}
+    return tenant_query(user)
 
 
 def _to_json_safe(doc):
@@ -58,7 +67,7 @@ async def export_backup(user: dict = Depends(require_admin)):
     counts = {}
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for name in COLLECTIONS:
-            docs = await db[name].find({}).to_list(50000)
+            docs = await db[name].find(_scope(user, name)).to_list(50000)
             counts[name] = len(docs)
             safe = [_to_json_safe(d) for d in docs]
             zf.writestr(f"{name}.json", json.dumps(safe, ensure_ascii=False, indent=2))
@@ -105,6 +114,9 @@ async def import_backup(file: UploadFile = File(...), user: dict = Depends(requi
         n = 0
         for raw in data:
             doc = _from_json_safe(raw)
+            if coll != "counters":
+                # Never let a restored file re-assign documents to another firm.
+                doc["firm_id"] = firm_id_for(user)
             _id = doc.get("_id")
             if _id is not None:
                 await db[coll].replace_one({"_id": _id}, doc, upsert=True)
@@ -125,17 +137,17 @@ async def gdpr_export_client(client_id: str, user: dict = Depends(get_current_us
     """DSR (Data Subject Request) — εξάγει όλα τα δεδομένα ενός πελάτη σε ZIP.
     Απαιτούμενο από τον GDPR (άρθρο 15 & 20)."""
     try:
-        client = await db.clients.find_one({"_id": ObjectId(client_id)})
+        client = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(client_id)}))
     except Exception:
         raise HTTPException(status_code=400, detail="Μη έγκυρο id πελάτη.")
     if not client:
         raise HTTPException(status_code=404, detail="Ο πελάτης δεν βρέθηκε.")
 
-    invoices = await db.invoices.find({"client_id": client_id}).to_list(5000)
-    cases = await db.cases.find({"client_id": client_id}).to_list(5000)
-    grammatia = await db.grammatia.find({"client_id": client_id}).to_list(5000)
-    trust_accounts = await db.trust_accounts.find({"client_id": client_id}).to_list(100)
-    trust_txs = await db.trust_transactions.find({"client_id": client_id}).to_list(5000)
+    invoices = await db.invoices.find(tenant_query(user, {"client_id": client_id})).to_list(5000)
+    cases = await db.cases.find(tenant_query(user, {"client_id": client_id})).to_list(5000)
+    grammatia = await db.grammatia.find(tenant_query(user, {"client_id": client_id})).to_list(5000)
+    trust_accounts = await db.trust_accounts.find(tenant_query(user, {"client_id": client_id})).to_list(100)
+    trust_txs = await db.trust_transactions.find(tenant_query(user, {"client_id": client_id})).to_list(5000)
 
     dataset = {
         "client": _to_json_safe(client),

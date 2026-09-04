@@ -2,10 +2,8 @@ import os
 import json
 import re
 import uuid
-from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent, TextDelta, StreamDone
-from emergentintegrations.llm.openai import OpenAISpeechToText
+from ai_runtime import LlmChat, UserMessage, ImageContent, TextDelta, StreamDone, EMERGENT_LLM_KEY, OpenAISpeechToText
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
 
 
 def _extract_json(text: str) -> dict:

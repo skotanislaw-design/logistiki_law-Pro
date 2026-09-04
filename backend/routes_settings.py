@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from db import db
 from models import Settings
 from auth import get_current_user, require_admin
+from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -30,6 +31,29 @@ async def update_settings(payload: Settings, user: dict = Depends(require_admin)
         data["firm_id"] = firm_id_for(user)
         result = await db.settings.insert_one(data)
         doc = await db.settings.find_one(tenant_query(user, {"_id": result.inserted_id}))
+    return Settings.from_mongo(doc)
+
+
+@router.patch("")
+async def patch_settings(payload: dict, user: dict = Depends(require_admin)):
+    """Partial update — used by the Autopilot page so it never has to resend SMTP/AADE secrets."""
+    from datetime import datetime, timezone
+    allowed = set(Settings.model_fields) - {"id", "firm_id", "updated_at", "mydata_connected"}
+    data = {k: v for k, v in payload.items() if k in allowed}
+    if not data:
+        raise HTTPException(status_code=400, detail="Δεν δόθηκαν έγκυρα πεδία ρυθμίσεων")
+    current = await db.settings.find_one(tenant_query(user, {}))
+    if not current:
+        current = Settings(firm_id=firm_id_for(user)).to_mongo()
+        await db.settings.insert_one(current)
+    merged = {**current, **data}
+    merged.pop("_id", None)
+    validated = Settings(**{k: v for k, v in merged.items() if k in Settings.model_fields})
+    data = validated.model_dump(exclude={"id", "firm_id"})
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    data["mydata_connected"] = bool(validated.aade_user_id and validated.aade_subscription_key)
+    await db.settings.update_one(tenant_query(user, {}), {"$set": data})
+    doc = await db.settings.find_one(tenant_query(user, {}))
     return Settings.from_mongo(doc)
 
 

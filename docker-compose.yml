@@ -36,6 +36,15 @@ services:
       STRIPE_PUBLISHABLE_KEY: "${STRIPE_PUBLISHABLE_KEY}"
       STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET}"
       STRIPE_MODE: "${STRIPE_MODE:-test}"
+      PUBLIC_URL: "${PUBLIC_URL}"
+      CORS_ORIGINS: "${CORS_ORIGINS:-${PUBLIC_URL}}"
+      ADMIN_EMAIL: "${ADMIN_EMAIL:-admin@logistiki.gr}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      AUTOPILOT_SCHEDULER: "${AUTOPILOT_SCHEDULER:-1}"
+      AUTOPILOT_INTERVAL_MINUTES: "${AUTOPILOT_INTERVAL_MINUTES:-15}"
+      STORAGE_BACKEND: "${STORAGE_BACKEND:-local}"
+      UPLOAD_DIR: /app/uploads
+      MYDATA_MOCK: "${MYDATA_MOCK:-0}"
     volumes:
       - uploaded_files:/app/uploads
       - ./backups:/app/backups

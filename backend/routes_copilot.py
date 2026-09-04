@@ -137,7 +137,7 @@ async def copilot_chat(payload: ChatPayload, user: dict = Depends(get_current_us
     await _save_msg(payload.session_id, "user", payload.message, user)
 
     try:
-        raw = await copilot_llm([{"role": m["role"], "content": m["content"]} for m in history], payload.message)
+        raw = await copilot_llm([{"role": m["role"], "content": m["content"]} for m in history], payload.message, user)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Το Nomos AI δεν είναι διαθέσιμο αυτή τη στιγμή: {e}")
 

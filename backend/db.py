@@ -10,9 +10,16 @@ from bson import ObjectId
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+db_name = os.environ.get('DB_NAME', 'nomos_one')
+
+if mongo_url.startswith("mongomock://"):
+    # In-memory database for unit tests / local demos (no mongod required).
+    from mongomock_motor import AsyncMongoMockClient
+    client = AsyncMongoMockClient()
+else:
+    client = AsyncIOMotorClient(mongo_url)
+db = client[db_name]
 
 
 def validate_object_id(v: Any) -> str:

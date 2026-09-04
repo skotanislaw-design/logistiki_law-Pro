@@ -8,7 +8,7 @@ import json
 import re
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent, TextDelta, StreamDone
+from ai_runtime import LlmChat, UserMessage, ImageContent, TextDelta, StreamDone
 from ai_helpers import EMERGENT_LLM_KEY
 from auth import get_current_user
 

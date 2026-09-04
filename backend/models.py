@@ -72,7 +72,7 @@ class Invoice(BaseDocument):
     mydata_error: Optional[str] = None
     payment_method: str = "Τραπεζική κατάθεση"
     notes: str = ""
-    source: Literal["manual", "voice"] = "manual"
+    source: Literal["manual", "voice", "copilot", "autopilot"] = "manual"
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
     issued_at: Optional[str] = None
@@ -81,6 +81,9 @@ class Invoice(BaseDocument):
     email_sent_to: Optional[str] = None
     reminder_sent_at: Optional[str] = None
     reminder_count: int = 0
+    mydata_attempts: int = 0
+    mydata_synced_at: Optional[str] = None
+    paid_via: Optional[str] = None  # manual / bank_auto / bank_manual / stripe / trust
 
 
 class Expense(BaseDocument):
@@ -93,7 +96,8 @@ class Expense(BaseDocument):
     category: str = "Λοιπά"
     description: str = ""
     receipt_image_url: Optional[str] = None
-    source: Literal["manual", "photo_ocr"] = "manual"
+    source: Literal["manual", "photo_ocr", "email_ocr", "autopilot"] = "manual"
+    review_status: Literal["ok", "needs_review"] = "ok"
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
@@ -224,6 +228,28 @@ class Settings(BaseDocument):
     aade_environment: Literal["sandbox", "production"] = "sandbox"
     mydata_connected: bool = False
     onboarding_completed: bool = False
+    public_url: str = ""
+    # ---- Autopilot (zero-touch accounting) ----
+    autopilot_enabled: bool = True
+    auto_email_on_issue: bool = True          # στέλνει PDF στον πελάτη μόλις εκδοθεί
+    auto_reminders: bool = True               # αυτόματες υπενθυμίσεις ανείσπρακτων
+    reminder_after_days: int = 30             # πρώτη υπενθύμιση Χ ημέρες μετά την έκδοση
+    reminder_interval_days: int = 15          # επόμενες υπενθυμίσεις κάθε Χ ημέρες
+    reminder_max: int = 3                     # μέγιστος αριθμός υπενθυμίσεων ανά τιμολόγιο
+    auto_mydata_retry: bool = True            # επανάληψη αποτυχημένων/εκκρεμών διαβιβάσεων
+    auto_reconcile_min_confidence: int = 90   # auto-επιβεβαίωση τραπεζικών matches ≥ Χ% (0 = off)
+    stale_draft_days: int = 7                 # ειδοποίηση για πρόχειρα που ξεχάστηκαν
+    deadline_alert_days: List[int] = Field(default_factory=lambda: [7, 1])
+    digest_frequency: Literal["daily", "weekly", "off"] = "weekly"
+    digest_email: str = ""                    # κενό = smtp_user
+    digest_hour: int = 7                      # τοπική ώρα Αθήνας
+    # Εισερχόμενα παραστατικά από email (IMAP) → έξοδα με OCR
+    imap_enabled: bool = False
+    imap_host: str = "imap.gmail.com"
+    imap_port: int = 993
+    imap_user: str = ""
+    imap_password: str = ""
+    imap_folder: str = "INBOX"
     updated_at: str = Field(default_factory=now_iso)
 
 
@@ -366,7 +392,9 @@ class BankTransaction(BaseDocument):
     matched_invoice_id: Optional[str] = None
     matched_invoice_number: Optional[str] = None
     match_confidence: int = 0  # 0-100
-    match_status: Literal["unmatched", "auto_matched", "manual_matched", "ignored"] = "unmatched"
+    match_status: Literal["unmatched", "auto_matched", "auto_confirmed", "manual_matched", "ignored"] = "unmatched"
+    review_notified: bool = False
+    confirmed_at: Optional[str] = None
     imported_at: str = Field(default_factory=now_iso)
     imported_by: Optional[str] = None
 
@@ -382,3 +410,53 @@ class PortalMessage(BaseDocument):
     read_at: Optional[str] = None
     case_id: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
+
+
+class Notification(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
+    """Στοιχείο «εισερχομένων» Autopilot: ενημέρωση ή εξαίρεση που χρειάζεται απόφαση."""
+    type: str                                  # invoice_email_failed / reconcile_review / deadline / …
+    level: Literal["info", "success", "warning", "critical"] = "info"
+    title: str
+    message: str = ""
+    entity: str = ""                           # invoice / bank_tx / expense / vat_period
+    entity_id: str = ""
+    requires_action: bool = False
+    actions: List[dict] = Field(default_factory=list)   # [{key,label,payload}]
+    dedupe_key: str = ""
+    read: bool = False
+    resolved_at: Optional[str] = None
+    resolved_by: Optional[str] = None
+    resolution: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class AutomationRun(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
+    job: str
+    status: Literal["ok", "error", "skipped"] = "ok"
+    stats: dict = Field(default_factory=dict)
+    error: Optional[str] = None
+    started_at: str = Field(default_factory=now_iso)
+    finished_at: Optional[str] = None
+    duration_ms: int = 0
+
+
+class VatPeriod(BaseDocument):
+    firm_id: str = LEGACY_FIRM_ID
+    """Κλείσιμο περιόδου ΦΠΑ — υπολογίζεται αυτόματα από το Autopilot."""
+    period: str                                # 2026-08 ή 2026-Q3
+    period_start: str
+    period_end: str
+    due_date: str
+    output_vat: float = 0
+    input_vat: float = 0
+    vat_due: float = 0
+    income_net: float = 0
+    expense_net: float = 0
+    invoice_count: int = 0
+    expense_count: int = 0
+    vat_breakdown: dict = Field(default_factory=dict)
+    status: Literal["computed", "submitted"] = "computed"
+    submitted_at: Optional[str] = None
+    computed_at: str = Field(default_factory=now_iso)

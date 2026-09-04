@@ -1,3 +1,4 @@
+import os
 import httpx
 from xml.sax.saxutils import escape
 from xml.etree.ElementTree import fromstring
@@ -11,6 +12,18 @@ VAT_CATEGORY = {24: "1", 13: "2", 6: "3", 0: "7"}
 
 class MyDataError(Exception):
     pass
+
+
+MYDATA_NOT_CONFIGURED_MSG = (
+    "Δεν έχουν καταχωρηθεί credentials ΑΑΔΕ (User ID & Subscription Key). "
+    "Το παραστατικό παραμένει σε αναμονή διαβίβασης."
+)
+
+
+def mydata_mock_enabled() -> bool:
+    """Explicit opt-in simulation for demos. Never on by default: a MOCK mark that
+    shows as «synced» misleads the user into thinking AADE received the invoice."""
+    return os.environ.get("MYDATA_MOCK", "").lower() in ("1", "true", "yes")
 
 
 def mydata_ready(settings: dict) -> bool:

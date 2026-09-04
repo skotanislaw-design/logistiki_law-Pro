@@ -5,6 +5,7 @@ import { NotificationBell } from "@/components/NotificationBell";
 
 const TITLES = {
   "/": "Πίνακας Ελέγχου",
+  "/autopilot": "Autopilot — Αυτόματη Λογιστική",
   "/invoices": "Τιμολόγια",
   "/expenses": "Έξοδα",
   "/vat": "ΦΠΑ",

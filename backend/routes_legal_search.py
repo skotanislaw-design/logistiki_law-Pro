@@ -7,7 +7,7 @@ import re
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+from ai_runtime import LlmChat, UserMessage, TextDelta, StreamDone
 from ai_helpers import EMERGENT_LLM_KEY
 from auth import get_current_user
 

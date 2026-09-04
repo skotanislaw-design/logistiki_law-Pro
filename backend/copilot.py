@@ -2,9 +2,10 @@ import json
 import re
 import uuid
 from datetime import date
-from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+from ai_runtime import LlmChat, UserMessage, TextDelta, StreamDone
 from ai_helpers import EMERGENT_LLM_KEY
 from db import db
+from tenant import tenant_query
 from tax_utils import next_vat_deadline, next_efka_deadline
 
 
@@ -12,15 +13,16 @@ def _fmt(v):
     return f"{(v or 0):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-async def build_context() -> dict:
+async def build_context(user: dict) -> dict:
     today = date.today()
     month_start = today.replace(day=1).isoformat()
-    settings = await db.settings.find_one({}) or {}
-    invoices = await db.invoices.find({}).sort("created_at", -1).to_list(500)
-    expenses = await db.expenses.find({}).sort("created_at", -1).to_list(500)
-    clients = await db.clients.find({}).to_list(200)
-    cases = await db.cases.find({}).sort("created_at", -1).to_list(200)
-    hearings = await db.hearings.find({"status": {"$ne": "completed"}}).sort("date", 1).to_list(100)
+    q = lambda extra=None: tenant_query(user, extra)  # noqa: E731
+    settings = await db.settings.find_one(q()) or {}
+    invoices = await db.invoices.find(q()).sort("created_at", -1).to_list(500)
+    expenses = await db.expenses.find(q()).sort("created_at", -1).to_list(500)
+    clients = await db.clients.find(q()).to_list(200)
+    cases = await db.cases.find(q()).sort("created_at", -1).to_list(200)
+    hearings = await db.hearings.find(q({"status": {"$ne": "completed"}})).sort("date", 1).to_list(100)
 
     issued = [i for i in invoices if i.get("status") in ("issued", "paid")]
     month_inv = [i for i in issued if i.get("date", "") >= month_start]
@@ -99,8 +101,8 @@ def _try_action(text: str):
         return None
 
 
-async def copilot_llm(history: list, message: str) -> str:
-    context = await build_context()
+async def copilot_llm(history: list, message: str, user: dict) -> str:
+    context = await build_context(user)
     system = SYSTEM_TEMPLATE.format(company=context.get("εταιρεία") or "Nomos One", context=json.dumps(context, ensure_ascii=False))
     transcript = ""
     for m in history[-12:]:
@@ -117,8 +119,8 @@ async def copilot_llm(history: list, message: str) -> str:
     return full_text.strip()
 
 
-async def draft_letter_llm(instruction: str) -> dict:
-    settings = await db.settings.find_one({}) or {}
+async def draft_letter_llm(instruction: str, user: dict) -> dict:
+    settings = await db.settings.find_one(tenant_query(user)) or {}
     company = settings.get("company_name") or "Nomos One"
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,

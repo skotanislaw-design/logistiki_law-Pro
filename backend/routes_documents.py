@@ -52,6 +52,6 @@ async def ai_draft(payload: DraftPayload, user: dict = Depends(get_current_user)
     if not payload.instruction.strip():
         raise HTTPException(status_code=400, detail="Δώστε οδηγία για τη σύνταξη")
     try:
-        return await draft_letter_llm(payload.instruction)
+        return await draft_letter_llm(payload.instruction, user)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Αποτυχία σύνταξης με AI: {e}")
