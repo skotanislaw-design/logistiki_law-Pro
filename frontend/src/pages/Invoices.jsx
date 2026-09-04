@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { InvoiceDetailDialog } from "@/components/InvoiceDetailDialog";
-import { Plus, Trash, Microphone, PaperPlaneTilt, CloudCheck, Eye, PencilSimple, FilePdf, EnvelopeSimple, BellRinging, CheckCircle, ArrowClockwise, WarningCircle } from "@phosphor-icons/react";
+import { Plus, Trash, Microphone, PaperPlaneTilt, CloudCheck, Eye, PencilSimple, FilePdf, EnvelopeSimple, BellRinging, CheckCircle, ArrowClockwise, WarningCircle, Prohibit, ArrowUUpLeft } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const VAT_RATES = [24, 13, 6, 0];
@@ -37,6 +37,7 @@ export default function Invoices() {
   const [viewing, setViewing] = useState(null);
   const [sendingId, setSendingId] = useState(null);
   const [reminderId, setReminderId] = useState(null);
+  const [workingId, setWorkingId] = useState(null);
   const [markingPaidId, setMarkingPaidId] = useState(null);
   const [filter, setFilter] = useState("all");
   const mediaRef = useState({ recorder: null, chunks: [] })[0];
@@ -127,6 +128,38 @@ export default function Invoices() {
       toast.error(errMsg(e));
     } finally {
       setReminderId(null);
+    }
+  };
+
+  const cancelInvoice = async (inv) => {
+    const sentToAade = inv.mydata_status === "synced";
+    const question = sentToAade
+      ? `Ακύρωση του ${inv.number}; Θα σταλεί και ακύρωση στο myDATA της ΑΑΔΕ.`
+      : `Ακύρωση του ${inv.number};`;
+    if (!window.confirm(question)) return;
+    setWorkingId(inv.id);
+    try {
+      await axios.post(`${API}/invoices/${inv.id}/cancel`, { reason: "" });
+      toast.success(sentToAade ? "Το τιμολόγιο ακυρώθηκε και στο myDATA" : "Το τιμολόγιο ακυρώθηκε");
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setWorkingId(null);
+    }
+  };
+
+  const createCreditNote = async (inv) => {
+    if (!window.confirm(`Έκδοση πιστωτικού τιμολογίου για το ${inv.number};`)) return;
+    setWorkingId(inv.id);
+    try {
+      const { data } = await axios.post(`${API}/invoices/${inv.id}/credit-note`, { reason: "" });
+      toast.success(`Δημιουργήθηκε το πιστωτικό ${data.number}`);
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setWorkingId(null);
     }
   };
 
@@ -319,7 +352,11 @@ export default function Invoices() {
                     </span>
                   )}
                 </TableCell>
-                <TableCell><Badge variant={STATUS_VARIANT[inv.status]}>{STATUS_LABEL[inv.status]}</Badge></TableCell>
+                <TableCell>
+                  <Badge variant={STATUS_VARIANT[inv.status]}>{STATUS_LABEL[inv.status]}</Badge>
+                  {inv.credit_note_for && <div className="text-[10px] text-muted-foreground mt-0.5">Πιστωτικό</div>}
+                  {inv.credit_note_id && <div className="text-[10px] text-muted-foreground mt-0.5">Πιστώθηκε</div>}
+                </TableCell>
                 <TableCell>
                   {inv.mydata_status === "synced" ? (
                     <span className="flex items-center gap-1 text-xs text-[hsl(var(--success))]"><CloudCheck size={14} /> {inv.mydata_mark?.slice(0, 14)}</span>
@@ -355,10 +392,36 @@ export default function Invoices() {
                       </Button>
                     </>
                   )}
-                  {inv.status === "paid" && (
-                    <Button variant="ghost" size="sm" onClick={() => markUnpaid(inv)} disabled={markingPaidId === inv.id} data-testid={`mark-unpaid-${inv.id}`}>
-                      <ArrowClockwise size={14} className="mr-1" /> Επαναφορά
+                  {inv.status === "issued" && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => cancelInvoice(inv)}
+                      disabled={workingId === inv.id}
+                      title={inv.mydata_status === "synced" ? "Ακύρωση — θα σταλεί και στο myDATA" : "Ακύρωση τιμολογίου"}
+                      data-testid={`cancel-invoice-${inv.id}`}
+                    >
+                      <Prohibit size={16} />
                     </Button>
+                  )}
+                  {inv.status === "paid" && (
+                    <>
+                      <Button variant="ghost" size="sm" onClick={() => markUnpaid(inv)} disabled={markingPaidId === inv.id} data-testid={`mark-unpaid-${inv.id}`}>
+                        <ArrowClockwise size={14} className="mr-1" /> Επαναφορά
+                      </Button>
+                      {inv.mydata_status === "synced" && !inv.credit_note_id && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => createCreditNote(inv)}
+                          disabled={workingId === inv.id}
+                          title="Έκδοση πιστωτικού τιμολογίου (myDATA 5.1)"
+                          data-testid={`credit-note-${inv.id}`}
+                        >
+                          <ArrowUUpLeft size={16} />
+                        </Button>
+                      )}
+                    </>
                   )}
                   {inv.status === "draft" && (
                     <>

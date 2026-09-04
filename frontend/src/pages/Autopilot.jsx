@@ -173,12 +173,13 @@ export default function Autopilot() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 stagger">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-4 stagger">
         <Stat label="Αποφάσεις" value={status.open_items} testid="autopilot-open-items" />
         <Stat label="Emails 7ημ." value={week.emails_sent || 0} testid="autopilot-emails" />
         <Stat label="Υπενθυμίσεις 7ημ." value={week.reminders_sent || 0} testid="autopilot-reminders" />
         <Stat label="Εξοφλήσεις 7ημ." value={week.reconciled || 0} testid="autopilot-reconciled" />
         <Stat label="myDATA 7ημ." value={week.mydata_synced || 0} testid="autopilot-mydata" />
+        <Stat label="Έξοδα ΑΑΔΕ 7ημ." value={week.expenses_from_mydata || 0} testid="autopilot-mydata-expenses" />
       </div>
 
       <div className="lux-card p-5 flex flex-wrap gap-x-8 gap-y-2 items-center" data-testid="autopilot-capabilities">
@@ -188,6 +189,7 @@ export default function Autopilot() {
         <Capability ok={status.capabilities.stripe} label="Stripe πληρωμές" hint="Προσθέτει payment link στις υπενθυμίσεις" />
         <Capability ok={status.capabilities.ai} label="AI / OCR" hint="Για αυτόματη καταχώρηση αποδείξεων από email" />
         <Capability ok={status.capabilities.imap} label="Εισερχόμενα email (IMAP)" hint="Σαρώνει το γραμματοκιβώτιο για παραστατικά" />
+        <Capability ok={status.capabilities.mydata_expenses} label="Έξοδα από ΑΑΔΕ" hint="Κατεβάζει τα παραστατικά που διαβίβασαν οι προμηθευτές — ακριβέστερο από OCR" />
         <span className="ml-auto text-xs text-muted-foreground">Κύκλος κάθε {status.cycle_minutes}′ · Digest: {status.last_digest_at ? dateFmt(status.last_digest_at) : "ποτέ"}</span>
         {(!status.capabilities.email || !status.capabilities.mydata) && (
           <Link to="/settings" className="text-xs text-[hsl(var(--gold))] underline underline-offset-4">Συμπλήρωση ρυθμίσεων →</Link>
@@ -290,6 +292,8 @@ export default function Autopilot() {
               ["auto_email_on_issue", "Αποστολή PDF στον πελάτη μόλις εκδοθεί τιμολόγιο"],
               ["auto_reminders", "Αυτόματες υπενθυμίσεις ανείσπρακτων"],
               ["auto_mydata_retry", "Επανάληψη διαβίβασης στο myDATA μέχρι να πετύχει"],
+              ["mydata_expense_sync", "Λήψη εξόδων από το myDATA (παραστατικά προμηθευτών)"],
+              ["withholding_enabled", "Παρακράτηση φόρου 20% σε τιμολόγια προς επιχειρήσεις"],
             ].map(([key, label]) => (
               <div key={key} className="flex items-center justify-between gap-4">
                 <Label htmlFor={key} className="text-sm">{label}</Label>
@@ -303,6 +307,7 @@ export default function Autopilot() {
                 ["reminder_max", "Μέγιστες υπενθυμίσεις"],
                 ["auto_reconcile_min_confidence", "Auto-εξόφληση από τράπεζα ≥ %"],
                 ["stale_draft_days", "Ειδοποίηση για πρόχειρα μετά (ημέρες)"],
+                ["withholding_min_net", "Παρακράτηση από καθαρή αξία ≥ €"],
               ].map(([key, label]) => (
                 <div key={key}>
                   <Label className="text-xs">{label}</Label>

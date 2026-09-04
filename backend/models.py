@@ -66,7 +66,9 @@ class Invoice(BaseDocument):
     total: float = 0
     vat_breakdown: dict = Field(default_factory=dict)
     status: Literal["draft", "issued", "paid", "cancelled"] = "draft"
-    mydata_status: Literal["not_sent", "pending", "synced", "failed"] = "not_sent"
+    mydata_status: Literal["not_sent", "pending", "synced", "failed", "cancelled"] = "not_sent"
+    # Είδος παραστατικού ΑΑΔΕ· κενό = αυτόματη επιλογή βάσει πελάτη (βλ. mydata_client)
+    invoice_type: str = ""
     mydata_mark: Optional[str] = None
     mydata_uid: Optional[str] = None
     mydata_error: Optional[str] = None
@@ -83,6 +85,15 @@ class Invoice(BaseDocument):
     reminder_count: int = 0
     mydata_attempts: int = 0
     mydata_synced_at: Optional[str] = None
+    mydata_cancellation_mark: Optional[str] = None
+    mydata_cancelled_at: Optional[str] = None
+    # Πιστωτικό: το τιμολόγιο που ακυρώνει/διορθώνει και το MARK του
+    credit_note_for: Optional[str] = None
+    correlated_mark: Optional[str] = None
+    credit_note_id: Optional[str] = None   # στο αρχικό: ποιο πιστωτικό το κάλυψε
+    cancelled_at: Optional[str] = None
+    cancellation_reason: str = ""
+    withholding_amount: Optional[float] = None  # None = υπολογισμός από τις Ρυθμίσεις
     paid_via: Optional[str] = None  # manual / bank_auto / bank_manual / stripe / trust
 
 
@@ -96,8 +107,12 @@ class Expense(BaseDocument):
     category: str = "Λοιπά"
     description: str = ""
     receipt_image_url: Optional[str] = None
-    source: Literal["manual", "photo_ocr", "email_ocr", "autopilot"] = "manual"
+    source: Literal["manual", "photo_ocr", "email_ocr", "autopilot", "mydata"] = "manual"
     review_status: Literal["ok", "needs_review"] = "ok"
+    # Παραστατικό που κατέβηκε από το myDATA (RequestDocs)
+    mydata_mark: Optional[str] = None
+    supplier_afm: str = ""
+    mydata_invoice_type: str = ""
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
@@ -227,6 +242,17 @@ class Settings(BaseDocument):
     aade_subscription_key: str = ""
     aade_environment: Literal["sandbox", "production"] = "sandbox"
     mydata_connected: bool = False
+    # Κωδικοί χαρακτηρισμού εσόδων (πίνακες ΑΑΔΕ — επαληθεύστε στο sandbox)
+    income_classification_type: str = "E3_561_001"
+    income_classification_category: str = "category1_3"
+    # Παρακράτηση φόρου αμοιβών ελεύθερων επαγγελματιών
+    withholding_enabled: bool = False
+    withholding_rate: float = 0.20
+    withholding_min_net: float = 300.0
+    withholding_category: str = "2"
+    # Αυτόματη λήψη εξόδων από το myDATA (παραστατικά προμηθευτών)
+    mydata_expense_sync: bool = True
+    mydata_expense_last_mark: str = "0"
     onboarding_completed: bool = False
     public_url: str = ""
     # ---- Autopilot (zero-touch accounting) ----

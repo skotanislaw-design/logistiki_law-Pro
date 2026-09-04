@@ -34,7 +34,7 @@ from db import db
 from models import Notification, AutomationRun, VatPeriod, Expense
 from tax_utils import generate_tax_calendar, next_vat_deadline
 from email_utils import smtp_ready, send_email_with_pdf
-from mydata_client import mydata_ready
+from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
     email_invoice, send_reminder, transmit_to_mydata, mark_paid, load_client, InvoiceEmailError, firm_query,
 )
@@ -43,13 +43,14 @@ logger = logging.getLogger("autopilot")
 ATHENS = ZoneInfo("Europe/Athens")
 
 JOBS = [
-    "send_issued_invoices", "reminders", "mydata_retry", "reconcile", "deadlines",
-    "stale_drafts", "vat_periods", "inbox_receipts", "digest",
+    "send_issued_invoices", "reminders", "mydata_retry", "mydata_expenses", "reconcile",
+    "deadlines", "stale_drafts", "vat_periods", "inbox_receipts", "digest",
 ]
 JOB_LABELS = {
     "send_issued_invoices": "Αποστολή εκδοθέντων τιμολογίων",
     "reminders": "Υπενθυμίσεις ανείσπρακτων",
     "mydata_retry": "Διαβίβαση myDATA (επανάληψη)",
+    "mydata_expenses": "Λήψη εξόδων από myDATA",
     "reconcile": "Συμφωνία τραπεζικών κινήσεων",
     "deadlines": "Ειδοποιήσεις προθεσμιών ΦΠΑ/ΕΦΚΑ",
     "stale_drafts": "Ξεχασμένα πρόχειρα τιμολόγια",
@@ -567,6 +568,72 @@ async def job_inbox_receipts(firm_id: str, settings: dict) -> dict:
     return {"created": created, "needs_review": review}
 
 
+async def job_mydata_expenses(firm_id: str, settings: dict) -> dict:
+    """Κατεβάζει τα παραστατικά που διαβίβασαν οι προμηθευτές μας και τα κάνει έξοδα.
+
+    Είναι ο ακριβέστερος τρόπος καταχώρησης εξόδων: τα ποσά προέρχονται από την ΑΑΔΕ,
+    όχι από OCR. Κάθε MARK καταχωρείται μία φορά (dedupe στο `mydata_mark`).
+    """
+    if not settings.get("mydata_expense_sync", True):
+        return {"skipped": True}
+    if not mydata_ready(settings):
+        return {"skipped": True, "reason": "credentials"}
+    if not (settings.get("afm") or "").strip():
+        await notify(firm_id, "mydata_afm_missing", "warning",
+                     "Συμπληρώστε το ΑΦΜ της εταιρείας",
+                     "Χωρίς ΑΦΜ το Autopilot δεν μπορεί να ξεχωρίσει ποια παραστατικά της ΑΑΔΕ είναι δικά σας έξοδα.",
+                     entity="settings", requires_action=True, dedupe_key="mydata_afm_missing")
+        return {"skipped": True, "reason": "afm"}
+
+    last_mark = str(settings.get("mydata_expense_last_mark") or "0")
+    try:
+        docs, next_mark = await request_docs(settings, last_mark)
+    except MyDataError as e:
+        await notify(firm_id, "mydata_expense_sync_failed", "warning",
+                     "Αποτυχία λήψης εξόδων από το myDATA", str(e),
+                     entity="settings", requires_action=False, dedupe_key="mydata_expense_sync_failed")
+        raise
+
+    created = skipped = 0
+    suppliers = {c.get("afm"): c.get("name") for c in await db.clients.find(firm_query(firm_id)).to_list(2000) if c.get("afm")}
+    for doc in docs:
+        if await db.expenses.find_one(firm_query(firm_id, {"mydata_mark": doc["mark"]})):
+            skipped += 1
+            continue
+        vendor = doc.get("issuer_name") or suppliers.get(doc.get("issuer_afm")) or f"ΑΦΜ {doc.get('issuer_afm') or '—'}"
+        exp = Expense(
+            firm_id=firm_id,
+            vendor=vendor[:120],
+            date=doc["date"],
+            amount=doc["gross_value"],
+            vat_amount=doc["vat_amount"],
+            vat_rate=doc["vat_rate"],
+            category="Λοιπά",
+            description=f"myDATA {doc.get('invoice_type') or ''} {doc.get('series') or ''}{('-' + doc['aa']) if doc.get('aa') else ''}".strip(),
+            source="mydata",
+            created_by="autopilot",
+            mydata_mark=doc["mark"],
+            supplier_afm=doc.get("issuer_afm", ""),
+            mydata_invoice_type=doc.get("invoice_type", ""),
+            # Τα ποσά είναι επίσημα· μόνο η κατηγορία χρειάζεται ματιά για τη φορολογική έκπτωση.
+            review_status="needs_review",
+        )
+        result = await db.expenses.insert_one(exp.to_mongo())
+        created += 1
+        await notify(firm_id, "expense_created", "success",
+                     f"Νέο έξοδο από myDATA: {_fmt(exp.amount)} — {exp.vendor}",
+                     f"MARK {doc['mark']} · {doc['date']} · ΦΠΑ {_fmt(exp.vat_amount)}. Ελέγξτε την κατηγορία δαπάνης.",
+                     entity="expense", entity_id=result.inserted_id)
+
+    if next_mark != last_mark:
+        await db.settings.update_one(firm_query(firm_id), {"$set": {"mydata_expense_last_mark": next_mark}})
+    if created:
+        await db.notifications.update_many(
+            firm_query(firm_id, {"dedupe_key": "mydata_expense_sync_failed", "resolved_at": None}),
+            {"$set": {"resolved_at": _now(), "resolved_by": "autopilot", "resolution": "auto"}})
+    return {"created": created, "already_known": skipped, "last_mark": next_mark}
+
+
 # ---------------------------------------------------------------- digest ----
 
 async def firm_snapshot(firm_id: str, settings: dict, since: datetime | None = None) -> dict:
@@ -678,6 +745,7 @@ JOB_FUNCS = {
     "send_issued_invoices": job_send_issued_invoices,
     "reminders": job_reminders,
     "mydata_retry": job_mydata_retry,
+    "mydata_expenses": job_mydata_expenses,
     "reconcile": job_reconcile,
     "deadlines": job_deadlines,
     "stale_drafts": job_stale_drafts,

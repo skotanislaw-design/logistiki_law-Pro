@@ -1,6 +1,8 @@
 import tempfile
 import os
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from pydantic import BaseModel
 from fastapi.responses import Response
 from bson import ObjectId
 from db import db
@@ -13,12 +15,13 @@ from ai_helpers import transcribe_audio, parse_invoice_from_text
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
 
-async def _next_invoice_number(firm_id: str) -> str:
+async def _next_invoice_number(firm_id: str, prefix: str = "ΤΠΥ") -> str:
     from datetime import datetime, timezone
     from pymongo import ReturnDocument
     year = datetime.now(timezone.utc).year
+    counter_id = f"invoice-{firm_id}-{year}" if prefix == "ΤΠΥ" else f"invoice-{prefix}-{firm_id}-{year}"
     counter = await db.counters.find_one_and_update(
-        {"_id": f"invoice-{firm_id}-{year}"},
+        {"_id": counter_id},
         {"$inc": {"seq": 1}},
         upsert=True,
         return_document=ReturnDocument.AFTER,
@@ -27,7 +30,7 @@ async def _next_invoice_number(firm_id: str) -> str:
     # Seed the counter above any pre-existing max if this is the first use for the year
     if seq == 1:
         existing_max = 0
-        async for d in db.invoices.find({"firm_id": firm_id, "number": {"$regex": f"^ΤΠΥ-{year}-"}}, {"number": 1}):
+        async for d in db.invoices.find({"firm_id": firm_id, "number": {"$regex": f"^{prefix}-{year}-"}}, {"number": 1}):
             try:
                 n = int(d["number"].rsplit("-", 1)[-1])
                 if n > existing_max:
@@ -36,12 +39,12 @@ async def _next_invoice_number(firm_id: str) -> str:
                 pass
         if existing_max >= seq:
             counter = await db.counters.find_one_and_update(
-                {"_id": f"invoice-{firm_id}-{year}"},
+                {"_id": counter_id},
                 {"$set": {"seq": existing_max + 1}},
                 return_document=ReturnDocument.AFTER,
             )
             seq = counter["seq"]
-    return f"ΤΠΥ-{year}-{seq:04d}"
+    return f"{prefix}-{year}-{seq:04d}"
 
 
 @router.get("")
@@ -202,6 +205,57 @@ async def send_invoice_reminder(invoice_id: str, user: dict = Depends(get_curren
         raise HTTPException(status_code=400, detail=str(e))
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     return Invoice.from_mongo(doc)
+
+
+class CancelPayload(BaseModel):
+    reason: str = ""
+
+
+class CreditNotePayload(BaseModel):
+    reason: str = ""
+    amount: Optional[float] = None   # κενό = πλήρες πιστωτικό
+
+
+@router.post("/{invoice_id}/cancel")
+async def cancel_invoice_endpoint(invoice_id: str, payload: CancelPayload, user: dict = Depends(get_current_user)):
+    """Ακύρωση τιμολογίου — και στην ΑΑΔΕ αν έχει ήδη διαβιβαστεί."""
+    from invoice_services import cancel_in_mydata, InvoiceWorkflowError
+    from mydata_client import MyDataError
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
+    if not doc:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
+    try:
+        await cancel_in_mydata(firm_id_for(user), doc, settings)
+    except (InvoiceWorkflowError, MyDataError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if payload.reason:
+        await db.invoices.update_one(tenant_query(user, {"_id": ObjectId(invoice_id)}),
+                                     {"$set": {"cancellation_reason": payload.reason[:500]}})
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
+    return Invoice.from_mongo(doc)
+
+
+@router.post("/{invoice_id}/credit-note")
+async def create_credit_note(invoice_id: str, payload: CreditNotePayload, user: dict = Depends(get_current_user)):
+    """Έκδοση πιστωτικού τιμολογίου συσχετιζόμενου με το αρχικό (myDATA 5.1)."""
+    from invoice_services import build_credit_note, InvoiceWorkflowError
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
+    if not doc:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    if payload.amount is not None and payload.amount <= 0:
+        raise HTTPException(status_code=400, detail="Το ποσό της πίστωσης πρέπει να είναι θετικό.")
+    try:
+        credit = await build_credit_note(firm_id_for(user), doc, user["email"], payload.reason, payload.amount)
+    except InvoiceWorkflowError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return Invoice.from_mongo(credit)
+
+
+@router.get("/types/list")
+async def invoice_types(user: dict = Depends(get_current_user)):
+    from mydata_client import INVOICE_TYPE_LABELS
+    return [{"code": code, "label": label} for code, label in INVOICE_TYPE_LABELS.items()]
 
 
 @router.post("/{invoice_id}/mark-paid")

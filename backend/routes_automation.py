@@ -50,6 +50,7 @@ async def automation_status(user: dict = Depends(get_current_user)):
         "reconciled": await db.bank_transactions.count_documents(tenant_query(user, {"match_status": "auto_confirmed", "confirmed_at": {"$gte": since}})),
         "mydata_synced": await db.invoices.count_documents(tenant_query(user, {"mydata_synced_at": {"$gte": since}})),
         "expenses_from_email": await db.expenses.count_documents(tenant_query(user, {"source": "email_ocr", "created_at": {"$gte": since}})),
+        "expenses_from_mydata": await db.expenses.count_documents(tenant_query(user, {"source": "mydata", "created_at": {"$gte": since}})),
     }
     return {
         "enabled": settings.get("autopilot_enabled", True),
@@ -60,6 +61,7 @@ async def automation_status(user: dict = Depends(get_current_user)):
             "mydata": mydata_ready(settings),
             "ai": ai_ready(),
             "imap": bool(settings.get("imap_enabled") and settings.get("imap_user")),
+            "mydata_expenses": bool(mydata_ready(settings) and settings.get("mydata_expense_sync", True) and (settings.get("afm") or "").strip()),
             "stripe": bool(__import__("os").environ.get("STRIPE_SECRET_KEY", "").startswith("sk_")),
         },
         "jobs": last_runs,
