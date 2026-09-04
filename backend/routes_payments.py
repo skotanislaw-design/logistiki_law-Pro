@@ -8,6 +8,7 @@ from bson import ObjectId
 from db import db
 from models import PaymentTransaction
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or "sk_test_emergent"
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
@@ -36,9 +37,12 @@ async def payment_config(user: dict = Depends(get_current_user)):
     }
 
 
-async def _validate_invoice_and_get_amount(invoice_id: str) -> tuple[dict, float]:
+async def _validate_invoice_and_get_amount(invoice_id: str, firm_id: str | None = None) -> tuple[dict, float]:
     try:
-        inv = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
+        query = {"_id": ObjectId(invoice_id)}
+        if firm_id:
+            query["firm_id"] = firm_id
+        inv = await db.invoices.find_one(query)
     except Exception:
         raise HTTPException(status_code=400, detail="Μη έγκυρο id τιμολογίου")
     if not inv:
@@ -90,6 +94,7 @@ async def _create_session(inv: dict, amount: float, origin_url: str) -> dict:
         currency="eur",
         status="initiated",
         payment_status="pending",
+        firm_id=inv.get("firm_id", "legacy-default-firm"),
     )
     await db.payment_transactions.insert_one(tx.to_mongo())
     return {"checkout_url": session.url, "session_id": session.id}
@@ -97,7 +102,7 @@ async def _create_session(inv: dict, amount: float, origin_url: str) -> dict:
 
 @router.post("/checkout")
 async def create_checkout(req: CheckoutRequest, user: dict = Depends(get_current_user)):
-    inv, amount = await _validate_invoice_and_get_amount(req.invoice_id)
+    inv, amount = await _validate_invoice_and_get_amount(req.invoice_id, firm_id_for(user))
     return await _create_session(inv, amount, req.origin_url)
 
 
@@ -111,7 +116,7 @@ async def portal_checkout(req: CheckoutRequest, request: Request):
         raise HTTPException(status_code=401, detail="Μη έγκυρο ή ληγμένο token")
     if token.get("expires_at", "") < datetime.now(timezone.utc).isoformat():
         raise HTTPException(status_code=401, detail="Το token έχει λήξει")
-    inv, amount = await _validate_invoice_and_get_amount(req.invoice_id)
+    inv, amount = await _validate_invoice_and_get_amount(req.invoice_id, token.get("firm_id"))
     if inv.get("client_id") != token["client_id"]:
         raise HTTPException(status_code=403, detail="Δεν επιτρέπεται η πληρωμή τιμολογίου άλλου πελάτη")
     return await _create_session(inv, amount, req.origin_url)
@@ -144,7 +149,7 @@ async def get_payment_status(session_id: str):
 async def _mark_paid(session_id: str, payment_intent_id: str = None):
     """Idempotent — καλείται από webhook & polling fallback."""
     result = await db.payment_transactions.update_one(
-        {"session_id": session_id, "payment_status": {"$ne": "paid"}},
+        {"session_id": session_id, "payment_status": {"$ne": "paid"}, "firm_id": (await db.payment_transactions.find_one({"session_id": session_id}) or {}).get("firm_id", "legacy-default-firm")},
         {"$set": {
             "status": "completed",
             "payment_status": "paid",
@@ -157,7 +162,7 @@ async def _mark_paid(session_id: str, payment_intent_id: str = None):
         if tx and tx.get("invoice_id"):
             try:
                 await db.invoices.update_one(
-                    {"_id": ObjectId(tx["invoice_id"]), "status": {"$ne": "paid"}},
+                    {"_id": ObjectId(tx["invoice_id"]), "firm_id": tx.get("firm_id", "legacy-default-firm"), "status": {"$ne": "paid"}},
                     {"$set": {
                         "status": "paid",
                         "paid_at": datetime.now(timezone.utc).isoformat(),
@@ -203,5 +208,5 @@ async def stripe_webhook(request: Request):
 
 @router.get("/transactions")
 async def list_transactions(user: dict = Depends(get_current_user)):
-    docs = await db.payment_transactions.find({}).sort("created_at", -1).limit(200).to_list(200)
+    docs = await db.payment_transactions.find(tenant_query(user)).sort("created_at", -1).limit(200).to_list(200)
     return [PaymentTransaction.from_mongo(d) for d in docs]

@@ -14,6 +14,7 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, Strea
 from db import db
 from ai_helpers import EMERGENT_LLM_KEY
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/drafting", tags=["drafting"])
 
@@ -254,7 +255,7 @@ class TemplateVars(BaseModel):
 @router.get("/templates")
 async def list_templates(user: dict = Depends(get_current_user)):
     """Επιστρέφει built-in + user-custom templates."""
-    custom = await db.drafting_templates.find({}).to_list(200)
+    custom = await db.drafting_templates.find(tenant_query(user, {})).to_list(200)
     return {
         "builtin": BUILTIN_TEMPLATES,
         "custom": [{
@@ -271,7 +272,7 @@ async def list_templates(user: dict = Depends(get_current_user)):
 @router.get("/clauses")
 async def list_clauses(user: dict = Depends(get_current_user)):
     """Επιστρέφει built-in + user-custom clauses."""
-    custom = await db.drafting_clauses.find({}).to_list(200)
+    custom = await db.drafting_clauses.find(tenant_query(user, {})).to_list(200)
     return {
         "builtin": BUILTIN_CLAUSES,
         "custom": [{"id": str(c["_id"]), "title": c["title"], "category": c.get("category", "Προσωπικά"), "body": c["body"], "custom": True} for c in custom],
@@ -287,6 +288,7 @@ class ClauseIn(BaseModel):
 @router.post("/clauses")
 async def create_clause(payload: ClauseIn, user: dict = Depends(get_current_user)):
     data = payload.model_dump()
+    data["firm_id"] = firm_id_for(user)
     data["created_at"] = datetime.now(timezone.utc).isoformat()
     result = await db.drafting_clauses.insert_one(data)
     return {"id": str(result.inserted_id), "title": payload.title, "category": payload.category, "body": payload.body, "created_at": data["created_at"]}
@@ -295,7 +297,7 @@ async def create_clause(payload: ClauseIn, user: dict = Depends(get_current_user
 @router.delete("/clauses/{clause_id}")
 async def delete_clause(clause_id: str, user: dict = Depends(get_current_user)):
     try:
-        result = await db.drafting_clauses.delete_one({"_id": ObjectId(clause_id)})
+        result = await db.drafting_clauses.delete_one(tenant_query(user, {"_id": ObjectId(clause_id)}))
     except Exception:
         raise HTTPException(status_code=404, detail="Δεν βρέθηκε")
     if result.deleted_count == 0:
@@ -316,7 +318,7 @@ async def render_template(payload: TemplateVars, user: dict = Depends(get_curren
     tpl = _find_template(payload.template_id)
     if not tpl:
         try:
-            custom = await db.drafting_templates.find_one({"_id": ObjectId(payload.template_id)})
+            custom = await db.drafting_templates.find_one(tenant_query(user, {"_id": ObjectId(payload.template_id)}))
         except Exception:
             custom = None
         if not custom:
@@ -326,7 +328,7 @@ async def render_template(payload: TemplateVars, user: dict = Depends(get_curren
             "variables": custom.get("variables", []), "body": custom.get("body", ""),
         }
 
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     base_vars = {
         "date": datetime.now().strftime("%d/%m/%Y"),
         "lawyer_name": settings.get("company_name", ""),
@@ -375,7 +377,7 @@ class DocxRequest(BaseModel):
 async def render_docx(payload: DocxRequest, user: dict = Depends(get_current_user)):
     from docx_utils import build_letter_docx
     doc_bytes = build_letter_docx(
-        settings=await db.settings.find_one({}) or {},
+        settings=await db.settings.find_one(tenant_query(user, {})) or {},
         recipient="",
         subject=payload.title,
         body=payload.body,

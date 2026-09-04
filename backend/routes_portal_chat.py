@@ -7,6 +7,7 @@ from bson import ObjectId
 from db import db
 from models import PortalMessage
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/portal-chat", tags=["portal-chat"])
 public_router = APIRouter(prefix="/portal", tags=["portal-chat-public"])
@@ -36,6 +37,7 @@ async def list_conversations(user: dict = Depends(get_current_user)):
         {"$sort": {"last_at": -1}},
     ]
     convos = []
+    pipeline.insert(0, {"$match": {"firm_id": firm_id_for(user)}})
     async for c in db.portal_messages.aggregate(pipeline):
         convos.append({
             "client_id": c["_id"],
@@ -51,10 +53,10 @@ async def list_conversations(user: dict = Depends(get_current_user)):
 
 @router.get("/messages/{client_id}")
 async def get_messages(client_id: str, user: dict = Depends(get_current_user)):
-    docs = await db.portal_messages.find({"client_id": client_id}).sort("created_at", 1).to_list(500)
+    docs = await db.portal_messages.find(tenant_query(user, {"client_id": client_id})).sort("created_at", 1).to_list(500)
     # Auto-mark ως read όσα ήταν από τον client
     await db.portal_messages.update_many(
-        {"client_id": client_id, "sender": "client", "read_at": None},
+        tenant_query(user, {"client_id": client_id, "sender": "client", "read_at": None}),
         {"$set": {"read_at": datetime.now(timezone.utc).isoformat()}},
     )
     return [PortalMessage.from_mongo(d) for d in docs]
@@ -65,7 +67,7 @@ async def send_from_lawyer(client_id: str, payload: MessageIn, user: dict = Depe
     if not payload.text.strip():
         raise HTTPException(status_code=400, detail="Κενό μήνυμα")
     try:
-        client = await db.clients.find_one({"_id": ObjectId(client_id)})
+        client = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(client_id)}))
     except Exception:
         raise HTTPException(status_code=400, detail="Μη έγκυρο id πελάτη")
     if not client:
@@ -78,6 +80,7 @@ async def send_from_lawyer(client_id: str, payload: MessageIn, user: dict = Depe
         sender_name=user.get("name") or user["email"],
         text=payload.text.strip(),
         case_id=payload.case_id or None,
+        firm_id=firm_id_for(user),
     )
     result = await db.portal_messages.insert_one(msg.to_mongo())
 
@@ -85,17 +88,17 @@ async def send_from_lawyer(client_id: str, payload: MessageIn, user: dict = Depe
     if payload.case_id:
         try:
             from routes_cases import log_case_event
-            await log_case_event(payload.case_id, f"💬 Μήνυμα προς πελάτη: {payload.text.strip()[:80]}")
+            await log_case_event(payload.case_id, f"💬 Μήνυμα προς πελάτη: {payload.text.strip()[:80]}", user)
         except Exception:
             pass
 
-    doc = await db.portal_messages.find_one({"_id": result.inserted_id})
+    doc = await db.portal_messages.find_one(tenant_query(user, {"_id": result.inserted_id}))
     return PortalMessage.from_mongo(doc)
 
 
 @router.get("/unread-count")
 async def unread_count(user: dict = Depends(get_current_user)):
-    n = await db.portal_messages.count_documents({"sender": "client", "read_at": None})
+    n = await db.portal_messages.count_documents(tenant_query(user, {"sender": "client", "read_at": None}))
     return {"unread": n}
 
 
@@ -113,10 +116,10 @@ async def _validate_token(token: str) -> dict:
 @public_router.get("/{token}/chat")
 async def portal_get_messages(token: str):
     tk = await _validate_token(token)
-    docs = await db.portal_messages.find({"client_id": tk["client_id"]}).sort("created_at", 1).to_list(500)
+    docs = await db.portal_messages.find({"client_id": tk["client_id"], "firm_id": tk.get("firm_id", "legacy-default-firm")}).sort("created_at", 1).to_list(500)
     # Auto-mark lawyer messages as read from client side
     await db.portal_messages.update_many(
-        {"client_id": tk["client_id"], "sender": "lawyer", "read_at": None},
+        {"client_id": tk["client_id"], "firm_id": tk.get("firm_id", "legacy-default-firm"), "sender": "lawyer", "read_at": None},
         {"$set": {"read_at": datetime.now(timezone.utc).isoformat()}},
     )
     return [PortalMessage.from_mongo(d) for d in docs]
@@ -133,7 +136,8 @@ async def portal_send_message(token: str, payload: MessageIn):
         sender="client",
         sender_name=tk.get("client_name", ""),
         text=payload.text.strip(),
+        firm_id=tk.get("firm_id", "legacy-default-firm"),
     )
     result = await db.portal_messages.insert_one(msg.to_mongo())
-    doc = await db.portal_messages.find_one({"_id": result.inserted_id})
+    doc = await db.portal_messages.find_one({"_id": result.inserted_id, "firm_id": tk.get("firm_id", "legacy-default-firm")})
     return PortalMessage.from_mongo(doc)

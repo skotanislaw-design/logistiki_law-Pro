@@ -7,6 +7,7 @@ from bson import ObjectId
 from db import db
 from models import KycRecord
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/kyc", tags=["kyc"])
 
@@ -61,13 +62,13 @@ async def kyc_status(user: dict = Depends(get_current_user)):
 
 @router.get("/records")
 async def list_records(user: dict = Depends(get_current_user)):
-    docs = await db.kyc.find({}).sort("updated_at", -1).to_list(1000)
+    docs = await db.kyc.find(tenant_query(user, {})).sort("updated_at", -1).to_list(1000)
     return [KycRecord.from_mongo(d) for d in docs]
 
 
 @router.get("/records/{client_id}")
 async def get_record(client_id: str, user: dict = Depends(get_current_user)):
-    doc = await db.kyc.find_one({"client_id": client_id})
+    doc = await db.kyc.find_one(tenant_query(user, {"client_id": client_id}))
     if not doc:
         return None
     return KycRecord.from_mongo(doc)
@@ -87,19 +88,20 @@ async def upsert_record(payload: KycRecord, user: dict = Depends(get_current_use
     # auto-detect high-risk country
     if not payload.high_risk_country and payload.nationality in HIGH_RISK_COUNTRIES:
         payload.high_risk_country = True
-    data = payload.model_dump(exclude={"id"})
+    data = payload.model_dump(exclude={"id", "firm_id"})
     data["risk_score"], data["risk_level"] = _calc_risk(data)
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    existing = await db.kyc.find_one({"client_id": payload.client_id})
+    existing = await db.kyc.find_one(tenant_query(user, {"client_id": payload.client_id}))
     if existing:
-        await db.kyc.update_one({"_id": existing["_id"]}, {"$set": data})
-        doc = await db.kyc.find_one({"_id": existing["_id"]})
+        await db.kyc.update_one(tenant_query(user, {"_id": existing["_id"]}), {"$set": data})
+        doc = await db.kyc.find_one(tenant_query(user, {"_id": existing["_id"]}))
     else:
+        data["firm_id"] = firm_id_for(user)
         result = await db.kyc.insert_one(data)
-        doc = await db.kyc.find_one({"_id": result.inserted_id})
+        doc = await db.kyc.find_one(tenant_query(user, {"_id": result.inserted_id}))
     # ενημερώνω και τον πελάτη με το risk level για γρήγορη εμφάνιση
     await db.clients.update_one(
-        {"_id": ObjectId(payload.client_id)},
+        tenant_query(user, {"_id": ObjectId(payload.client_id)}),
         {"$set": {"kyc_risk_level": data["risk_level"], "kyc_verified": bool(data.get("verified_at"))}},
     )
     return KycRecord.from_mongo(doc)
@@ -107,7 +109,7 @@ async def upsert_record(payload: KycRecord, user: dict = Depends(get_current_use
 
 @router.post("/records/{client_id}/verify")
 async def verify_record(client_id: str, user: dict = Depends(get_current_user)):
-    doc = await db.kyc.find_one({"client_id": client_id})
+    doc = await db.kyc.find_one(tenant_query(user, {"client_id": client_id}))
     if not doc:
         raise HTTPException(status_code=404, detail="Δεν υπάρχει καρτέλα KYC για αυτόν τον πελάτη.")
     now = datetime.now(timezone.utc).isoformat()
@@ -115,8 +117,8 @@ async def verify_record(client_id: str, user: dict = Depends(get_current_user)):
         {"_id": doc["_id"]},
         {"$set": {"verified_at": now, "verified_by": user["email"]}},
     )
-    await db.clients.update_one({"_id": ObjectId(client_id)}, {"$set": {"kyc_verified": True}})
-    updated = await db.kyc.find_one({"_id": doc["_id"]})
+    await db.clients.update_one(    tenant_query(user, {"_id": ObjectId(client_id)}), {"$set": {"kyc_verified": True}})
+    updated = await db.kyc.find_one(tenant_query(user, {"_id": doc["_id"]}))
     return KycRecord.from_mongo(updated)
 
 

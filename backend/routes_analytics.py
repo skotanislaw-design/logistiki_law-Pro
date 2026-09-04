@@ -4,6 +4,7 @@ from calendar import monthrange
 from fastapi import APIRouter, Depends
 from db import db
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -23,7 +24,7 @@ async def cash_flow_forecast(user: dict = Depends(get_current_user)):
     horizon_end = _add_months(today, 3)
 
     # 1) Αναμενόμενες εισπράξεις = ανεξόφλητα τιμολόγια, projected στις 30 μέρες μετά την ημερομηνία τους
-    unpaid = await db.invoices.find({"status": "issued"}).to_list(2000)
+    unpaid = await db.invoices.find(tenant_query(user, {"status": "issued"})).to_list(2000)
     expected_income = []
     for inv in unpaid:
         try:
@@ -45,7 +46,7 @@ async def cash_flow_forecast(user: dict = Depends(get_current_user)):
 
     # 2) Επαναλαμβανόμενα έξοδα = μέσος όρος τελευταίων 3 μηνών ανά κατηγορία
     three_months_ago = _add_months(today, -3).isoformat()
-    recent_expenses = await db.expenses.find({"date": {"$gte": three_months_ago}}).to_list(3000)
+    recent_expenses = await db.expenses.find(tenant_query(user, {"date": {"$gte": three_months_ago}})).to_list(3000)
     by_cat = {}
     for e in recent_expenses:
         c = e.get("category") or "Λοιπά"
@@ -71,7 +72,7 @@ async def cash_flow_forecast(user: dict = Depends(get_current_user)):
 
     # 3) Φορολογικές προθεσμίες (VAT/EFKA εντός horizon)
     from tax_utils import next_vat_deadline, next_efka_deadline
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     vat_period = settings.get("vat_period", "monthly")
 
     tax_deadlines = []
@@ -81,8 +82,8 @@ async def cash_flow_forecast(user: dict = Depends(get_current_user)):
         if vd <= horizon_end:
             # Υπολογίζω το ποσό ΦΠΑ βάσει τρέχοντος πραγματικού
             month_start = ref_day.replace(day=1).isoformat()
-            invs = await db.invoices.find({"date": {"$gte": month_start}, "status": {"$in": ["issued", "paid"]}}).to_list(500)
-            exps = await db.expenses.find({"date": {"$gte": month_start}}).to_list(500)
+            invs = await db.invoices.find(tenant_query(user, {"date": {"$gte": month_start}, "status": {"$in": ["issued", "paid"]}})).to_list(500)
+            exps = await db.expenses.find(tenant_query(user, {"date": {"$gte": month_start}})).to_list(500)
             out_vat = sum(float(i.get("vat_amount", 0)) for i in invs)
             in_vat = sum(float(e.get("vat_amount", 0)) for e in exps)
             vat_due = max(0, out_vat - in_vat)
@@ -151,9 +152,9 @@ async def profitability(user: dict = Depends(get_current_user)):
     today = date.today()
     year_start = f"{today.year}-01-01"
 
-    invoices = await db.invoices.find({"date": {"$gte": year_start}, "status": {"$in": ["issued", "paid"]}}).to_list(5000)
-    clients = await db.clients.find({}).to_list(5000)
-    cases = await db.cases.find({}).to_list(5000)
+    invoices = await db.invoices.find(tenant_query(user, {"date": {"$gte": year_start}, "status": {"$in": ["issued", "paid"]}})).to_list(5000)
+    clients = await db.clients.find(tenant_query(user, {})).to_list(5000)
+    cases = await db.cases.find(tenant_query(user, {})).to_list(5000)
 
     client_map = {str(c["_id"]): c for c in clients}
     case_map = {str(c["_id"]): c for c in cases}

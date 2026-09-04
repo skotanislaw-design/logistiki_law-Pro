@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 from db import db
 from models import Client
 from auth import get_current_user
+from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/import", tags=["import"])
 
@@ -111,13 +112,13 @@ async def import_clients(file: UploadFile = File(...), user: dict = Depends(get_
                 continue
             existing = None
             if data.get("afm"):
-                existing = await db.clients.find_one({"afm": data["afm"]})
+                existing = await db.clients.find_one(tenant_query(user, {"afm": data["afm"]}))
             if not existing:
-                existing = await db.clients.find_one({"name": data["name"]})
+                existing = await db.clients.find_one(tenant_query(user, {"name": data["name"]}))
             if existing:
                 skipped += 1
                 continue
-            client = Client(**data, created_by=user["email"])
+            client = Client(**data, created_by=user["email"], firm_id=firm_id_for(user))
             await db.clients.insert_one(client.to_mongo())
             created += 1
         except Exception as e:

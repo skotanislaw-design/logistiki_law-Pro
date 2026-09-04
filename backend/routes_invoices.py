@@ -129,7 +129,7 @@ async def issue_invoice(invoice_id: str, user: dict = Depends(get_current_user))
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     update = {"status": "issued", "issued_at": datetime.now(timezone.utc).isoformat()}
 
     if mydata_ready(settings):
@@ -168,7 +168,7 @@ async def invoice_pdf(invoice_id: str, user: dict = Depends(get_current_user)):
             client = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(doc["client_id"])}))
         except Exception:
             client = None
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     pdf_bytes = build_invoice_pdf(doc, client or {}, settings)
     safe_name = (doc.get("number") or "invoice").replace("ΤΠΥ", "TPY")
     return Response(
@@ -196,7 +196,7 @@ async def send_invoice_by_email(invoice_id: str, user: dict = Depends(get_curren
             client = None
     if not client or not client.get("email"):
         raise HTTPException(status_code=400, detail="Ο πελάτης δεν έχει καταχωρημένο email. Προσθέστε email στην καρτέλα του πελάτη.")
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     if not smtp_ready(settings):
         raise HTTPException(status_code=400, detail="Δεν έχουν ρυθμιστεί τα στοιχεία αποστολής email. Συμπληρώστε τα στις Ρυθμίσεις → Αποστολή Email (SMTP).")
 
@@ -246,7 +246,7 @@ async def send_invoice_reminder(invoice_id: str, user: dict = Depends(get_curren
             client = None
     if not client or not client.get("email"):
         raise HTTPException(status_code=400, detail="Ο πελάτης δεν έχει καταχωρημένο email. Προσθέστε email στην καρτέλα του πελάτη.")
-    settings = await db.settings.find_one({}) or {}
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     if not smtp_ready(settings):
         raise HTTPException(status_code=400, detail="Δεν έχουν ρυθμιστεί τα στοιχεία αποστολής email. Συμπληρώστε τα στις Ρυθμίσεις → Αποστολή Email (SMTP).")
 
