@@ -11,7 +11,10 @@ from datetime import datetime, timezone, date as _date
 from bson import ObjectId
 
 from db import db
-from mydata_client import mydata_ready, send_invoice, MyDataError, mydata_mock_enabled, MYDATA_NOT_CONFIGURED_MSG
+from mydata_client import (
+    mydata_ready, send_invoice, cancel_invoice, MyDataError, mydata_mock_enabled,
+    MYDATA_NOT_CONFIGURED_MSG, resolve_invoice_type, withholding_for,
+)
 from email_utils import (
     smtp_ready, send_email_with_pdf, invoice_email_html, invoice_email_text,
     reminder_email_html, reminder_email_text,
@@ -35,6 +38,17 @@ async def load_client(firm_id: str, invoice: dict) -> dict | None:
         return await db.clients.find_one(firm_query(firm_id, {"_id": ObjectId(invoice["client_id"])}))
     except Exception:
         return None
+
+
+async def payable_amount(firm_id: str, invoice: dict, settings: dict, client: dict | None = None) -> tuple[float, float]:
+    """(πληρωτέο, παρακρατούμενος φόρος). Ο πελάτης-επιχείρηση πληρώνει μείον την παρακράτηση."""
+    total = float(invoice.get("total", 0))
+    if not settings.get("withholding_enabled", False) and invoice.get("withholding_amount") is None:
+        return round(total, 2), 0.0
+    client = client if client is not None else await load_client(firm_id, invoice)
+    invoice_type = resolve_invoice_type(invoice, client or {})
+    withheld = withholding_for(invoice, settings, invoice_type, float(invoice.get("subtotal", 0)))
+    return round(total - withheld, 2), withheld
 
 
 def safe_pdf_name(invoice: dict) -> str:
@@ -115,6 +129,8 @@ async def build_payment_link(invoice: dict, settings: dict) -> str:
             return ""
         _stripe.api_key = api_key
         total = float(invoice.get("total", 0))
+        if settings.get("withholding_enabled", False) or invoice.get("withholding_amount") is not None:
+            total, _ = await payable_amount(invoice.get("firm_id", ""), invoice, settings)
         if total <= 0:
             return ""
         origin = settings.get("public_url") or os.environ.get("PUBLIC_URL") or os.environ.get("PREVIEW_ENDPOINT", "") or "https://example.com"
@@ -204,3 +220,101 @@ async def mark_paid(firm_id: str, invoice_id, paid_via: str = "manual") -> bool:
         {"$set": {"status": "paid", "paid_at": _now(), "paid_via": paid_via}},
     )
     return result.modified_count > 0
+
+
+# ------------------------------------------------- cancellation / credit ----
+
+class InvoiceWorkflowError(Exception):
+    """Μη επιτρεπτή μετάβαση κατάστασης τιμολογίου (μήνυμα προς τον χρήστη)."""
+
+
+async def cancel_in_mydata(firm_id: str, invoice: dict, settings: dict) -> dict:
+    """Ακυρώνει το παραστατικό στην ΑΑΔΕ και σημειώνει το τιμολόγιο ως ακυρωμένο.
+
+    Η ακύρωση επιτρέπεται μόνο για διαβιβασμένα (synced) και μη εξοφλημένα
+    παραστατικά· για εξοφλημένα ο σωστός δρόμος είναι πιστωτικό τιμολόγιο.
+    """
+    if invoice.get("status") == "paid":
+        raise InvoiceWorkflowError(
+            "Το τιμολόγιο είναι εξοφλημένο — δεν ακυρώνεται. Εκδώστε πιστωτικό τιμολόγιο."
+        )
+    if invoice.get("status") == "cancelled":
+        raise InvoiceWorkflowError("Το τιμολόγιο είναι ήδη ακυρωμένο.")
+
+    update = {"status": "cancelled", "cancelled_at": _now()}
+    if invoice.get("mydata_status") == "synced" and invoice.get("mydata_mark"):
+        if not mydata_ready(settings):
+            raise InvoiceWorkflowError(
+                "Το παραστατικό έχει διαβιβαστεί στο myDATA αλλά λείπουν τα credentials ΑΑΔΕ "
+                "για την ακύρωση. Συμπληρώστε τα στις Ρυθμίσεις."
+            )
+        result = await cancel_invoice(settings, invoice["mydata_mark"])
+        update.update({
+            "mydata_status": "cancelled",
+            "mydata_cancellation_mark": result["cancellation_mark"],
+            "mydata_cancelled_at": _now(),
+        })
+    await db.invoices.update_one(firm_query(firm_id, {"_id": invoice["_id"]}), {"$set": update})
+    return update
+
+
+async def build_credit_note(firm_id: str, invoice: dict, user_email: str,
+                            reason: str = "", amount: float | None = None) -> dict:
+    """Δημιουργεί πιστωτικό τιμολόγιο συσχετιζόμενο με το αρχικό.
+
+    Πλήρες πιστωτικό από προεπιλογή· με ``amount`` γίνεται μερικό (η καθαρή αξία
+    κατανέμεται στο πρώτο συντελεστή ΦΠΑ του αρχικού).
+    """
+    from models import Invoice, InvoiceLineItem
+    from tax_utils import calculate_invoice_totals
+    from routes_invoices import _next_invoice_number
+
+    if invoice.get("mydata_status") != "synced" or not invoice.get("mydata_mark"):
+        raise InvoiceWorkflowError(
+            "Το πιστωτικό απαιτεί διαβιβασμένο αρχικό παραστατικό (MARK). "
+            "Περιμένετε να ολοκληρωθεί η διαβίβαση στο myDATA."
+        )
+    if invoice.get("credit_note_id"):
+        raise InvoiceWorkflowError("Έχει ήδη εκδοθεί πιστωτικό για αυτό το τιμολόγιο.")
+
+    original_lines = invoice.get("line_items") or []
+    if amount is None:
+        lines = [
+            InvoiceLineItem(
+                description=f"Πίστωση: {ln.get('description', '')}"[:200],
+                quantity=float(ln.get("quantity", 1)),
+                unit_price=-abs(float(ln.get("unit_price", 0))),
+                vat_rate=int(ln.get("vat_rate", 24)),
+            )
+            for ln in original_lines
+        ]
+    else:
+        rate = int(original_lines[0].get("vat_rate", 24)) if original_lines else 24
+        lines = [InvoiceLineItem(description=f"Μερική πίστωση τιμολογίου {invoice.get('number')}",
+                                 quantity=1, unit_price=-abs(float(amount)), vat_rate=rate)]
+    if not lines:
+        raise InvoiceWorkflowError("Το αρχικό τιμολόγιο δεν έχει γραμμές για πίστωση.")
+
+    credit = Invoice(
+        firm_id=firm_id,
+        client_id=invoice.get("client_id", ""),
+        client_name=invoice.get("client_name", ""),
+        date=_date.today().isoformat(),
+        line_items=lines,
+        invoice_type="5.1",
+        credit_note_for=str(invoice["_id"]),
+        correlated_mark=invoice.get("mydata_mark"),
+        notes=reason or f"Πιστωτικό για το {invoice.get('number')}",
+        payment_method=invoice.get("payment_method", ""),
+        created_by=user_email,
+    )
+    totals = calculate_invoice_totals(credit.line_items)
+    credit.subtotal, credit.vat_amount, credit.total = totals["subtotal"], totals["vat_amount"], totals["total"]
+    credit.vat_breakdown = totals["vat_breakdown"]
+    credit.number = await _next_invoice_number(firm_id, prefix="ΠΙΣ")
+    result = await db.invoices.insert_one(credit.to_mongo())
+    await db.invoices.update_one(
+        firm_query(firm_id, {"_id": invoice["_id"]}),
+        {"$set": {"credit_note_id": str(result.inserted_id)}},
+    )
+    return await db.invoices.find_one(firm_query(firm_id, {"_id": result.inserted_id}))

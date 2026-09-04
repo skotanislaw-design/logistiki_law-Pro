@@ -262,3 +262,145 @@ async def test_lock_is_exclusive_until_released():
 
 async def _async_value(v):
     return v
+
+
+# ------------------------------------------------ myDATA expense inbound ----
+
+@pytest.mark.asyncio
+async def test_mydata_expense_sync_creates_expenses_once(monkeypatch):
+    settings, _ = await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456789"})
+    calls = []
+
+    async def fake_request_docs(settings, mark):
+        calls.append(mark)
+        if mark == "0":
+            return ([
+                {"mark": "400001", "uid": "A", "issuer_afm": "111111111", "issuer_name": "ΔΕΗ ΑΕ",
+                 "date": "2026-08-10", "invoice_type": "1.1", "series": "A", "aa": "55",
+                 "net_value": 100.0, "vat_amount": 24.0, "gross_value": 124.0, "vat_rate": 24},
+                {"mark": "400002", "uid": "B", "issuer_afm": "222222222", "issuer_name": "",
+                 "date": "2026-08-12", "invoice_type": "2.1", "series": "B", "aa": "9",
+                 "net_value": 200.0, "vat_amount": 48.0, "gross_value": 248.0, "vat_rate": 24},
+            ], "400002")
+        return ([], mark)
+
+    monkeypatch.setattr(automation, "request_docs", fake_request_docs)
+    r = (await run_firm(FIRM, ["mydata_expenses"]))[0]
+    assert r["stats"]["created"] == 2 and r["stats"]["last_mark"] == "400002"
+
+    expenses = await db.expenses.find({"firm_id": FIRM}).to_list(10)
+    assert {e["mydata_mark"] for e in expenses} == {"400001", "400002"}
+    dei = next(e for e in expenses if e["mydata_mark"] == "400001")
+    assert dei["vendor"] == "ΔΕΗ ΑΕ" and dei["amount"] == 124.0 and dei["vat_amount"] == 24.0
+    assert dei["source"] == "mydata" and dei["review_status"] == "needs_review"
+    anonymous = next(e for e in expenses if e["mydata_mark"] == "400002")
+    assert "222222222" in anonymous["vendor"]  # χωρίς επωνυμία, πέφτουμε στο ΑΦΜ
+    # ο δείκτης προχώρησε ώστε η επόμενη κλήση να μην ξανακατεβάσει τα ίδια
+    assert (await db.settings.find_one({"firm_id": FIRM}))["mydata_expense_last_mark"] == "400002"
+
+    # δεύτερος κύκλος: συνεχίζει από το τελευταίο MARK, τίποτα διπλό
+    r2 = (await run_firm(FIRM, ["mydata_expenses"]))[0]
+    assert r2["stats"]["created"] == 0
+    assert calls == ["0", "400002"]
+    assert await db.expenses.count_documents({"firm_id": FIRM}) == 2
+
+
+@pytest.mark.asyncio
+async def test_mydata_expense_sync_skips_without_credentials_or_afm(monkeypatch):
+    await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": ""})
+    r = (await run_firm(FIRM, ["mydata_expenses"]))[0]
+    assert r["stats"] == {"skipped": True, "reason": "afm"}
+    assert await db.notifications.count_documents({"dedupe_key": "mydata_afm_missing"}) == 1
+
+
+@pytest.mark.asyncio
+async def test_mydata_expense_sync_reports_aade_failure(monkeypatch):
+    from mydata_client import MyDataError as _E
+    await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456789"})
+
+    async def boom(settings, mark):
+        raise _E("Υπέρβαση ορίου κλήσεων προς την ΑΑΔΕ.")
+
+    monkeypatch.setattr(automation, "request_docs", boom)
+    r = (await run_firm(FIRM, ["mydata_expenses"]))[0]
+    assert r["status"] == "error" and "ΑΑΔΕ" in r["error"]
+    note = await db.notifications.find_one({"dedupe_key": "mydata_expense_sync_failed"})
+    assert note and note["requires_action"] is False
+
+
+# ----------------------------------------------- cancellation / credit ------
+
+@pytest.mark.asyncio
+async def test_cancel_invoice_calls_aade_and_blocks_paid(monkeypatch):
+    import invoice_services as svc
+    settings, client_id = await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456789"})
+    cancelled = []
+
+    async def fake_cancel(settings, mark):
+        cancelled.append(mark)
+        return {"cancellation_mark": "500999"}
+
+    monkeypatch.setattr(svc, "cancel_invoice", fake_cancel)
+    synced = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0001", "client_id": client_id,
+                                           "status": "issued", "mydata_status": "synced", "mydata_mark": "400001", "line_items": []})
+    doc = await db.invoices.find_one({"_id": synced.inserted_id})
+    await svc.cancel_in_mydata(FIRM, doc, settings)
+    updated = await db.invoices.find_one({"_id": synced.inserted_id})
+    assert updated["status"] == "cancelled" and updated["mydata_status"] == "cancelled"
+    assert updated["mydata_cancellation_mark"] == "500999" and cancelled == ["400001"]
+
+    paid = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0002", "client_id": client_id,
+                                         "status": "paid", "mydata_status": "synced", "mydata_mark": "400002", "line_items": []})
+    with pytest.raises(svc.InvoiceWorkflowError, match="πιστωτικό"):
+        await svc.cancel_in_mydata(FIRM, await db.invoices.find_one({"_id": paid.inserted_id}), settings)
+
+
+@pytest.mark.asyncio
+async def test_credit_note_mirrors_original_and_links_both_ways():
+    import invoice_services as svc
+    settings, client_id = await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456789"})
+    original = await db.invoices.insert_one({
+        "firm_id": FIRM, "number": "ΤΠΥ-2026-0001", "client_id": client_id, "client_name": "Παπαδόπουλος",
+        "status": "paid", "mydata_status": "synced", "mydata_mark": "400001", "total": 124.0,
+        "line_items": [{"description": "Συμβουλευτική", "quantity": 1, "unit_price": 100, "vat_rate": 24}]})
+    doc = await db.invoices.find_one({"_id": original.inserted_id})
+
+    credit = await svc.build_credit_note(FIRM, doc, "user@example.gr", reason="Λάθος χρέωση")
+    assert credit["number"].startswith("ΠΙΣ-")
+    assert credit["invoice_type"] == "5.1" and credit["correlated_mark"] == "400001"
+    assert credit["credit_note_for"] == str(original.inserted_id)
+    assert credit["total"] == -124.0 and credit["line_items"][0]["unit_price"] == -100
+    assert (await db.invoices.find_one({"_id": original.inserted_id}))["credit_note_id"] == str(credit["_id"])
+
+    # δεύτερο πιστωτικό για το ίδιο τιμολόγιο απορρίπτεται
+    with pytest.raises(svc.InvoiceWorkflowError, match="ήδη"):
+        await svc.build_credit_note(FIRM, await db.invoices.find_one({"_id": original.inserted_id}), "user@example.gr")
+
+
+@pytest.mark.asyncio
+async def test_credit_note_partial_amount_and_requires_mark():
+    import invoice_services as svc
+    settings, client_id = await _seed()
+    not_sent = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0003", "client_id": client_id,
+                                             "status": "issued", "mydata_status": "pending", "total": 124.0,
+                                             "line_items": [{"description": "x", "quantity": 1, "unit_price": 100, "vat_rate": 24}]})
+    with pytest.raises(svc.InvoiceWorkflowError, match="MARK"):
+        await svc.build_credit_note(FIRM, await db.invoices.find_one({"_id": not_sent.inserted_id}), "u@e.gr")
+
+    synced = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0004", "client_id": client_id,
+                                           "status": "issued", "mydata_status": "synced", "mydata_mark": "400009", "total": 124.0,
+                                           "line_items": [{"description": "x", "quantity": 1, "unit_price": 100, "vat_rate": 24}]})
+    credit = await svc.build_credit_note(FIRM, await db.invoices.find_one({"_id": synced.inserted_id}), "u@e.gr", amount=40)
+    assert credit["subtotal"] == -40.0 and credit["total"] == -49.6
+
+
+@pytest.mark.asyncio
+async def test_payable_amount_subtracts_withholding():
+    import invoice_services as svc
+    settings, client_id = await _seed({"withholding_enabled": True, "withholding_min_net": 300})
+    company = await db.clients.insert_one({"firm_id": FIRM, "name": "ΑΕ", "afm": "987654321", "client_type": "company"})
+    inv = {"_id": "x", "firm_id": FIRM, "client_id": str(company.inserted_id), "subtotal": 1000.0, "total": 1240.0, "line_items": []}
+    payable, withheld = await svc.payable_amount(FIRM, inv, settings)
+    assert (payable, withheld) == (1040.0, 200.0)
+    plain, none_withheld = await svc.payable_amount(FIRM, inv, {**settings, "withholding_enabled": False})
+    assert (plain, none_withheld) == (1240.0, 0.0)

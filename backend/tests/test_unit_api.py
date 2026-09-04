@@ -71,3 +71,49 @@ def test_ai_features_return_503_without_provider(client):
     r = client.post("/api/documents/ai-draft", json={"instruction": "όχληση"})
     assert r.status_code in (400, 503)
     assert "AI" in r.json()["detail"] or "LLM" in r.json()["detail"]
+
+
+def test_invoice_types_endpoint(client):
+    _login(client)
+    types = client.get("/api/invoices/types/list").json()
+    codes = {t["code"] for t in types}
+    assert {"2.1", "11.2", "5.1"} <= codes
+    assert all(t["label"] for t in types)
+
+
+def test_cancel_and_credit_note_endpoints_enforce_workflow(client):
+    _login(client)
+    c = client.post("/api/clients", json={"name": "Πελάτης Α", "afm": "123456789", "client_type": "company"}).json()
+    body = {"client_id": c["id"], "date": "2026-09-01",
+            "line_items": [{"description": "Συμβουλευτική", "quantity": 1, "unit_price": 100, "vat_rate": 24}]}
+    inv = client.post("/api/invoices", json=body).json()
+    client.post(f"/api/invoices/{inv['id']}/issue")
+
+    # χωρίς MARK (καμία διαβίβαση στην ΑΑΔΕ) το πιστωτικό απορρίπτεται με σαφές μήνυμα
+    r = client.post(f"/api/invoices/{inv['id']}/credit-note", json={"reason": "λάθος"})
+    assert r.status_code == 400 and "MARK" in r.json()["detail"]
+
+    # ακύρωση εκδοθέντος χωρίς MARK: τοπική, χωρίς κλήση ΑΑΔΕ
+    r = client.post(f"/api/invoices/{inv['id']}/cancel", json={"reason": "διπλοεγγραφή"})
+    assert r.status_code == 200 and r.json()["status"] == "cancelled"
+    # δεύτερη ακύρωση απορρίπτεται
+    assert client.post(f"/api/invoices/{inv['id']}/cancel", json={}).status_code == 400
+
+
+def test_credit_note_amount_must_be_positive(client):
+    _login(client)
+    c = client.post("/api/clients", json={"name": "Πελάτης Β", "afm": "123456789", "client_type": "company"}).json()
+    inv = client.post("/api/invoices", json={"client_id": c["id"], "date": "2026-09-01",
+                                             "line_items": [{"description": "x", "quantity": 1, "unit_price": 100, "vat_rate": 24}]}).json()
+    r = client.post(f"/api/invoices/{inv['id']}/credit-note", json={"amount": -5})
+    assert r.status_code == 400 and "θετικό" in r.json()["detail"]
+
+
+def test_automation_status_reports_mydata_expense_capability(client):
+    _login(client)
+    status = client.get("/api/automation/status").json()
+    assert "mydata_expenses" in status["capabilities"]
+    assert status["capabilities"]["mydata_expenses"] is False  # χωρίς credentials ΑΑΔΕ
+    assert "mydata_expenses" in status["jobs"]
+    assert status["jobs"]["mydata_expenses"]["label"] == "Λήψη εξόδων από myDATA"
+    assert "expenses_from_mydata" in status["last_7_days"]

@@ -198,6 +198,8 @@ async def startup_event():
     await db.automation_runs.create_index([("firm_id", 1), ("job", 1), ("started_at", -1)])
     await db.vat_periods.create_index([("firm_id", 1), ("period", 1)], unique=True)
     await db.inbox_processed.create_index([("firm_id", 1), ("key", 1)], unique=True)
+    # Ένα παραστατικό ΑΑΔΕ γίνεται έξοδο μία φορά, ακόμη κι αν το RequestDocs το επιστρέψει ξανά.
+    await db.expenses.create_index([("firm_id", 1), ("mydata_mark", 1)], unique=True, sparse=True)
     await db.case_tracker_events.create_index([("fetched_at", -1)])
     await db.portal_messages.create_index([("client_id", 1), ("created_at", 1)])
     await seed_admin()
