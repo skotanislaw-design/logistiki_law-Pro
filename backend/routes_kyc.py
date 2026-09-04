@@ -44,11 +44,11 @@ def _calc_risk(kyc: dict) -> tuple[int, str]:
 @router.get("/status")
 async def kyc_status(user: dict = Depends(get_current_user)):
     """Επισκόπηση KYC — πόσοι πελάτες έχουν συμπληρωθεί, ελλείψεις."""
-    total_clients = await db.clients.count_documents({})
-    kyc_records = await db.kyc.count_documents({})
-    verified = await db.kyc.count_documents({"verified_at": {"$ne": None}})
-    high_risk = await db.kyc.count_documents({"risk_level": "high"})
-    medium_risk = await db.kyc.count_documents({"risk_level": "medium"})
+    total_clients = await db.clients.count_documents(tenant_query(user))
+    kyc_records = await db.kyc.count_documents(tenant_query(user))
+    verified = await db.kyc.count_documents(tenant_query(user, {"verified_at": {"$ne": None}}))
+    high_risk = await db.kyc.count_documents(tenant_query(user, {"risk_level": "high"}))
+    medium_risk = await db.kyc.count_documents(tenant_query(user, {"risk_level": "medium"}))
     missing = total_clients - kyc_records
     return {
         "total_clients": total_clients,
@@ -79,7 +79,7 @@ async def upsert_record(payload: KycRecord, user: dict = Depends(get_current_use
     if not payload.client_id:
         raise HTTPException(status_code=400, detail="Απαιτείται client_id")
     try:
-        client = await db.clients.find_one({"_id": ObjectId(payload.client_id)})
+        client = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(payload.client_id)}))
     except Exception:
         raise HTTPException(status_code=400, detail="Μη έγκυρο id πελάτη")
     if not client:

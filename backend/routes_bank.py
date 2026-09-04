@@ -302,11 +302,8 @@ async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, user
         }},
     )
     # Auto-mark το τιμολόγιο ως εξοφλημένο αν είναι σε issued
-    if inv.get("status") == "issued":
-        await db.invoices.update_one(
-            tenant_query(user, {"_id": ObjectId(invoice_id)}),
-            {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc).isoformat()}},
-        )
+    from invoice_services import mark_paid
+    await mark_paid(firm_id_for(user), invoice_id, paid_via="bank_manual")
     return {"message": "Συνδέθηκε και το τιμολόγιο σημειώθηκε ως εξοφλημένο."}
 
 
@@ -339,5 +336,7 @@ async def summary(user: dict = Depends(get_current_user)):
     unmatched = await db.bank_transactions.count_documents(tenant_query(user, {"match_status": "unmatched"}))
     auto = await db.bank_transactions.count_documents(tenant_query(user, {"match_status": "auto_matched"}))
     manual = await db.bank_transactions.count_documents(tenant_query(user, {"match_status": "manual_matched"}))
+    auto_confirmed = await db.bank_transactions.count_documents(tenant_query(user, {"match_status": "auto_confirmed"}))
     ignored = await db.bank_transactions.count_documents(tenant_query(user, {"match_status": "ignored"}))
-    return {"total": total, "unmatched": unmatched, "auto_matched": auto, "manual_matched": manual, "ignored": ignored}
+    return {"total": total, "unmatched": unmatched, "auto_matched": auto, "manual_matched": manual,
+            "auto_confirmed": auto_confirmed, "ignored": ignored}

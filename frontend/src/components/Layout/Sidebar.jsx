@@ -4,7 +4,7 @@ import {
   SquaresFour, FileText, Receipt, ChartLineUp, Users, Calculator,
   CalendarCheck, GearSix, SignOut, CaretLeft, CaretRight, Scales, Sparkle, Files,
   Briefcase, Scroll, Ticket, Gavel, Monitor, Vault, ShieldCheck, ChartPieSlice, Wallet, Signature,
-  MagnifyingGlass, ScanSmiley, PencilRuler,
+  MagnifyingGlass, ScanSmiley, PencilRuler, Robot,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
 import { useViewMode } from "@/context/ViewModeContext";
@@ -12,7 +12,10 @@ import { useViewMode } from "@/context/ViewModeContext";
 const NAV_GROUPS = [
   {
     label: "ΚΥΡΙΑ",
-    items: [{ to: "/", label: "Πίνακας Ελέγχου", icon: SquaresFour, testid: "nav-dashboard" }],
+    items: [
+      { to: "/", label: "Πίνακας Ελέγχου", icon: SquaresFour, testid: "nav-dashboard" },
+      { to: "/autopilot", label: "Autopilot", icon: Robot, testid: "nav-autopilot" },
+    ],
   },
   {
     label: "AI ΕΡΓΑΛΕΙΑ",

@@ -12,6 +12,21 @@
 
 ---
 
+## 🤖 Autopilot — λογιστική χωρίς διάδραση
+
+Το Nomos One τρέχει μόνο του στον server και σας ενοχλεί μόνο για αποφάσεις:
+
+- Στέλνει το τιμολόγιο στον πελάτη μόλις εκδοθεί, το διαβιβάζει στο myDATA και ξαναπροσπαθεί μέχρι να πετύχει
+- Στέλνει υπενθυμίσεις ανείσπρακτων με payment link, με δική σας πολιτική (30 ημέρες / κάθε 15 / έως 3)
+- Συμφωνεί τις τραπεζικές κινήσεις και εξοφλεί τιμολόγια αυτόματα όταν η βεβαιότητα είναι ≥ 90%
+- Κλείνει κάθε περίοδο ΦΠΑ και σας λέει τι πληρώνετε και πότε, 7 και 1 ημέρα πριν
+- Διαβάζει αποδείξεις που φτάνουν στο email του γραφείου (IMAP + OCR) και τις καταχωρεί ως έξοδα
+- Σας στέλνει **ένα** ενημερωτικό email (καθημερινά ή κάθε Δευτέρα) με ό,τι έκανε και ό,τι περιμένει απόφαση
+
+Σελίδα `/autopilot`, τεκμηρίωση: [`docs/AUTOPILOT.md`](./docs/AUTOPILOT.md). Ανάλυση ετοιμότητας: [`docs/READINESS_ANALYSIS.md`](./docs/READINESS_ANALYSIS.md).
+
+---
+
 ## 🌟 Κύρια Χαρακτηριστικά
 
 ### 💼 Οικονομικά & Λογιστικά
@@ -77,7 +92,9 @@ docker compose up -d
 Το backend είναι εσωτερικό στο δίκτυο Docker (δεν εκτίθεται δημόσια — προσβάσιμο μόνο μέσω nginx στο frontend).
 
 ### 3. Πρώτη Είσοδος
-Πηγαίνετε στη διεύθυνσή σας και δημιουργήστε τον πρώτο admin λογαριασμό μέσω του **Onboarding Wizard**.
+Ο πρώτος admin (`ADMIN_EMAIL`) δημιουργείται αυτόματα. Αν δεν ορίσετε `ADMIN_PASSWORD` στο `.env`,
+ο κωδικός παράγεται τυχαία και τυπώνεται **μία φορά** στα logs του backend (`docker compose logs backend`).
+Συνδεθείτε και ολοκληρώστε τον **Onboarding Wizard**. Έλεγχος υγείας: `GET /api/health`.
 
 ### 4. Backup
 Τα Mongo backups γράφονται αυτόματα καθημερινά στο `./backups/`. Διατηρούνται για 14 ημέρες.
@@ -92,8 +109,12 @@ docker compose up -d
 ```bash
 # Backend
 cd backend
-pip install -r requirements.txt
+pip install -r requirements.txt        # ή requirements-ci.txt για ελαφριά, vendor-free εγκατάσταση
+export MONGO_URL=mongodb://localhost:27017 DB_NAME=nomos_one JWT_SECRET=dev
 uvicorn server:app --reload --port 8001
+
+# Unit tests (χωρίς Mongo/δίκτυο)
+python -m pytest
 
 # Frontend (σε άλλο terminal)
 cd frontend
@@ -112,7 +133,10 @@ yarn start
 ├── backend/                # FastAPI + Motor (async MongoDB)
 │   ├── server.py           # Entry point
 │   ├── models.py           # Pydantic models
-│   ├── routes_*.py         # 20+ API routers
+│   ├── routes_*.py         # 30+ API routers
+│   ├── automation.py       # Autopilot: scheduled jobs, inbox, digest
+│   ├── invoice_services.py # Κοινή λογική email/υπενθύμισης/myDATA (routes + Autopilot)
+│   ├── ai_runtime.py       # Προαιρετικός LLM provider (503 αν λείπει)
 │   ├── copilot.py          # Nomos AI orchestration
 │   ├── mydata_client.py    # ΑΑΔΕ REST client
 │   ├── email_utils.py      # SMTP με ελληνικό branding

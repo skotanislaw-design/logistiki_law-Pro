@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional
 from bson import ObjectId
-from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+from ai_runtime import LlmChat, UserMessage, TextDelta, StreamDone
 from db import db
 from ai_helpers import EMERGENT_LLM_KEY
 from auth import get_current_user

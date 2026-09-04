@@ -5,7 +5,7 @@ import { DisclaimerBanner } from "@/components/DisclaimerBanner";
 import { OneScreenDashboard } from "@/components/OneScreenDashboard";
 import { useViewMode } from "@/context/ViewModeContext";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer, Legend } from "recharts";
-import { TrendUp, TrendDown, Receipt, Clock, CloudArrowUp, Info } from "@phosphor-icons/react";
+import { TrendUp, TrendDown, Receipt, Clock, CloudArrowUp, Info, Robot } from "@phosphor-icons/react";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -45,6 +45,8 @@ export default function Dashboard() {
   const { oneScreen } = useViewMode();
   const navigate = useNavigate();
 
+  const [autopilot, setAutopilot] = useState(null);
+
   useEffect(() => {
     // First-time onboarding check
     axios.get(`${API}/settings`).then((r) => {
@@ -52,6 +54,7 @@ export default function Dashboard() {
         navigate("/onboarding", { replace: true });
       }
     }).catch(() => {});
+    axios.get(`${API}/automation/status`).then((r) => setAutopilot(r.data)).catch(() => {});
     axios.get(`${API}/dashboard/summary`)
       .then((res) => setData(res.data))
       .catch((e) => toast.error(errMsg(e)))
@@ -73,6 +76,24 @@ export default function Dashboard() {
       </div>
 
       <DisclaimerBanner />
+
+      {autopilot && (
+        <Link to="/autopilot" className="lux-card p-4 flex items-center gap-4 hover:bg-white/5 transition-colors" data-testid="dashboard-autopilot-card">
+          <Robot size={26} className="text-[hsl(var(--gold))] shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium">
+              Autopilot {autopilot.enabled ? "ενεργό" : "απενεργοποιημένο"} —{" "}
+              {autopilot.open_items > 0
+                ? `${autopilot.open_items} ${autopilot.open_items === 1 ? "θέμα χρειάζεται" : "θέματα χρειάζονται"} την απόφασή σας`
+                : "τίποτα δεν περιμένει εσάς"}
+            </div>
+            <div className="text-xs text-muted-foreground truncate">
+              Τελευταίες 7 ημέρες: {autopilot.last_7_days?.emails_sent || 0} τιμολόγια στάλθηκαν · {autopilot.last_7_days?.reminders_sent || 0} υπενθυμίσεις · {autopilot.last_7_days?.reconciled || 0} εξοφλήσεις από τράπεζα · {autopilot.last_7_days?.mydata_synced || 0} myDATA
+            </div>
+          </div>
+          <span className={`font-mono text-2xl ${autopilot.open_items > 0 ? "text-[hsl(var(--warning))]" : "text-[hsl(var(--success))]"}`} data-testid="dashboard-autopilot-open">{autopilot.open_items}</span>
+        </Link>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-5 stagger">
         <StatCard label="Έσοδα Μήνα" value={money(data.income_total)} icon={TrendUp} testid="stat-income" tone="success"

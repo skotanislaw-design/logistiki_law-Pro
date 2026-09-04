@@ -1,4 +1,3 @@
-import uuid
 import tempfile
 import os
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -125,33 +124,32 @@ async def delete_invoice(invoice_id: str, user: dict = Depends(get_current_user)
 @router.post("/{invoice_id}/issue")
 async def issue_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
     from datetime import datetime, timezone
-    from mydata_client import mydata_ready, send_invoice, MyDataError
+    from invoice_services import transmit_to_mydata, email_invoice, InvoiceEmailError
+    firm_id = firm_id_for(user)
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    if doc.get("status") != "draft":
+        raise HTTPException(status_code=400, detail="Μόνο πρόχειρα τιμολόγια μπορούν να εκδοθούν.")
     settings = await db.settings.find_one(tenant_query(user, {})) or {}
-    update = {"status": "issued", "issued_at": datetime.now(timezone.utc).isoformat()}
+    await db.invoices.update_one(
+        tenant_query(user, {"_id": ObjectId(invoice_id)}),
+        {"$set": {"status": "issued", "issued_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
+    await transmit_to_mydata(firm_id, doc, settings)
 
-    if mydata_ready(settings):
-        client = None
-        if doc.get("client_id"):
-            try:
-                client = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(doc["client_id"])}))
-            except Exception:
-                client = None
+    # Autopilot: send the PDF to the client right away so the user never has to.
+    if settings.get("autopilot_enabled", True) and settings.get("auto_email_on_issue", True):
         try:
-            result = await send_invoice(settings, doc, client or {})
-            update.update({"mydata_status": "synced", "mydata_mark": result["mark"], "mydata_uid": result["uid"], "mydata_error": None})
-        except MyDataError as e:
-            update.update({"mydata_status": "failed", "mydata_error": str(e)})
-    else:
-        update.update({
-            "mydata_status": "synced",
-            "mydata_mark": f"MOCK-{uuid.uuid4().hex[:16].upper()}",
-            "mydata_uid": f"UID-{uuid.uuid4().hex[:12].upper()}",
-        })
-
-    await db.invoices.update_one(tenant_query(user, {"_id": ObjectId(invoice_id)}), {"$set": update})
+            await email_invoice(firm_id, doc, settings)
+        except InvoiceEmailError as e:
+            # Not fatal — the invoice is issued; Autopilot will retry / raise an inbox item.
+            from automation import notify
+            await notify(firm_id, "invoice_email_failed", "warning",
+                         f"Το τιμολόγιο {doc.get('number')} εκδόθηκε αλλά δεν στάλθηκε email",
+                         str(e), entity="invoice", entity_id=invoice_id, requires_action=True,
+                         dedupe_key=f"invoice_email_failed:{invoice_id}")
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     return Invoice.from_mongo(doc)
 
@@ -180,149 +178,28 @@ async def invoice_pdf(invoice_id: str, user: dict = Depends(get_current_user)):
 
 @router.post("/{invoice_id}/send-email")
 async def send_invoice_by_email(invoice_id: str, user: dict = Depends(get_current_user)):
-    from datetime import datetime, timezone
-    from pdf_utils import build_invoice_pdf
-    from email_utils import smtp_ready, send_email_with_pdf, invoice_email_html, invoice_email_text
-    import aiosmtplib as _smtp
-
+    from invoice_services import email_invoice, InvoiceEmailError
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
-    client = None
-    if doc.get("client_id"):
-        try:
-            client = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(doc["client_id"])}))
-        except Exception:
-            client = None
-    if not client or not client.get("email"):
-        raise HTTPException(status_code=400, detail="Ο πελάτης δεν έχει καταχωρημένο email. Προσθέστε email στην καρτέλα του πελάτη.")
-    settings = await db.settings.find_one(tenant_query(user, {})) or {}
-    if not smtp_ready(settings):
-        raise HTTPException(status_code=400, detail="Δεν έχουν ρυθμιστεί τα στοιχεία αποστολής email. Συμπληρώστε τα στις Ρυθμίσεις → Αποστολή Email (SMTP).")
-
-    pdf_bytes = build_invoice_pdf(doc, client, settings)
-    company = settings.get("company_name") or "Nomos One"
-    subject = f"Τιμολόγιο {doc.get('number')} — {company}"
-    safe_name = (doc.get("number") or "invoice").replace("ΤΠΥ", "TPY")
     try:
-        await send_email_with_pdf(
-            settings, client["email"], subject,
-            invoice_email_text(doc, settings), invoice_email_html(doc, settings),
-            pdf_bytes=pdf_bytes, pdf_filename=f"{safe_name}.pdf",
-        )
-    except _smtp.errors.SMTPAuthenticationError:
-        raise HTTPException(status_code=400, detail="Αποτυχία σύνδεσης SMTP: λάθος email ή App Password. Ελέγξτε τις Ρυθμίσεις.")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Αποτυχία αποστολής email: {e}")
-
-    await db.invoices.update_one(
-        tenant_query(user, {"_id": ObjectId(invoice_id)}),
-        {"$set": {"email_sent_at": datetime.now(timezone.utc).isoformat(), "email_sent_to": client["email"]}},
-    )
+        await email_invoice(firm_id_for(user), doc, await db.settings.find_one(tenant_query(user, {})) or {})
+    except InvoiceEmailError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     return Invoice.from_mongo(doc)
 
 
 @router.post("/{invoice_id}/send-reminder")
 async def send_invoice_reminder(invoice_id: str, user: dict = Depends(get_current_user)):
-    from datetime import datetime, timezone, date as _date
-    from pdf_utils import build_invoice_pdf
-    from email_utils import smtp_ready, send_email_with_pdf, reminder_email_html, reminder_email_text
-    import aiosmtplib as _smtp
-
+    from invoice_services import send_reminder, InvoiceEmailError
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
-    if doc.get("status") == "paid":
-        raise HTTPException(status_code=400, detail="Το τιμολόγιο είναι ήδη εξοφλημένο — δεν χρειάζεται υπενθύμιση.")
-    if doc.get("status") != "issued":
-        raise HTTPException(status_code=400, detail="Μόνο εκδοθέντα τιμολόγια μπορούν να λάβουν υπενθύμιση. Εκδώστε πρώτα το τιμολόγιο.")
-
-    client = None
-    if doc.get("client_id"):
-        try:
-            client = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(doc["client_id"])}))
-        except Exception:
-            client = None
-    if not client or not client.get("email"):
-        raise HTTPException(status_code=400, detail="Ο πελάτης δεν έχει καταχωρημένο email. Προσθέστε email στην καρτέλα του πελάτη.")
-    settings = await db.settings.find_one(tenant_query(user, {})) or {}
-    if not smtp_ready(settings):
-        raise HTTPException(status_code=400, detail="Δεν έχουν ρυθμιστεί τα στοιχεία αποστολής email. Συμπληρώστε τα στις Ρυθμίσεις → Αποστολή Email (SMTP).")
-
-    days_overdue = 0
     try:
-        issued_date = _date.fromisoformat((doc.get("date") or "")[:10])
-        days_overdue = max(0, (_date.today() - issued_date).days)
-    except Exception:
-        days_overdue = 0
-
-    reminder_count = int(doc.get("reminder_count") or 0)
-
-    # Δημιουργία payment link αν είναι διαθέσιμο Stripe
-    payment_link = ""
-    try:
-        import os
-        import stripe as _stripe
-        _stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or "sk_test_emergent"
-        if _stripe.api_key and not _stripe.api_key.endswith("_emergent"):
-            total = float(doc.get("total", 0))
-            if total > 0:
-                origin = settings.get("public_url") or os.environ.get("PREVIEW_ENDPOINT", "")
-                session = _stripe.checkout.Session.create(
-                    mode="payment",
-                    line_items=[{
-                        "price_data": {
-                            "currency": "eur",
-                            "product_data": {
-                                "name": f"Τιμολόγιο {doc.get('number', '')}",
-                                "description": f"Νομικές υπηρεσίες προς {doc.get('client_name', '')}",
-                            },
-                            "unit_amount": int(round(total * 100)),
-                        },
-                        "quantity": 1,
-                    }],
-                    success_url=(origin or "https://example.com") + "/payment/success?session_id={CHECKOUT_SESSION_ID}",
-                    cancel_url=(origin or "https://example.com") + "/payment/cancel",
-                    metadata={"invoice_id": invoice_id, "invoice_number": doc.get("number", "")},
-                    expires_at=int((datetime.now(timezone.utc).timestamp())) + 60 * 60 * 24 * 7,  # 7 ημέρες
-                )
-                payment_link = session.url
-                from models import PaymentTransaction
-                tx = PaymentTransaction(
-                    session_id=session.id,
-                    invoice_id=invoice_id,
-                    invoice_number=doc.get("number", ""),
-                    client_id=doc.get("client_id", ""),
-                    client_name=doc.get("client_name", ""),
-                    amount=total,
-                    currency="eur",
-                )
-                await db.payment_transactions.insert_one(tx.to_mongo())
-    except Exception:
-        payment_link = ""
-
-    pdf_bytes = build_invoice_pdf(doc, client, settings)
-    company = settings.get("company_name") or "Nomos One"
-    subject = f"Υπενθύμιση εξόφλησης — Τιμολόγιο {doc.get('number')} — {company}"
-    safe_name = (doc.get("number") or "invoice").replace("ΤΠΥ", "TPY")
-    try:
-        await send_email_with_pdf(
-            settings, client["email"], subject,
-            reminder_email_text(doc, settings, days_overdue, reminder_count, payment_link),
-            reminder_email_html(doc, settings, days_overdue, reminder_count, payment_link),
-            pdf_bytes=pdf_bytes, pdf_filename=f"{safe_name}.pdf",
-        )
-    except _smtp.errors.SMTPAuthenticationError:
-        raise HTTPException(status_code=400, detail="Αποτυχία σύνδεσης SMTP: λάθος email ή App Password. Ελέγξτε τις Ρυθμίσεις.")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Αποτυχία αποστολής υπενθύμισης: {e}")
-
-    await db.invoices.update_one(
-        tenant_query(user, {"_id": ObjectId(invoice_id)}),
-        {"$set": {"reminder_sent_at": datetime.now(timezone.utc).isoformat(), "email_sent_to": client["email"]},
-         "$inc": {"reminder_count": 1}},
-    )
+        await send_reminder(firm_id_for(user), doc, await db.settings.find_one(tenant_query(user, {})) or {})
+    except InvoiceEmailError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     return Invoice.from_mongo(doc)
 

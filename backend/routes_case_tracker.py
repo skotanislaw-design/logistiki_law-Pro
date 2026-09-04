@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 from db import db
 from models import CaseTrackerEvent
 from auth import get_current_user
-from tenant import tenant_query, firm_id_for
+from tenant import tenant_query, firm_id_for, LEGACY_FIRM_ID
 
 router = APIRouter(prefix="/case-tracker", tags=["case-tracker"])
 
@@ -70,7 +70,7 @@ class EnableRequest(BaseModel):
 @router.post("/enable/{case_id}")
 async def enable_tracking(case_id: str, payload: EnableRequest, user: dict = Depends(get_current_user)):
     try:
-        case = await db.cases.find_one({"_id": ObjectId(case_id)})
+        case = await db.cases.find_one(tenant_query(user, {"_id": ObjectId(case_id)}))
     except Exception:
         raise HTTPException(status_code=400, detail="Μη έγκυρο id υπόθεσης")
     if not case:
@@ -86,7 +86,7 @@ async def enable_tracking(case_id: str, payload: EnableRequest, user: dict = Dep
             raise HTTPException(status_code=400, detail="Δώστε solon_url ή συμπληρώστε ΓΑΚ στην υπόθεση")
 
     await db.cases.update_one(
-        {"_id": ObjectId(case_id)},
+        tenant_query(user, {"_id": ObjectId(case_id)}),
         {"$set": {
             "tracker_enabled": True,
             "solon_url": solon_url,
@@ -100,7 +100,7 @@ async def enable_tracking(case_id: str, payload: EnableRequest, user: dict = Dep
 @router.post("/disable/{case_id}")
 async def disable_tracking(case_id: str, user: dict = Depends(get_current_user)):
     await db.cases.update_one(
-        {"_id": ObjectId(case_id)},
+        tenant_query(user, {"_id": ObjectId(case_id)}),
         {"$set": {"tracker_enabled": False}},
     )
     return {"message": "Η παρακολούθηση απενεργοποιήθηκε"}
@@ -109,7 +109,7 @@ async def disable_tracking(case_id: str, user: dict = Depends(get_current_user))
 @router.post("/check-now/{case_id}")
 async def check_now(case_id: str, user: dict = Depends(get_current_user)):
     try:
-        case = await db.cases.find_one({"_id": ObjectId(case_id)})
+        case = await db.cases.find_one(tenant_query(user, {"_id": ObjectId(case_id)}))
     except Exception:
         raise HTTPException(status_code=400, detail="Μη έγκυρο id")
     if not case:
@@ -140,6 +140,7 @@ async def _run_check(case: dict) -> dict:
         old_content = case.get("tracker_snapshot_content", "")
         summary = await _diff_summary(old_content, content)
         ev = CaseTrackerEvent(
+            firm_id=case.get("firm_id", LEGACY_FIRM_ID),
             case_id=str(case["_id"]),
             case_number=case.get("number", ""),
             case_title=case.get("title", ""),

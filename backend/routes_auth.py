@@ -1,4 +1,5 @@
 import os
+import logging
 import secrets
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -118,7 +119,21 @@ async def forgot_password(payload: ForgotPasswordRequest):
             "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)),
             "used": False,
         })
-        print(f"[PASSWORD RESET LINK] /reset-password?token={token} για {email}")
+        link = f"{(os.environ.get('PUBLIC_URL') or '').rstrip('/')}/reset-password?token={token}"
+        # Send through the firm's own SMTP when configured; otherwise log for the operator.
+        try:
+            from email_utils import smtp_ready, send_email_with_pdf
+            settings = await db.settings.find_one(tenant_query(user, {})) or {}
+            if smtp_ready(settings):
+                await send_email_with_pdf(
+                    settings, email, "Nomos One — Επαναφορά κωδικού",
+                    f"Για να ορίσετε νέο κωδικό ανοίξτε τον σύνδεσμο (ισχύει 1 ώρα):\n{link}",
+                    f"<p>Για να ορίσετε νέο κωδικό πατήστε <a href=\"{link}\">εδώ</a> (ισχύει 1 ώρα).</p>",
+                )
+            else:
+                logging.getLogger(__name__).warning("[PASSWORD RESET LINK] %s για %s (SMTP δεν έχει ρυθμιστεί)", link, email)
+        except Exception as e:
+            logging.getLogger(__name__).error("Password reset email failed for %s: %s", email, e)
     return {"message": "Αν υπάρχει λογαριασμός με αυτό το email, θα λάβετε οδηγίες επαναφοράς."}
 
 
