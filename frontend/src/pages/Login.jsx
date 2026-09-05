@@ -13,7 +13,9 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const { login } = useAuth();
+  const [mfaToken, setMfaToken] = useState("");
+  const [code, setCode] = useState("");
+  const { login, verifyMfa } = useAuth();
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
@@ -21,7 +23,27 @@ export default function Login() {
     setError("");
     setLoading(true);
     try {
-      await login(email, password);
+      const result = await login(email, password);
+      if (result?.mfa_required) {
+        setMfaToken(result.mfa_token);
+        setCode("");
+      } else {
+        navigate("/");
+      }
+    } catch (e) {
+      setError(errMsg(e));
+      toast.error(errMsg(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerify = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await verifyMfa(mfaToken, code);
       navigate("/");
     } catch (e) {
       setError(errMsg(e));
@@ -49,7 +71,7 @@ export default function Login() {
       </div>
 
       <div className="flex items-center justify-center p-6 lg:p-12 relative z-10">
-        <form onSubmit={handleSubmit} className="w-full max-w-sm" data-testid="login-form">
+        <form onSubmit={mfaToken ? handleVerify : handleSubmit} className="w-full max-w-sm" data-testid="login-form">
           <div className="flex items-center gap-3 mb-10">
             <img src="/nomos-logo.png" alt="Nomos One" className="w-12 h-12 rounded-full" />
             <div>
@@ -57,8 +79,14 @@ export default function Login() {
               <div className="text-[9px] tracking-[0.22em] text-muted-foreground">PERSONAL LOGISTICS</div>
             </div>
           </div>
-          <h1 className="font-heading text-2xl font-semibold tracking-tight mb-1">Σύνδεση</h1>
-          <p className="text-sm text-muted-foreground mb-8">Συνδεθείτε στην πλατφόρμα του γραφείου σας</p>
+          <h1 className="font-heading text-2xl font-semibold tracking-tight mb-1">
+            {mfaToken ? "Επαλήθευση" : "Σύνδεση"}
+          </h1>
+          <p className="text-sm text-muted-foreground mb-8">
+            {mfaToken
+              ? "Καταχωρήστε τον 6ψήφιο κωδικό από την εφαρμογή ταυτοποίησης — ή έναν εφεδρικό κωδικό."
+              : "Συνδεθείτε στην πλατφόρμα του γραφείου σας"}
+          </p>
 
           {error && (
             <div className="mb-4 text-sm bg-destructive/10 text-destructive border border-destructive/30 rounded-sm px-3 py-2" data-testid="login-error">
@@ -66,20 +94,52 @@ export default function Login() {
             </div>
           )}
 
-          <div className="mb-4">
-            <Label htmlFor="email">Email</Label>
-            <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required className="mt-1.5" data-testid="login-email-input" />
-          </div>
-          <div className="mb-8">
-            <Label htmlFor="password">Κωδικός πρόσβασης</Label>
-            <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required className="mt-1.5" data-testid="login-password-input" />
-          </div>
-          <Button type="submit" className="w-full" disabled={loading} data-testid="login-submit-button">
-            {loading ? "Σύνδεση..." : "Σύνδεση"}
-          </Button>
-          <p className="text-xs text-muted-foreground mt-6">
-            Demo: admin@logistiki.gr / Admin@2026!
-          </p>
+          {mfaToken ? (
+            <>
+              <div className="mb-8">
+                <Label htmlFor="mfa-code">Κωδικός ταυτοποίησης</Label>
+                <Input
+                  id="mfa-code"
+                  inputMode="text"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  required
+                  placeholder="123456 ή ABCD-EFGH"
+                  className="mt-1.5 font-mono tracking-[0.3em] text-center text-lg"
+                  data-testid="login-mfa-input"
+                />
+              </div>
+              <Button type="submit" className="w-full" disabled={loading} data-testid="login-mfa-submit">
+                {loading ? "Έλεγχος..." : "Επαλήθευση"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full mt-2"
+                onClick={() => { setMfaToken(""); setCode(""); setError(""); }}
+                data-testid="login-mfa-back"
+              >
+                Πίσω
+              </Button>
+            </>
+          ) : (
+            <>
+              <div className="mb-4">
+                <Label htmlFor="email">Email</Label>
+                <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required className="mt-1.5" data-testid="login-email-input" />
+              </div>
+              <div className="mb-8">
+                <Label htmlFor="password">Κωδικός πρόσβασης</Label>
+                <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required className="mt-1.5" data-testid="login-password-input" />
+              </div>
+              <Button type="submit" className="w-full" disabled={loading} data-testid="login-submit-button">
+                {loading ? "Σύνδεση..." : "Σύνδεση"}
+              </Button>
+            </>
+          )}
+
         </form>
       </div>
     </div>

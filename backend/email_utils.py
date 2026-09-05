@@ -1,4 +1,5 @@
 import aiosmtplib
+from crypto import decrypt
 from email.message import EmailMessage
 from email.header import Header
 from email.utils import formataddr
@@ -13,7 +14,7 @@ async def send_email_with_pdf(settings: dict, to_email: str, subject: str, body_
     host = settings.get("smtp_host") or "smtp.gmail.com"
     port = int(settings.get("smtp_port") or 587)
     user = settings.get("smtp_user")
-    password = settings.get("smtp_password")
+    password = decrypt(settings.get("smtp_password") or "")
     from_name = settings.get("smtp_from_name") or settings.get("company_name") or "Nomos One"
 
     msg = EmailMessage()

@@ -21,6 +21,14 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     const { data } = await axios.post(`${API}/auth/login`, { email, password });
+    // Με ενεργό 2FA δεν υπάρχει ακόμη συνεδρία: ο caller ζητά τον κωδικό μιας χρήσης.
+    if (data?.mfa_required) return data;
+    setUser(data);
+    return data;
+  };
+
+  const verifyMfa = async (mfaToken, code) => {
+    const { data } = await axios.post(`${API}/auth/2fa/verify`, { mfa_token: mfaToken, code });
     setUser(data);
     return data;
   };
@@ -34,7 +42,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, setUser, login, logout, checkAuth }}>
+    <AuthContext.Provider value={{ user, setUser, login, verifyMfa, logout, checkAuth }}>
       {children}
     </AuthContext.Provider>
   );

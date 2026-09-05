@@ -172,6 +172,8 @@ yarn start
 
 ## 🔐 Ασφάλεια
 
+- **Ταυτοποίηση δύο παραγόντων (TOTP)** με εφεδρικούς κωδικούς μιας χρήσης — ο κωδικός μόνος του δεν δίνει συνεδρία
+- **Κρυπτογράφηση μυστικών στη βάση** (SMTP/IMAP passwords, subscription key ΑΑΔΕ) με κλειδί `SECRETS_KEY`· δεν επιστρέφονται ποτέ στον browser
 - JWT authentication με bcrypt password hashing
 - Rate limiting σε login endpoints
 - CORS restricted σε PUBLIC_URL

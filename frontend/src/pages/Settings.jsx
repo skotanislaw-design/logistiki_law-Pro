@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DisclaimerBanner } from "@/components/DisclaimerBanner";
 import { DownloadSimple, UploadSimple, Database, ShieldCheck } from "@phosphor-icons/react";
+import { TwoFactorSettings } from "@/components/TwoFactorSettings";
 import { toast } from "sonner";
 
 export default function Settings() {
@@ -122,6 +123,9 @@ export default function Settings() {
 
       <DisclaimerBanner />
 
+      <TwoFactorSettings />
+
+
       <div className="lux-card p-6 space-y-4">
         <h3 className="font-heading text-lg font-medium">Στοιχεία Εταιρείας</h3>
         <div>
@@ -187,7 +191,7 @@ export default function Settings() {
         </div>
         <div>
           <Label>App Password</Label>
-          <Input type="password" value={form.smtp_password || ""} onChange={(e) => setForm({ ...form, smtp_password: e.target.value })} className="mt-1.5" placeholder="16ψήφιος κωδικός εφαρμογής" data-testid="settings-smtp-password" />
+          <Input type="password" value={form.smtp_password || ""} onChange={(e) => setForm({ ...form, smtp_password: e.target.value })} className="mt-1.5" placeholder={form.smtp_password ? "Αποθηκευμένο — αφήστε κενό για να μην αλλάξει" : "16ψήφιος κωδικός εφαρμογής"} data-testid="settings-smtp-password" />
         </div>
         <div>
           <Label>Όνομα αποστολέα</Label>

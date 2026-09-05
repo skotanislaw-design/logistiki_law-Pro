@@ -22,6 +22,13 @@ class User(BaseDocument):
     password_hash: str
     name: str
     role: Literal["admin", "accountant", "lawyer"] = "lawyer"
+    # --- Δύο παράγοντες ταυτοποίησης (TOTP) ---
+    mfa_enabled: bool = False
+    mfa_secret: str = ""                 # κρυπτογραφημένο (crypto.encrypt)
+    mfa_pending_secret: str = ""         # κρυπτογραφημένο, μέχρι την επιβεβαίωση
+    mfa_backup_codes: List[str] = Field(default_factory=list)  # μόνο bcrypt hashes
+    mfa_last_counter: Optional[int] = None   # anti-replay για το ίδιο χρονικό βήμα
+    mfa_enabled_at: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -32,6 +39,7 @@ class UserPublic(BaseModel):
     role: str
     created_at: str
     firm_id: str = LEGACY_FIRM_ID
+    mfa_enabled: bool = False
 
 
 class Client(BaseDocument):

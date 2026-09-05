@@ -3,6 +3,7 @@ from db import db
 from models import Settings
 from auth import get_current_user, require_admin
 from tenant import tenant_query, firm_id_for
+from crypto import encrypt_settings_secrets, mask_settings_secrets, merge_masked_secrets
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -14,7 +15,7 @@ async def get_settings(user: dict = Depends(get_current_user)):
         default = Settings(firm_id=firm_id_for(user))
         result = await db.settings.insert_one(default.to_mongo())
         doc = await db.settings.find_one(tenant_query(user, {"_id": result.inserted_id}))
-    return Settings.from_mongo(doc)
+    return Settings.from_mongo(mask_settings_secrets(doc))
 
 
 @router.put("")
@@ -22,8 +23,10 @@ async def update_settings(payload: Settings, user: dict = Depends(require_admin)
     from datetime import datetime, timezone
     doc = await db.settings.find_one(tenant_query(user, {}))
     data = payload.model_dump(exclude={"id", "firm_id"})
+    # Ο client δεν λαμβάνει ποτέ τα μυστικά, άρα στέλνει πίσω μάσκα: κράτα τα αποθηκευμένα.
+    data = encrypt_settings_secrets(merge_masked_secrets(data, doc))
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    data["mydata_connected"] = bool(payload.aade_user_id and payload.aade_subscription_key)
+    data["mydata_connected"] = bool(payload.aade_user_id and data.get("aade_subscription_key"))
     if doc:
         await db.settings.update_one(tenant_query(user, {"_id": doc["_id"]}), {"$set": data})
         doc = await db.settings.find_one(tenant_query(user, {"_id": doc["_id"]}))
@@ -31,7 +34,7 @@ async def update_settings(payload: Settings, user: dict = Depends(require_admin)
         data["firm_id"] = firm_id_for(user)
         result = await db.settings.insert_one(data)
         doc = await db.settings.find_one(tenant_query(user, {"_id": result.inserted_id}))
-    return Settings.from_mongo(doc)
+    return Settings.from_mongo(mask_settings_secrets(doc))
 
 
 @router.patch("")
@@ -46,15 +49,15 @@ async def patch_settings(payload: dict, user: dict = Depends(require_admin)):
     if not current:
         current = Settings(firm_id=firm_id_for(user)).to_mongo()
         await db.settings.insert_one(current)
-    merged = {**current, **data}
+    merged = {**current, **merge_masked_secrets(data, current)}
     merged.pop("_id", None)
     validated = Settings(**{k: v for k, v in merged.items() if k in Settings.model_fields})
-    data = validated.model_dump(exclude={"id", "firm_id"})
+    data = encrypt_settings_secrets(validated.model_dump(exclude={"id", "firm_id"}))
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    data["mydata_connected"] = bool(validated.aade_user_id and validated.aade_subscription_key)
+    data["mydata_connected"] = bool(validated.aade_user_id and data.get("aade_subscription_key"))
     await db.settings.update_one(tenant_query(user, {}), {"$set": data})
     doc = await db.settings.find_one(tenant_query(user, {}))
-    return Settings.from_mongo(doc)
+    return Settings.from_mongo(mask_settings_secrets(doc))
 
 
 @router.post("/test-email")

@@ -9,8 +9,10 @@ from models import User, UserPublic
 from auth import (
     hash_password, verify_password, create_access_token, create_refresh_token,
     set_auth_cookies, get_current_user, check_lockout, record_failed_attempt, clear_attempts,
-    get_jwt_secret, JWT_ALGORITHM,
+    get_jwt_secret, JWT_ALGORITHM, create_mfa_token, decode_mfa_token,
 )
+from crypto import encrypt, decrypt
+import mfa as mfa_lib
 from tenant import LEGACY_FIRM_ID, new_firm_id, firm_id_for, tenant_query
 import jwt
 
@@ -30,7 +32,9 @@ class RegisterRequest(BaseModel):
 
 
 def to_public(user: dict) -> dict:
-    return {"id": str(user["_id"]) if "_id" in user else user.get("id"), "email": user["email"], "name": user["name"], "role": user["role"], "created_at": user.get("created_at", ""), "firm_id": firm_id_for(user)}
+    return {"id": str(user["_id"]) if "_id" in user else user.get("id"), "email": user["email"],
+            "name": user["name"], "role": user["role"], "created_at": user.get("created_at", ""),
+            "firm_id": firm_id_for(user), "mfa_enabled": bool(user.get("mfa_enabled"))}
 
 
 @router.post("/register")
@@ -62,6 +66,10 @@ async def login(payload: LoginRequest, request: Request, response: Response):
         raise HTTPException(status_code=401, detail="Λάθος email ή κωδικός πρόσβασης")
     await clear_attempts(identifier)
     user_id = str(user["_id"])
+    if user.get("mfa_enabled"):
+        # Σωστός κωδικός δεν αρκεί: καμία συνεδρία μέχρι τον δεύτερο παράγοντα.
+        return {"mfa_required": True, "mfa_token": create_mfa_token(user_id),
+                "message": "Καταχωρήστε τον κωδικό μιας χρήσης από την εφαρμογή ταυτοποίησης."}
     access = create_access_token(user_id, email)
     refresh = create_refresh_token(user_id)
     set_auth_cookies(response, access, refresh)
@@ -158,3 +166,155 @@ async def reset_password(payload: ResetPasswordRequest):
 async def list_users(user: dict = Depends(get_current_user)):
     users = await db.users.find(tenant_query(user)).to_list(200)
     return [to_public(u) for u in users]
+
+
+# ---------------------------------------------------------------- 2FA -------
+
+class MfaVerifyRequest(BaseModel):
+    mfa_token: str
+    code: str
+
+
+class MfaSetupRequest(BaseModel):
+    password: str
+
+
+class MfaEnableRequest(BaseModel):
+    code: str
+
+
+class MfaDisableRequest(BaseModel):
+    password: str
+    code: str = ""
+
+
+async def _user_by_id(user_id: str) -> dict:
+    from bson import ObjectId
+    try:
+        user = await db.users.find_one({"_id": ObjectId(user_id)})
+    except Exception:
+        user = None
+    if not user:
+        raise HTTPException(status_code=401, detail="Ο χρήστης δεν βρέθηκε")
+    return user
+
+
+async def _check_second_factor(user: dict, code: str) -> dict:
+    """Δέχεται κωδικό TOTP ή εφεδρικό κωδικό. Επιστρέφει το $set update για τον χρήστη."""
+    secret = decrypt(user.get("mfa_secret") or "")
+    last = user.get("mfa_last_counter")
+    ok, counter = mfa_lib.verify_totp(secret, code, used_counter=last)
+    if ok:
+        return {"mfa_last_counter": counter}
+    used, remaining = mfa_lib.consume_backup_code(code, user.get("mfa_backup_codes") or [])
+    if used:
+        return {"mfa_backup_codes": remaining}
+    # Σωστός κωδικός που έχει ήδη χρησιμοποιηθεί: κάθε OTP ισχύει μία φορά (RFC 6238 §5.2).
+    # Χωρίς διακριτό μήνυμα ο χρήστης νομίζει ότι η εφαρμογή του βγάζει λάθος κωδικούς.
+    if last is not None and mfa_lib.verify_totp(secret, code)[0]:
+        raise HTTPException(status_code=401,
+                            detail="Ο κωδικός έχει ήδη χρησιμοποιηθεί. Περιμένετε τον επόμενο (ανανεώνεται κάθε 30″).")
+    raise HTTPException(status_code=401, detail="Λανθασμένος κωδικός ταυτοποίησης")
+
+
+@router.post("/2fa/verify")
+async def verify_2fa(payload: MfaVerifyRequest, request: Request, response: Response):
+    """Δεύτερο βήμα σύνδεσης: ανταλλάσσει το mfa_token με κανονική συνεδρία."""
+    user_id = decode_mfa_token(payload.mfa_token)
+    identifier = f"mfa:{request.client.host}:{user_id}"
+    await check_lockout(identifier)
+    user = await _user_by_id(user_id)
+    if not user.get("mfa_enabled"):
+        raise HTTPException(status_code=400, detail="Δεν είναι ενεργή η ταυτοποίηση δύο παραγόντων")
+    try:
+        update = await _check_second_factor(user, payload.code)
+    except HTTPException:
+        await record_failed_attempt(identifier)
+        raise
+    await clear_attempts(identifier)
+    await db.users.update_one({"_id": user["_id"]}, {"$set": update})
+    set_auth_cookies(response, create_access_token(user_id, user["email"]), create_refresh_token(user_id))
+    return to_public(user)
+
+
+@router.get("/2fa/status")
+async def status_2fa(user: dict = Depends(get_current_user)):
+    full = await _user_by_id(user["_id"])
+    return {
+        "enabled": bool(full.get("mfa_enabled")),
+        "pending_setup": bool(full.get("mfa_pending_secret")),
+        "backup_codes_remaining": len(full.get("mfa_backup_codes") or []),
+        "enabled_at": full.get("mfa_enabled_at"),
+    }
+
+
+@router.post("/2fa/setup")
+async def setup_2fa(payload: MfaSetupRequest, user: dict = Depends(get_current_user)):
+    """Παράγει νέο μυστικό (εκκρεμές μέχρι την επιβεβαίωση) και το otpauth URI."""
+    full = await _user_by_id(user["_id"])
+    if not verify_password(payload.password, full["password_hash"]):
+        raise HTTPException(status_code=401, detail="Λανθασμένος κωδικός πρόσβασης")
+    if full.get("mfa_enabled"):
+        raise HTTPException(status_code=400, detail="Η ταυτοποίηση δύο παραγόντων είναι ήδη ενεργή. Απενεργοποιήστε την πρώτα.")
+    secret = mfa_lib.generate_secret()
+    await db.users.update_one({"_id": full["_id"]}, {"$set": {"mfa_pending_secret": encrypt(secret)}})
+    return {
+        "secret": secret,
+        "secret_formatted": mfa_lib.format_secret(secret),
+        "otpauth_uri": mfa_lib.provisioning_uri(secret, full["email"]),
+        "message": "Σαρώστε το QR ή καταχωρήστε το κλειδί, και επιβεβαιώστε με τον 6ψήφιο κωδικό.",
+    }
+
+
+@router.post("/2fa/enable")
+async def enable_2fa(payload: MfaEnableRequest, user: dict = Depends(get_current_user)):
+    """Επιβεβαιώνει το εκκρεμές μυστικό και επιστρέφει τους εφεδρικούς κωδικούς **μία φορά**."""
+    full = await _user_by_id(user["_id"])
+    pending = decrypt(full.get("mfa_pending_secret") or "")
+    if not pending:
+        raise HTTPException(status_code=400, detail="Ξεκινήστε πρώτα τη ρύθμιση (2fa/setup).")
+    ok, counter = mfa_lib.verify_totp(pending, payload.code)
+    if not ok:
+        raise HTTPException(status_code=401, detail="Λανθασμένος κωδικός — ελέγξτε την ώρα της συσκευής σας.")
+    codes = mfa_lib.generate_backup_codes()
+    await db.users.update_one({"_id": full["_id"]}, {"$set": {
+        "mfa_enabled": True,
+        "mfa_secret": encrypt(pending),
+        "mfa_pending_secret": "",
+        "mfa_backup_codes": mfa_lib.hash_backup_codes(codes),
+        "mfa_last_counter": counter,
+        "mfa_enabled_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    return {
+        "enabled": True,
+        "backup_codes": codes,
+        "message": "Αποθηκεύστε τους εφεδρικούς κωδικούς σε ασφαλές σημείο — δεν θα εμφανιστούν ξανά.",
+    }
+
+
+@router.post("/2fa/disable")
+async def disable_2fa(payload: MfaDisableRequest, user: dict = Depends(get_current_user)):
+    full = await _user_by_id(user["_id"])
+    if not verify_password(payload.password, full["password_hash"]):
+        raise HTTPException(status_code=401, detail="Λανθασμένος κωδικός πρόσβασης")
+    if not full.get("mfa_enabled"):
+        raise HTTPException(status_code=400, detail="Η ταυτοποίηση δύο παραγόντων δεν είναι ενεργή")
+    await _check_second_factor(full, payload.code)
+    await db.users.update_one({"_id": full["_id"]}, {"$set": {
+        "mfa_enabled": False, "mfa_secret": "", "mfa_pending_secret": "",
+        "mfa_backup_codes": [], "mfa_last_counter": None, "mfa_enabled_at": None,
+    }})
+    return {"enabled": False, "message": "Η ταυτοποίηση δύο παραγόντων απενεργοποιήθηκε."}
+
+
+@router.post("/2fa/backup-codes")
+async def regenerate_backup_codes(payload: MfaSetupRequest, user: dict = Depends(get_current_user)):
+    """Νέο σετ εφεδρικών κωδικών· τα παλιά ακυρώνονται αμέσως."""
+    full = await _user_by_id(user["_id"])
+    if not verify_password(payload.password, full["password_hash"]):
+        raise HTTPException(status_code=401, detail="Λανθασμένος κωδικός πρόσβασης")
+    if not full.get("mfa_enabled"):
+        raise HTTPException(status_code=400, detail="Η ταυτοποίηση δύο παραγόντων δεν είναι ενεργή")
+    codes = mfa_lib.generate_backup_codes()
+    await db.users.update_one({"_id": full["_id"]}, {"$set": {"mfa_backup_codes": mfa_lib.hash_backup_codes(codes)}})
+    return {"backup_codes": codes, "message": "Οι προηγούμενοι εφεδρικοί κωδικοί ακυρώθηκαν."}
