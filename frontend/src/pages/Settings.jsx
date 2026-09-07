@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DisclaimerBanner } from "@/components/DisclaimerBanner";
 import { DownloadSimple, UploadSimple, Database, ShieldCheck } from "@phosphor-icons/react";
 import { TwoFactorSettings } from "@/components/TwoFactorSettings";
+import { BankConnection } from "@/components/BankConnection";
 import { toast } from "sonner";
 
 export default function Settings() {
@@ -124,6 +125,8 @@ export default function Settings() {
       <DisclaimerBanner />
 
       <TwoFactorSettings />
+
+      <BankConnection />
 
 
       <div className="lux-card p-6 space-y-4">

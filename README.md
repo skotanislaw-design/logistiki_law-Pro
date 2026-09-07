@@ -22,7 +22,10 @@
 - Συμφωνεί τις τραπεζικές κινήσεις και εξοφλεί τιμολόγια αυτόματα όταν η βεβαιότητα είναι ≥ 90%
 - Κλείνει κάθε περίοδο ΦΠΑ και σας λέει τι πληρώνετε και πότε, 7 και 1 ημέρα πριν
 - Διαβάζει αποδείξεις που φτάνουν στο email του γραφείου (IMAP + OCR) και τις καταχωρεί ως έξοδα
+- Κατεβάζει τις τραπεζικές κινήσεις μέσω **open banking (PSD2)** και συμφωνεί τις εισπράξεις χωρίς CSV
+- Ετοιμάζει τη **δήλωση ΦΠΑ (Φ2)** ανά κωδικό εντύπου, σε PDF, έτοιμη για το TAXISnet
 - Σας στέλνει **ένα** ενημερωτικό email (καθημερινά ή κάθε Δευτέρα) με ό,τι έκανε και ό,τι περιμένει απόφαση
+- Ελέγχει ότι τα **αντίγραφα ασφαλείας** υπάρχουν και ανοίγουν, και σας ειδοποιεί αν χαλάσουν
 
 Σελίδα `/autopilot`, τεκμηρίωση: [`docs/AUTOPILOT.md`](./docs/AUTOPILOT.md). Ανάλυση ετοιμότητας: [`docs/READINESS_ANALYSIS.md`](./docs/READINESS_ANALYSIS.md).
 
@@ -137,6 +140,11 @@ yarn start
 │   ├── models.py           # Pydantic models
 │   ├── routes_*.py         # 30+ API routers
 │   ├── automation.py       # Autopilot: scheduled jobs, inbox, digest
+│   ├── worker.py           # Ξεχωριστή διεργασία για τις προγραμματισμένες εργασίες
+│   ├── outbox.py           # Ουρά αποστολών με ανάκαμψη από διακοπή
+│   ├── openbanking.py      # PSD2 (GoCardless Bank Account Data)
+│   ├── vat_return.py       # Έντυπο Φ2 (δήλωση ΦΠΑ)
+│   ├── scripts/            # verify_mydata_sandbox.py — επαλήθευση ΑΑΔΕ
 │   ├── invoice_services.py # Κοινή λογική email/υπενθύμισης/myDATA (routes + Autopilot)
 │   ├── ai_runtime.py       # Προαιρετικός LLM provider (503 αν λείπει)
 │   ├── copilot.py          # Nomos AI orchestration

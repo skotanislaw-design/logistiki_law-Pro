@@ -261,6 +261,18 @@ class Settings(BaseDocument):
     # Αυτόματη λήψη εξόδων από το myDATA (παραστατικά προμηθευτών)
     mydata_expense_sync: bool = True
     mydata_expense_last_mark: str = "0"
+    # Κωδικοί εντύπου Φ2 (αλλάζουν με αποφάσεις ΑΑΔΕ) — {γραμμή: κωδικός}
+    vat_form_codes: dict = Field(default_factory=dict)
+    # Open banking (PSD2) — GoCardless Bank Account Data
+    openbanking_enabled: bool = False
+    gocardless_secret_id: str = ""
+    gocardless_secret_key: str = ""      # κρυπτογραφημένο
+    gocardless_institution_id: str = ""
+    gocardless_institution_name: str = ""
+    gocardless_requisition_id: str = ""
+    gocardless_account_ids: List[str] = Field(default_factory=list)
+    gocardless_access_valid_until: str = ""
+    bank_sync_last_date: str = ""
     onboarding_completed: bool = False
     public_url: str = ""
     # ---- Autopilot (zero-touch accounting) ----

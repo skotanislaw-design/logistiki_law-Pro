@@ -147,12 +147,14 @@ async def test_full_cycle_sends_emails_reminders_and_reconciles(monkeypatch):
                                                 "match_status": "auto_matched", "match_confidence": 60, "matched_invoice_id": str(issued_unsent.inserted_id),
                                                 "matched_invoice_number": "ΤΠΥ-2026-0001"})
 
-    results = await run_firm(FIRM, ["send_issued_invoices", "reconcile", "reminders", "mydata_retry", "stale_drafts", "vat_periods", "deadlines"])
+    results = await run_firm(FIRM, ["send_issued_invoices", "reconcile", "reminders", "mydata_retry",
+                                    "stale_drafts", "vat_periods", "deadlines", "outbox"])
     by_job = {r["job"]: r for r in results}
     assert all(r["status"] != "error" for r in results), by_job
 
-    # 1. the unsent invoice went out with its PDF
-    assert by_job["send_issued_invoices"]["stats"] == {"sent": 1, "failed": 0}
+    # 1. the unsent invoice was queued and then actually sent with its PDF by the outbox
+    assert by_job["send_issued_invoices"]["stats"] == {"queued": 1, "skipped": 0}
+    assert by_job["outbox"]["stats"]["sent"] == 1
     assert (await db.invoices.find_one({"_id": issued_unsent.inserted_id}))["email_sent_to"] == "client@example.gr"
     # 2. high-confidence match auto-confirmed → invoice paid, low-confidence → decision in inbox
     assert by_job["reconcile"]["stats"] == {"confirmed": 1, "sent_for_review": 1}
@@ -160,8 +162,8 @@ async def test_full_cycle_sends_emails_reminders_and_reconciles(monkeypatch):
     assert (await db.bank_transactions.find_one({"_id": hi.inserted_id}))["match_status"] == "auto_confirmed"
     review = await db.notifications.find_one({"type": "reconcile_review", "entity_id": str(lo.inserted_id)})
     assert review and review["requires_action"] and [a["key"] for a in review["actions"]] == ["confirm", "unmatch", "ignore"]
-    # 3. reminders: the overdue one is now paid, the fresh one isn't due → nothing sent
-    assert by_job["reminders"]["stats"]["sent"] == 0
+    # 3. reminders: the overdue one is now paid, the fresh one isn't due → nothing queued
+    assert by_job["reminders"]["stats"]["queued"] == 0
     # 4. no AADE credentials → one inbox item, invoice stays pending
     assert by_job["mydata_retry"]["stats"]["skipped"] and by_job["mydata_retry"]["stats"]["pending"] == 1
     assert await db.notifications.count_documents({"dedupe_key": "mydata_not_configured"}) == 1
@@ -172,13 +174,15 @@ async def test_full_cycle_sends_emails_reminders_and_reconciles(monkeypatch):
     assert by_job["vat_periods"]["stats"]["computed"] == 3
     assert await db.vat_periods.count_documents({"firm_id": FIRM}) == 3
     # every job produced an audit row
-    assert await db.automation_runs.count_documents({"firm_id": FIRM}) == 7
+    assert await db.automation_runs.count_documents({"firm_id": FIRM}) == 8
 
     # run again: idempotent — nothing re-sent, nothing duplicated
-    results2 = await run_firm(FIRM, ["send_issued_invoices", "reconcile", "stale_drafts", "vat_periods"])
-    assert {r["job"]: r["stats"] for r in results2} == {
-        "send_issued_invoices": {"sent": 0, "failed": 0}, "reconcile": {"confirmed": 0, "sent_for_review": 0},
-        "stale_drafts": {"flagged": 0}, "vat_periods": {"computed": 0}}
+    results2 = await run_firm(FIRM, ["send_issued_invoices", "reconcile", "stale_drafts", "vat_periods", "outbox"])
+    stats2 = {r["job"]: r["stats"] for r in results2}
+    assert stats2["send_issued_invoices"] == {"queued": 0, "skipped": 0}
+    assert stats2["reconcile"] == {"confirmed": 0, "sent_for_review": 0}
+    assert stats2["stale_drafts"] == {"flagged": 0} and stats2["vat_periods"] == {"computed": 0}
+    assert stats2["outbox"]["sent"] == 0
     assert len(sent) == 1
 
 
@@ -197,12 +201,14 @@ async def test_reminder_is_sent_when_due_and_counted(monkeypatch):
     old = (date.today() - timedelta(days=40)).isoformat()
     inv = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0009", "client_id": client_id, "client_name": "Παπαδόπουλος",
                                         "status": "issued", "total": 100.0, "date": old, "reminder_count": 0, "line_items": []})
-    r = (await run_firm(FIRM, ["reminders"]))[0]
-    assert r["stats"]["sent"] == 1 and "Υπενθύμιση εξόφλησης" in sent[0]
+    queued = (await run_firm(FIRM, ["reminders"]))[0]
+    assert queued["stats"]["queued"] == 1
+    assert (await run_firm(FIRM, ["outbox"]))[0]["stats"]["sent"] == 1
+    assert "Υπενθύμιση εξόφλησης" in sent[0]
     doc = await db.invoices.find_one({"_id": inv.inserted_id})
     assert doc["reminder_count"] == 1 and doc["reminder_sent_at"]
     # immediately again → interval not elapsed
-    assert (await run_firm(FIRM, ["reminders"]))[0]["stats"]["sent"] == 0
+    assert (await run_firm(FIRM, ["reminders"]))[0]["stats"]["queued"] == 0
 
 
 @pytest.mark.asyncio
@@ -241,7 +247,9 @@ async def test_digest_job_sends_and_records(monkeypatch):
 
     monkeypatch.setattr(automation, "send_email_with_pdf", fake_send)
     r = (await run_firm(FIRM, ["digest"], force=True))[0]
-    assert r["stats"]["sent_to"] == "boss@example.gr" and sent[0][0] == "boss@example.gr"
+    assert r["stats"]["queued_to"] == "boss@example.gr"
+    assert (await run_firm(FIRM, ["outbox"]))[0]["stats"]["sent"] == 1
+    assert sent[0][0] == "boss@example.gr"
     assert (await db.settings.find_one({"firm_id": FIRM}))["last_digest_at"]
 
 

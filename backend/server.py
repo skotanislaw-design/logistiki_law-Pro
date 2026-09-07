@@ -200,6 +200,8 @@ async def startup_event():
     await db.inbox_processed.create_index([("firm_id", 1), ("key", 1)], unique=True)
     # Ένα παραστατικό ΑΑΔΕ γίνεται έξοδο μία φορά, ακόμη κι αν το RequestDocs το επιστρέψει ξανά.
     await db.expenses.create_index([("firm_id", 1), ("mydata_mark", 1)], unique=True, sparse=True)
+    await db.outbox.create_index([("status", 1), ("next_attempt_at", 1)])
+    await db.outbox.create_index([("firm_id", 1), ("dedupe_key", 1)])
     await db.case_tracker_events.create_index([("fetched_at", -1)])
     await db.portal_messages.create_index([("client_id", 1), ("created_at", 1)])
     await seed_admin()
@@ -209,8 +211,9 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Storage init failed: {e}")
 
-    # Background scheduler: case tracker (12h) + Autopilot accounting cycle (default 15')
-    if os.environ.get("AUTOPILOT_SCHEDULER", "1").lower() not in ("0", "false", "no"):
+    # Ο scheduler ανήκει πλέον στο worker.py (βλ. docker-compose: υπηρεσία "worker").
+    # Μένει εδώ μόνο για single-process εγκαταστάσεις που το ζητούν ρητά.
+    if os.environ.get("AUTOPILOT_SCHEDULER", "0").lower() not in ("0", "false", "no"):
         try:
             from apscheduler.schedulers.asyncio import AsyncIOScheduler
             from automation import run_autopilot_cycle

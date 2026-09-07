@@ -41,10 +41,40 @@ services:
       CORS_ORIGINS: "${CORS_ORIGINS:-${PUBLIC_URL}}"
       ADMIN_EMAIL: "${ADMIN_EMAIL:-admin@logistiki.gr}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
-      AUTOPILOT_SCHEDULER: "${AUTOPILOT_SCHEDULER:-1}"
+      AUTOPILOT_SCHEDULER: "${AUTOPILOT_SCHEDULER:-0}"
+      BACKUP_DIR: /app/backups
       AUTOPILOT_INTERVAL_MINUTES: "${AUTOPILOT_INTERVAL_MINUTES:-15}"
       STORAGE_BACKEND: "${STORAGE_BACKEND:-local}"
       UPLOAD_DIR: /app/uploads
+      MYDATA_MOCK: "${MYDATA_MOCK:-0}"
+    volumes:
+      - uploaded_files:/app/uploads
+      - ./backups:/app/backups
+
+  # Autopilot: μία διεργασία για όλες τις προγραμματισμένες εργασίες, ώστε τα replicas
+  # του API να μην τις τρέχουν παράλληλα.
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: nomos-worker
+    restart: unless-stopped
+    command: ["python", "worker.py"]
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URL: "mongodb://mongo:27017"
+      DB_NAME: "${DB_NAME:-nomos_one}"
+      JWT_SECRET: "${JWT_SECRET}"
+      SECRETS_KEY: "${SECRETS_KEY:-}"
+      EMERGENT_LLM_KEY: "${EMERGENT_LLM_KEY}"
+      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY}"
+      PUBLIC_URL: "${PUBLIC_URL}"
+      AUTOPILOT_INTERVAL_MINUTES: "${AUTOPILOT_INTERVAL_MINUTES:-15}"
+      STORAGE_BACKEND: "${STORAGE_BACKEND:-local}"
+      UPLOAD_DIR: /app/uploads
+      BACKUP_DIR: /app/backups
       MYDATA_MOCK: "${MYDATA_MOCK:-0}"
     volumes:
       - uploaded_files:/app/uploads
