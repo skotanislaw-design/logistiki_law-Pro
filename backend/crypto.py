@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 PREFIX = "enc:v1:"
 
 # Πεδία του Settings που δεν επιτρέπεται να φύγουν ποτέ προς τον client.
-SECRET_SETTINGS_FIELDS = ("smtp_password", "imap_password", "aade_subscription_key")
+SECRET_SETTINGS_FIELDS = ("smtp_password", "imap_password", "aade_subscription_key", "gocardless_secret_key")
 MASK = "••••••••"
 
 _fernet: Fernet | None = None

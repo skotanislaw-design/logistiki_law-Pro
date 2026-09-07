@@ -39,6 +39,7 @@ from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
     email_invoice, send_reminder, transmit_to_mydata, mark_paid, load_client, InvoiceEmailError, firm_query,
 )
+import outbox
 
 logger = logging.getLogger("autopilot")
 ATHENS = ZoneInfo("Europe/Athens")
@@ -46,6 +47,7 @@ ATHENS = ZoneInfo("Europe/Athens")
 JOBS = [
     "send_issued_invoices", "reminders", "mydata_retry", "mydata_expenses", "reconcile",
     "deadlines", "stale_drafts", "vat_periods", "inbox_receipts", "digest",
+    "bank_sync", "outbox", "backup_check",
 ]
 JOB_LABELS = {
     "send_issued_invoices": "Αποστολή εκδοθέντων τιμολογίων",
@@ -58,6 +60,9 @@ JOB_LABELS = {
     "vat_periods": "Κλείσιμο περιόδου ΦΠΑ",
     "inbox_receipts": "Παραστατικά από email (OCR)",
     "digest": "Ενημερωτικό email (digest)",
+    "bank_sync": "Λήψη τραπεζικών κινήσεων (open banking)",
+    "outbox": "Ουρά αποστολών (outbox)",
+    "backup_check": "Έλεγχος αντιγράφων ασφαλείας",
 }
 MYDATA_MAX_ATTEMPTS = 6
 
@@ -68,6 +73,53 @@ def _now() -> str:
 
 def _fmt(v) -> str:
     return f"{(v or 0):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+# --------------------------------------------------------- outbox handlers --
+
+async def _load_invoice_and_settings(payload: dict):
+    from bson import ObjectId
+    firm_id = payload["firm_id"]
+    settings = await db.settings.find_one({"firm_id": firm_id}) or {}
+    invoice = await db.invoices.find_one(firm_query(firm_id, {"_id": ObjectId(payload["invoice_id"])}))
+    if not invoice:
+        raise ValueError("Το τιμολόγιο δεν υπάρχει πλέον")
+    return firm_id, invoice, settings
+
+
+async def _handle_email_invoice(payload: dict) -> dict:
+    firm_id, invoice, settings = await _load_invoice_and_settings(payload)
+    if invoice.get("email_sent_at"):
+        return {"skipped": "already_sent"}      # idempotency: κάποιος πρόλαβε
+    await email_invoice(firm_id, invoice, settings)
+    return {"sent_to": invoice.get("email_sent_to")}
+
+
+async def _handle_email_reminder(payload: dict) -> dict:
+    firm_id, invoice, settings = await _load_invoice_and_settings(payload)
+    if invoice.get("status") != "issued":
+        return {"skipped": "no_longer_unpaid"}
+    if int(invoice.get("reminder_count") or 0) != int(payload.get("expected_reminder_count", -1)):
+        return {"skipped": "already_reminded"}  # στάλθηκε στο μεταξύ
+    await send_reminder(firm_id, invoice, settings)
+    return {"reminder_count": int(invoice.get("reminder_count") or 0) + 1}
+
+
+async def _handle_email_digest(payload: dict) -> dict:
+    firm_id = payload["firm_id"]
+    settings = await db.settings.find_one({"firm_id": firm_id}) or {}
+    if not smtp_ready(settings):
+        raise ValueError("Δεν έχει ρυθμιστεί SMTP")
+    snapshot = await firm_snapshot(firm_id, settings)
+    subject, text, html = build_digest(snapshot, settings.get("digest_frequency", "weekly"))
+    await send_email_with_pdf(settings, payload["to"], subject, text, html)
+    await db.settings.update_one(firm_query(firm_id), {"$set": {"last_digest_at": _now()}})
+    return {"sent_to": payload["to"]}
+
+
+outbox.register_handler("email_invoice", _handle_email_invoice)
+outbox.register_handler("email_reminder", _handle_email_reminder)
+outbox.register_handler("email_digest", _handle_email_digest)
 
 
 # ------------------------------------------------------------ notifications --
@@ -109,6 +161,8 @@ async def resolve_notification(firm_id: str, notification_id: str, user_email: s
             elif decision == "unmatch":
                 await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"match_status": "unmatched", "matched_invoice_id": None, "matched_invoice_number": None, "match_confidence": 0}})
                 outcome = "unmatched"
+    elif n.get("entity") == "outbox" and n.get("type") in ("outbox_stuck", "outbox_failed"):
+        outcome = await outbox.resolve_stuck(firm_id, n["entity_id"], decision)
     elif n.get("type") == "expense_review" and n.get("entity") == "expense" and decision == "confirm":
         await db.expenses.update_one(firm_query(firm_id, {"_id": ObjectId(n["entity_id"])}), {"$set": {"review_status": "ok"}})
         outcome = "confirmed"
@@ -274,7 +328,7 @@ async def job_send_issued_invoices(firm_id: str, settings: dict) -> dict:
         return {"skipped": True}
     if not smtp_ready(settings):
         return {"skipped": True, "reason": "smtp"}
-    sent = failed = 0
+    queued = skipped = 0
     cursor = db.invoices.find(firm_query(firm_id, {"status": "issued", "email_sent_at": None}))
     async for inv in cursor:
         client = await load_client(firm_id, inv)
@@ -283,17 +337,14 @@ async def job_send_issued_invoices(firm_id: str, settings: dict) -> dict:
                          f"Το τιμολόγιο {inv.get('number')} δεν μπορεί να σταλεί", "Ο πελάτης δεν έχει email.",
                          entity="invoice", entity_id=inv["_id"], requires_action=True,
                          dedupe_key=f"invoice_email_failed:{inv['_id']}")
-            failed += 1
+            skipped += 1
             continue
-        try:
-            await email_invoice(firm_id, inv, settings, client)
-            sent += 1
-        except InvoiceEmailError as e:
-            failed += 1
-            await notify(firm_id, "invoice_email_failed", "warning", f"Αποτυχία αποστολής {inv.get('number')}", str(e),
-                         entity="invoice", entity_id=inv["_id"], requires_action=True,
-                         dedupe_key=f"invoice_email_failed:{inv['_id']}")
-    return {"sent": sent, "failed": failed}
+        entry = await outbox.enqueue(
+            firm_id, "email_invoice",
+            {"firm_id": firm_id, "invoice_id": str(inv["_id"]), "number": inv.get("number", ""), "to": client["email"]},
+            dedupe_key=f"email_invoice:{inv['_id']}")
+        queued += 1 if entry else 0
+    return {"queued": queued, "skipped": skipped}
 
 
 async def job_reminders(firm_id: str, settings: dict) -> dict:
@@ -301,23 +352,27 @@ async def job_reminders(firm_id: str, settings: dict) -> dict:
         return {"skipped": True}
     if not smtp_ready(settings):
         return {"skipped": True, "reason": "smtp"}
-    sent = skipped = 0
+    queued = skipped = 0
     today = _date.today()
     async for inv in db.invoices.find(firm_query(firm_id, {"status": "issued"})):
         if not reminder_due(inv, settings, today):
             skipped += 1
             continue
-        try:
-            await send_reminder(firm_id, inv, settings)
-            sent += 1
-            await notify(firm_id, "reminder_sent", "info", f"Στάλθηκε υπενθύμιση για {inv.get('number')}",
-                         f"{inv.get('client_name')} — {_fmt(inv.get('total'))} (υπενθύμιση #{int(inv.get('reminder_count') or 0) + 1})",
-                         entity="invoice", entity_id=inv["_id"])
-        except InvoiceEmailError as e:
-            await notify(firm_id, "reminder_failed", "warning", f"Δεν στάλθηκε υπενθύμιση για {inv.get('number')}", str(e),
+        client = await load_client(firm_id, inv)
+        if not client or not client.get("email"):
+            await notify(firm_id, "reminder_failed", "warning", f"Δεν στάλθηκε υπενθύμιση για {inv.get('number')}",
+                         "Ο πελάτης δεν έχει καταχωρημένο email.",
                          entity="invoice", entity_id=inv["_id"], requires_action=True,
                          dedupe_key=f"reminder_failed:{inv['_id']}")
-    return {"sent": sent, "not_due": skipped}
+            continue
+        count = int(inv.get("reminder_count") or 0)
+        entry = await outbox.enqueue(
+            firm_id, "email_reminder",
+            {"firm_id": firm_id, "invoice_id": str(inv["_id"]), "number": inv.get("number", ""),
+             "to": client["email"], "expected_reminder_count": count},
+            dedupe_key=f"email_reminder:{inv['_id']}:{count}")
+        queued += 1 if entry else 0
+    return {"queued": queued, "not_due": skipped}
 
 
 async def job_mydata_retry(firm_id: str, settings: dict) -> dict:
@@ -733,11 +788,143 @@ async def job_digest(firm_id: str, settings: dict, force: bool = False) -> dict:
     to = settings.get("digest_email") or settings.get("email") or settings.get("smtp_user")
     if not to:
         return {"skipped": True, "reason": "no_recipient"}
-    snapshot = await firm_snapshot(firm_id, settings)
-    subject, text, html = build_digest(snapshot, settings.get("digest_frequency", "weekly"))
-    await send_email_with_pdf(settings, to, subject, text, html)
-    await db.settings.update_one(firm_query(firm_id), {"$set": {"last_digest_at": _now()}})
-    return {"sent_to": to, "open_items": len(snapshot["open_items"])}
+    entry = await outbox.enqueue(firm_id, "email_digest", {"firm_id": firm_id, "to": to},
+                                 dedupe_key=f"email_digest:{_date.today().isoformat()}")
+    return {"queued_to": to} if entry else {"skipped": True, "reason": "already_queued"}
+
+
+async def job_bank_sync(firm_id: str, settings: dict) -> dict:
+    """Κατεβάζει τις κινήσεις μέσω PSD2 και τις περνά από το ίδιο auto-matching με τα CSV."""
+    from openbanking import (
+        openbanking_ready, fetch_transactions, requisition_expiring, OpenBankingError,
+    )
+    from routes_bank import _find_match
+    from models import BankTransaction
+
+    if not settings.get("openbanking_enabled") or not openbanking_ready(settings):
+        return {"skipped": True, "reason": "not_configured"}
+    account_ids = settings.get("gocardless_account_ids") or []
+    if not account_ids:
+        await notify(firm_id, "bank_not_linked", "warning", "Δεν έχει συνδεθεί τραπεζικός λογαριασμός",
+                     "Ολοκληρώστε τη σύνδεση με την τράπεζά σας από τις Ρυθμίσεις για αυτόματη συμφωνία εισπράξεων.",
+                     entity="settings", requires_action=True, dedupe_key="bank_not_linked")
+        return {"skipped": True, "reason": "no_accounts"}
+
+    if requisition_expiring(settings):
+        await notify(firm_id, "bank_consent_expiring", "warning", "Λήγει η σύνδεση με την τράπεζα",
+                     f"Η συγκατάθεση PSD2 λήγει στις {settings.get('gocardless_access_valid_until')}. "
+                     "Ανανεώστε τη σύνδεση από τις Ρυθμίσεις για να μη σταματήσουν οι αυτόματες εισπράξεις.",
+                     entity="settings", requires_action=True,
+                     dedupe_key=f"bank_consent:{settings.get('gocardless_access_valid_until')}")
+
+    # Επικάλυψη ημερών: οι τράπεζες αργούν να οριστικοποιήσουν κινήσεις.
+    last = settings.get("bank_sync_last_date")
+    date_from = (_date.fromisoformat(last) - timedelta(days=5)).isoformat() if last else \
+        (_date.today() - timedelta(days=90)).isoformat()
+
+    unpaid = await db.invoices.find(firm_query(firm_id, {"status": "issued"})).to_list(2000)
+    created = skipped = matched = 0
+    for account_id in account_ids:
+        try:
+            transactions = await fetch_transactions(settings, account_id, date_from)
+        except OpenBankingError as e:
+            await notify(firm_id, "bank_sync_failed", "warning", "Αποτυχία λήψης τραπεζικών κινήσεων", str(e),
+                         entity="settings", dedupe_key="bank_sync_failed")
+            raise
+        for tx in transactions:
+            external_id = f"psd2:{account_id}:{tx['external_id']}"
+            if await db.bank_transactions.find_one(firm_query(firm_id, {"external_id": external_id})):
+                skipped += 1
+                continue
+            record = BankTransaction(
+                firm_id=firm_id, date=tx["date"], description=tx["description"][:500],
+                reference=tx["reference"], amount=tx["amount"], bank=settings.get("gocardless_institution_name", ""),
+                account=account_id, external_id=external_id, imported_by="open_banking",
+            )
+            match, confidence = await _find_match(tx, unpaid)
+            if match:
+                record.matched_invoice_id = str(match["_id"])
+                record.matched_invoice_number = match.get("number", "")
+                record.match_confidence = confidence
+                record.match_status = "auto_matched"
+                matched += 1
+            await db.bank_transactions.insert_one(record.to_mongo())
+            created += 1
+
+    await db.settings.update_one(firm_query(firm_id), {"$set": {"bank_sync_last_date": _date.today().isoformat()}})
+    if created:
+        await db.notifications.update_many(
+            firm_query(firm_id, {"dedupe_key": "bank_sync_failed", "resolved_at": None}),
+            {"$set": {"resolved_at": _now(), "resolved_by": "autopilot", "resolution": "auto"}})
+    return {"created": created, "already_known": skipped, "auto_matched": matched}
+
+
+async def job_outbox(firm_id: str, settings: dict) -> dict:
+    """Εκτελεί την ουρά αποστολών και εντοπίζει ό,τι κόλλησε από διακοπή."""
+    stats = await outbox.drain(firm_id)
+    stats.update(await outbox.sweep_stuck())
+    for entry in await db.outbox.find(firm_query(firm_id, {"status": "failed", "notified": {"$ne": True}})).to_list(50):
+        await db.outbox.update_one({"_id": entry["_id"]}, {"$set": {"notified": True}})
+        await notify(firm_id, "outbox_failed", "warning", "Μια αυτόματη αποστολή απέτυχε οριστικά",
+                     f"«{outbox.describe(entry)}» — {entry.get('error') or 'άγνωστο σφάλμα'}. "
+                     f"Μετά από {entry.get('attempts')} προσπάθειες χρειάζεται έλεγχος (SMTP; διεύθυνση πελάτη;).",
+                     entity="outbox", entity_id=entry["_id"], requires_action=True,
+                     actions=[{"key": "retry", "label": "Επανάληψη"}, {"key": "discard", "label": "Αγνόησε"}],
+                     dedupe_key=f"outbox_failed:{entry['_id']}")
+    return stats
+
+
+BACKUP_MAX_AGE_HOURS = 48
+
+
+def inspect_backups(directory: str, now: datetime | None = None) -> dict:
+    """Ελέγχει το τελευταίο αντίγραφο: υπάρχει, δεν είναι κενό, δεν είναι μπαγιάτικο, ανοίγει.
+
+    Ένα backup που δεν έχει επαληθευτεί δεν είναι backup. Ο πλήρης έλεγχος επαναφοράς
+    χρειάζεται mongorestore· εδώ επαληθεύεται ό,τι μπορεί ο server μόνος του.
+    """
+    import gzip
+    from pathlib import Path
+    now = now or datetime.now(timezone.utc)
+    path = Path(directory)
+    if not path.is_dir():
+        return {"ok": False, "reason": "missing_dir", "message": f"Ο φάκελος αντιγράφων {directory} δεν υπάρχει."}
+    archives = sorted(path.glob("*.archive"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not archives:
+        return {"ok": False, "reason": "no_backups", "message": f"Δεν βρέθηκε κανένα αντίγραφο στο {directory}."}
+    latest = archives[0]
+    stat = latest.stat()
+    age_hours = (now.timestamp() - stat.st_mtime) / 3600
+    if stat.st_size == 0:
+        return {"ok": False, "reason": "empty", "message": f"Το τελευταίο αντίγραφο ({latest.name}) είναι κενό.",
+                "file": latest.name, "age_hours": round(age_hours, 1)}
+    try:
+        with gzip.open(latest, "rb") as fh:
+            fh.read(4096)
+    except Exception as e:
+        return {"ok": False, "reason": "corrupt", "message": f"Το αντίγραφο {latest.name} δεν διαβάζεται: {e}",
+                "file": latest.name, "age_hours": round(age_hours, 1)}
+    if age_hours > BACKUP_MAX_AGE_HOURS:
+        return {"ok": False, "reason": "stale", "file": latest.name, "age_hours": round(age_hours, 1),
+                "size_mb": round(stat.st_size / 1e6, 2), "count": len(archives),
+                "message": f"Το τελευταίο αντίγραφο είναι {age_hours:.0f} ωρών ({latest.name})."}
+    return {"ok": True, "file": latest.name, "age_hours": round(age_hours, 1),
+            "size_mb": round(stat.st_size / 1e6, 2), "count": len(archives)}
+
+
+async def job_backup_check(firm_id: str, settings: dict) -> dict:
+    """Ένα αντίγραφο που κανείς δεν ελέγχει είναι ψευδής ασφάλεια."""
+    directory = os.environ.get("BACKUP_DIR", "/app/backups")
+    result = await asyncio.to_thread(inspect_backups, directory)
+    if result["ok"]:
+        await db.notifications.update_many(
+            firm_query(firm_id, {"dedupe_key": "backup_problem", "resolved_at": None}),
+            {"$set": {"resolved_at": _now(), "resolved_by": "autopilot", "resolution": "auto"}})
+    else:
+        await notify(firm_id, "backup_problem", "critical", "Πρόβλημα με τα αντίγραφα ασφαλείας",
+                     result["message"] + " Ελέγξτε την υπηρεσία backup του docker-compose.",
+                     entity="backup", requires_action=True, dedupe_key="backup_problem")
+    return result
 
 
 # ---------------------------------------------------------------- cycle -----
@@ -753,6 +940,9 @@ JOB_FUNCS = {
     "vat_periods": job_vat_periods,
     "inbox_receipts": job_inbox_receipts,
     "digest": job_digest,
+    "bank_sync": job_bank_sync,
+    "outbox": job_outbox,
+    "backup_check": job_backup_check,
 }
 
 

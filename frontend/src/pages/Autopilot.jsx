@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/context/AuthContext";
-import { Robot, CheckCircle, WarningCircle, Info, XCircle, Play, EnvelopeSimple, ArrowsClockwise } from "@phosphor-icons/react";
+import { Robot, CheckCircle, WarningCircle, Info, XCircle, Play, EnvelopeSimple, ArrowsClockwise, FilePdf } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const LEVEL = {
@@ -132,6 +132,20 @@ export default function Autopilot() {
     }
   };
 
+  const downloadVatReturn = async (period) => {
+    try {
+      const res = await axios.get(`${API}/automation/vat-periods/${period}/return.pdf`, { responseType: "blob" });
+      const url = URL.createObjectURL(new Blob([res.data], { type: "application/pdf" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `FPA-${period}.pdf`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
   const dismissInfo = async () => {
     try {
       await axios.post(`${API}/automation/notifications/dismiss-informational`);
@@ -173,13 +187,14 @@ export default function Autopilot() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-4 stagger">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4 stagger">
         <Stat label="Αποφάσεις" value={status.open_items} testid="autopilot-open-items" />
         <Stat label="Emails 7ημ." value={week.emails_sent || 0} testid="autopilot-emails" />
         <Stat label="Υπενθυμίσεις 7ημ." value={week.reminders_sent || 0} testid="autopilot-reminders" />
         <Stat label="Εξοφλήσεις 7ημ." value={week.reconciled || 0} testid="autopilot-reconciled" />
         <Stat label="myDATA 7ημ." value={week.mydata_synced || 0} testid="autopilot-mydata" />
         <Stat label="Έξοδα ΑΑΔΕ 7ημ." value={week.expenses_from_mydata || 0} testid="autopilot-mydata-expenses" />
+        <Stat label="Κινήσεις τράπεζας 7ημ." value={week.bank_transactions || 0} testid="autopilot-bank-transactions" />
       </div>
 
       <div className="lux-card p-5 flex flex-wrap gap-x-8 gap-y-2 items-center" data-testid="autopilot-capabilities">
@@ -190,6 +205,7 @@ export default function Autopilot() {
         <Capability ok={status.capabilities.ai} label="AI / OCR" hint="Για αυτόματη καταχώρηση αποδείξεων από email" />
         <Capability ok={status.capabilities.imap} label="Εισερχόμενα email (IMAP)" hint="Σαρώνει το γραμματοκιβώτιο για παραστατικά" />
         <Capability ok={status.capabilities.mydata_expenses} label="Έξοδα από ΑΑΔΕ" hint="Κατεβάζει τα παραστατικά που διαβίβασαν οι προμηθευτές — ακριβέστερο από OCR" />
+        <Capability ok={status.capabilities.openbanking} label="Τραπεζικές κινήσεις (PSD2)" hint="Οι κινήσεις έρχονται μόνες τους και συμφωνούνται — χωρίς CSV" />
         <span className="ml-auto text-xs text-muted-foreground">Κύκλος κάθε {status.cycle_minutes}′ · Digest: {status.last_digest_at ? dateFmt(status.last_digest_at) : "ποτέ"}</span>
         {(!status.capabilities.email || !status.capabilities.mydata) && (
           <Link to="/settings" className="text-xs text-[hsl(var(--gold))] underline underline-offset-4">Συμπλήρωση ρυθμίσεων →</Link>
@@ -273,9 +289,15 @@ export default function Autopilot() {
                     <td className={`p-3 text-right font-mono ${v.vat_due > 0 ? "text-destructive" : "text-[hsl(var(--success))]"}`}>{money(v.vat_due)}</td>
                     <td className="p-3">{dateFmt(v.due_date)}</td>
                     <td className="p-3 text-center">
-                      {v.status === "submitted" ? <Badge>Υποβλήθηκε</Badge> : (
-                        <Button size="sm" variant="outline" onClick={async () => { await axios.post(`${API}/automation/vat-periods/${v.period}/submitted`); load(); }}>Υποβλήθηκε</Button>
-                      )}
+                      <div className="flex items-center justify-center gap-2">
+                        <Button size="sm" variant="ghost" onClick={() => downloadVatReturn(v.period)}
+                          title="Έντυπο Φ2 σε PDF, ανά κωδικό" data-testid={`vat-return-${v.period}`}>
+                          <FilePdf size={15} className="mr-1" /> Φ2
+                        </Button>
+                        {v.status === "submitted" ? <Badge>Υποβλήθηκε</Badge> : (
+                          <Button size="sm" variant="outline" onClick={async () => { await axios.post(`${API}/automation/vat-periods/${v.period}/submitted`); load(); }}>Υποβλήθηκε</Button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

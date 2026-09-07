@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from bson import ObjectId
 from db import db
 from models import BankTransaction
-from auth import get_current_user
+from auth import get_current_user, require_admin
+from pydantic import BaseModel
 from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/bank", tags=["bank"])
@@ -328,6 +329,100 @@ async def confirm_auto_matches(user: dict = Depends(get_current_user)):
             except Exception:
                 continue
     return {"message": f"Επιβεβαιώθηκαν {confirmed} συνδέσεις. Τα αντίστοιχα τιμολόγια εξοφλήθηκαν.", "confirmed": confirmed}
+
+
+# ------------------------------------------------- open banking (PSD2) -----
+
+class LinkRequest(BaseModel):
+    institution_id: str
+    redirect_url: str = ""
+
+
+@router.get("/openbanking/status")
+async def openbanking_status(user: dict = Depends(get_current_user)):
+    from openbanking import openbanking_ready, requisition_expiring
+    settings = await db.settings.find_one(tenant_query(user)) or {}
+    return {
+        "configured": openbanking_ready(settings),
+        "enabled": bool(settings.get("openbanking_enabled")),
+        "institution": settings.get("gocardless_institution_name", ""),
+        "accounts": settings.get("gocardless_account_ids") or [],
+        "valid_until": settings.get("gocardless_access_valid_until", ""),
+        "expiring_soon": requisition_expiring(settings),
+        "last_sync": settings.get("bank_sync_last_date", ""),
+    }
+
+
+@router.get("/openbanking/institutions")
+async def openbanking_institutions(country: str = "GR", user: dict = Depends(require_admin)):
+    from openbanking import list_institutions, OpenBankingError
+    settings = await db.settings.find_one(tenant_query(user)) or {}
+    try:
+        return await list_institutions(settings, country)
+    except OpenBankingError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/openbanking/link")
+async def openbanking_link(payload: LinkRequest, user: dict = Depends(require_admin)):
+    """Ξεκινά τη σύνδεση: ο χρήστης ανοίγει το link και εγκρίνει στην τράπεζά του."""
+    import os
+    from openbanking import create_requisition, OpenBankingError
+    settings = await db.settings.find_one(tenant_query(user)) or {}
+    redirect = payload.redirect_url or (settings.get("public_url") or os.environ.get("PUBLIC_URL", "")).rstrip("/") + "/settings"
+    if not redirect.startswith("http"):
+        raise HTTPException(status_code=400, detail="Ορίστε PUBLIC_URL ώστε η τράπεζα να μπορεί να σας επιστρέψει στην εφαρμογή.")
+    try:
+        result = await create_requisition(settings, payload.institution_id, redirect)
+    except OpenBankingError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.settings.update_one(tenant_query(user), {"$set": {
+        "gocardless_requisition_id": result["requisition_id"],
+        "gocardless_institution_id": payload.institution_id,
+    }})
+    return result
+
+
+@router.post("/openbanking/complete")
+async def openbanking_complete(user: dict = Depends(require_admin)):
+    """Μετά την έγκριση: καταγράφει τους λογαριασμούς που παραχώρησε ο χρήστης."""
+    from datetime import date as _d, timedelta as _td
+    from openbanking import get_requisition, account_details, OpenBankingError
+    settings = await db.settings.find_one(tenant_query(user)) or {}
+    requisition_id = settings.get("gocardless_requisition_id")
+    if not requisition_id:
+        raise HTTPException(status_code=400, detail="Δεν έχει ξεκινήσει σύνδεση με τράπεζα.")
+    try:
+        requisition = await get_requisition(settings, requisition_id)
+    except OpenBankingError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    accounts = requisition.get("accounts") or []
+    if not accounts:
+        raise HTTPException(status_code=400,
+                            detail=f"Η σύνδεση δεν έχει ολοκληρωθεί (κατάσταση: {requisition.get('status')}). "
+                                   "Ολοκληρώστε την έγκριση στη σελίδα της τράπεζας και δοκιμάστε ξανά.")
+    described = []
+    for account_id in accounts:
+        try:
+            described.append({"id": account_id, **await account_details(settings, account_id)})
+        except OpenBankingError:
+            described.append({"id": account_id, "iban": "", "name": ""})
+    await db.settings.update_one(tenant_query(user), {"$set": {
+        "gocardless_account_ids": accounts,
+        "openbanking_enabled": True,
+        "gocardless_access_valid_until": (_d.today() + _td(days=90)).isoformat(),
+    }})
+    return {"accounts": described, "message": f"Συνδέθηκαν {len(accounts)} λογαριασμοί. "
+                                              "Οι κινήσεις θα κατεβαίνουν αυτόματα."}
+
+
+@router.post("/openbanking/disconnect")
+async def openbanking_disconnect(user: dict = Depends(require_admin)):
+    await db.settings.update_one(tenant_query(user), {"$set": {
+        "openbanking_enabled": False, "gocardless_account_ids": [],
+        "gocardless_requisition_id": "", "gocardless_access_valid_until": "",
+    }})
+    return {"message": "Η σύνδεση με την τράπεζα διακόπηκε. Οι ήδη κατεβασμένες κινήσεις παραμένουν."}
 
 
 @router.get("/summary")

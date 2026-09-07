@@ -138,9 +138,26 @@ def _enable_2fa(client):
     return password, setup["secret"], enabled["backup_codes"]
 
 
-def _next_code(secret):
-    """Κωδικός του επόμενου χρονικού βήματος — κάθε OTP ισχύει μία μόνο φορά."""
-    return mfa.totp_now(secret, time.time() + mfa.PERIOD)
+def _used_counter(email="mfa@example.gr"):
+    """Ο counter που έχει ήδη καταναλωθεί, από τη βάση."""
+    import asyncio
+    from db import db
+    doc = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+        db.users.find_one({"email": email}))
+    return (doc or {}).get("mfa_last_counter")
+
+
+def _next_code(secret, email="mfa@example.gr"):
+    """Κωδικός που είναι ταυτόχρονα αχρησιμοποίητος ΚΑΙ εντός του παραθύρου ±1.
+
+    Το «απλώς +30 δευτερόλεπτα» έσπαγε όποτε το ρολόι περνούσε όριο βήματος ανάμεσα
+    στην ενεργοποίηση και στον έλεγχο: ο κωδικός έβγαινε δύο βήματα μπροστά και
+    απορριπτόταν. Ο πρώτος έγκυρος counter είναι max(τελευταίος_χρησιμοποιημένος+1, τώρα).
+    """
+    used = _used_counter(email)
+    current = int(time.time() // mfa.PERIOD)
+    counter = max(used + 1, current) if used is not None else current
+    return mfa._hotp(secret, counter)
 
 
 def test_setup_requires_password_and_returns_uri(client):
@@ -177,8 +194,11 @@ def test_login_challenges_for_second_factor_and_backup_code_works(client):
     assert client.get("/api/auth/me").status_code == 401
 
     assert client.post("/api/auth/2fa/verify", json={"mfa_token": body["mfa_token"], "code": "000000"}).status_code == 401
-    # ο κωδικός που χρησιμοποιήθηκε στο enable δεν ξαναδουλεύει, με σαφές μήνυμα
-    reused = client.post("/api/auth/2fa/verify", json={"mfa_token": body["mfa_token"], "code": mfa.totp_now(secret)})
+    # ακριβώς ο κωδικός που καταναλώθηκε στο enable δεν ξαναδουλεύει, με σαφές μήνυμα.
+    # (Χρησιμοποιούμε τον counter από τη βάση, όχι «τώρα»: αλλιώς ένα όριο βήματος
+    #  θα έκανε τον έλεγχο να πετύχει κατά λάθος.)
+    consumed = mfa._hotp(secret, _used_counter())
+    reused = client.post("/api/auth/2fa/verify", json={"mfa_token": body["mfa_token"], "code": consumed})
     assert reused.status_code == 401 and "ήδη χρησιμοποιηθεί" in reused.json()["detail"]
     r = client.post("/api/auth/2fa/verify", json={"mfa_token": body["mfa_token"], "code": _next_code(secret)})
     assert r.status_code == 200 and r.json()["mfa_enabled"] is True

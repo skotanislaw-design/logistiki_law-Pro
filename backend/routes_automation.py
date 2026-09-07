@@ -15,6 +15,7 @@ from automation import (
 from email_utils import smtp_ready
 from mydata_client import mydata_ready
 from ai_runtime import ai_ready
+from outbox import stats as outbox_stats
 
 router = APIRouter(prefix="/automation", tags=["automation"])
 
@@ -51,6 +52,7 @@ async def automation_status(user: dict = Depends(get_current_user)):
         "mydata_synced": await db.invoices.count_documents(tenant_query(user, {"mydata_synced_at": {"$gte": since}})),
         "expenses_from_email": await db.expenses.count_documents(tenant_query(user, {"source": "email_ocr", "created_at": {"$gte": since}})),
         "expenses_from_mydata": await db.expenses.count_documents(tenant_query(user, {"source": "mydata", "created_at": {"$gte": since}})),
+        "bank_transactions": await db.bank_transactions.count_documents(tenant_query(user, {"imported_by": "open_banking", "imported_at": {"$gte": since}})),
     }
     return {
         "enabled": settings.get("autopilot_enabled", True),
@@ -62,10 +64,12 @@ async def automation_status(user: dict = Depends(get_current_user)):
             "ai": ai_ready(),
             "imap": bool(settings.get("imap_enabled") and settings.get("imap_user")),
             "mydata_expenses": bool(mydata_ready(settings) and settings.get("mydata_expense_sync", True) and (settings.get("afm") or "").strip()),
+            "openbanking": bool(settings.get("openbanking_enabled") and (settings.get("gocardless_account_ids") or [])),
             "stripe": bool(__import__("os").environ.get("STRIPE_SECRET_KEY", "").startswith("sk_")),
         },
         "jobs": last_runs,
         "last_7_days": week,
+        "outbox": await outbox_stats(firm_id),
         "last_digest_at": settings.get("last_digest_at"),
         "digest_frequency": settings.get("digest_frequency", "weekly"),
         "cycle_minutes": int(__import__("os").environ.get("AUTOPILOT_INTERVAL_MINUTES", "15")),
@@ -152,6 +156,35 @@ async def digest_send_now(user: dict = Depends(require_admin)):
 async def vat_periods(user: dict = Depends(get_current_user)):
     docs = await db.vat_periods.find(tenant_query(user)).sort("period_end", -1).limit(24).to_list(24)
     return [VatPeriod.from_mongo(d) for d in docs]
+
+
+async def _vat_return_payload(user: dict, period: str) -> dict:
+    from vat_return import build_vat_return
+    doc = await db.vat_periods.find_one(tenant_query(user, {"period": period}))
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Η περίοδος {period} δεν έχει υπολογιστεί ακόμη.")
+    settings = await db.settings.find_one(tenant_query(user)) or {}
+    start, end = doc["period_start"], doc["period_end"] + "T23:59:59"
+    invoices = await db.invoices.find(tenant_query(user, {
+        "status": {"$in": ["issued", "paid"]}, "date": {"$gte": start, "$lte": end}})).to_list(20000)
+    expenses = await db.expenses.find(tenant_query(user, {"date": {"$gte": start, "$lte": end}})).to_list(20000)
+    return build_vat_return(doc, invoices, expenses, settings)
+
+
+@router.get("/vat-periods/{period}/return")
+async def vat_return(period: str, user: dict = Depends(get_current_user)):
+    """Η δήλωση Φ2 της περιόδου, ανά κωδικό εντύπου, έτοιμη για αντιγραφή στο TAXISnet."""
+    return await _vat_return_payload(user, period)
+
+
+@router.get("/vat-periods/{period}/return.pdf")
+async def vat_return_pdf(period: str, user: dict = Depends(get_current_user)):
+    from fastapi.responses import Response
+    from vat_return import build_vat_return_pdf
+    data = await _vat_return_payload(user, period)
+    pdf = build_vat_return_pdf(data)
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="FPA-{period}.pdf"'})
 
 
 @router.post("/vat-periods/{period}/submitted")
