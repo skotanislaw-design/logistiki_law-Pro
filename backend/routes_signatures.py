@@ -9,7 +9,6 @@ from db import db
 from models import ESignature
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
-from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/signatures", tags=["signatures"])
 

@@ -148,8 +148,10 @@ async def get_payment_status(session_id: str):
 
 async def _mark_paid(session_id: str, payment_intent_id: str = None):
     """Idempotent — καλείται από webhook & polling fallback."""
+    # Το session_id είναι μοναδικό ανά συναλλαγή· το firm_id προκύπτει από την ίδια εγγραφή,
+    # οπότε δεν προσθέτει φιλτράρισμα — μόνο ένα περιττό round-trip.
     result = await db.payment_transactions.update_one(
-        {"session_id": session_id, "payment_status": {"$ne": "paid"}, "firm_id": (await db.payment_transactions.find_one({"session_id": session_id}) or {}).get("firm_id", "legacy-default-firm")},
+        {"session_id": session_id, "payment_status": {"$ne": "paid"}},
         {"$set": {
             "status": "completed",
             "payment_status": "paid",

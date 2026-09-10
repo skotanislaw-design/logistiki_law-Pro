@@ -85,8 +85,9 @@ def _headers(settings: dict) -> dict:
     }
 
 
-def _payment_type(method: str) -> str:
-    m = (method or "").lower()
+def _payment_type(method) -> str:
+    """Τρόπος πληρωμής ΑΑΔΕ. Ανεκτικό σε μη-string (legacy/imported δεδομένα)."""
+    m = str(method or "").strip().lower()
     if "μετρητ" in m:
         return "3"
     if "κάρτ" in m or "pos" in m:

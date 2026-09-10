@@ -366,7 +366,8 @@ class ESignature(BaseDocument):
     signer_email: str = ""
     signer_role: Literal["client", "lawyer", "witness"] = "client"
     signature_data: str  # base64 image
-    signature_hash: str  # SHA-256 hash για ακεραιότητα
+    # Υπολογίζεται από τον server κατά την καταχώρηση (routes_signatures) — ο client δεν το στέλνει.
+    signature_hash: str = ""  # SHA-256 hash για ακεραιότητα
     ip_address: str = ""
     user_agent: str = ""
     signed_at: str = Field(default_factory=now_iso)
