@@ -14,6 +14,7 @@
 υπηρεσιών. Επαληθεύστε τα στο sandbox πριν την παραγωγή.
 """
 import os
+from decimal import Decimal
 from datetime import date
 from xml.sax.saxutils import escape
 from xml.etree.ElementTree import fromstring
@@ -162,17 +163,17 @@ def build_invoices_doc_xml(invoice: dict, client: dict, settings: dict) -> str:
     classification_type = settings.get("income_classification_type") or "E3_561_001"
     classification_category = settings.get("income_classification_category") or "category1_3"
 
+    # Ίδιος υπολογιστής με το αποθηκευμένο τιμολόγιο και το PDF (tax_utils), ώστε το
+    # παραστατικό του πελάτη και η εγγραφή στην ΑΑΔΕ να μη διαφέρουν ποτέ ούτε κατά λεπτό.
+    from tax_utils import compute_line_values
+
     lines_xml = []
-    total_net = 0.0
-    total_vat = 0.0
-    for idx, line in enumerate(invoice.get("line_items", []), start=1):
-        qty = float(line.get("quantity", 1))
-        price = float(line.get("unit_price", 0))
-        net = round(qty * price, 2)
-        rate = int(line.get("vat_rate", 24))
-        vat = round(net * rate / 100, 2)
-        total_net = round(total_net + net, 2)
-        total_vat = round(total_vat + vat, 2)
+    total_net = Decimal("0")
+    total_vat = Decimal("0")
+    for idx, values in enumerate(compute_line_values(invoice.get("line_items", [])), start=1):
+        net, vat, rate = values["net"], values["vat"], values["rate"]
+        total_net += net
+        total_vat += vat
         exemption = "<vatExemptionCategory>1</vatExemptionCategory>" if rate == 0 else ""
         lines_xml.append(
             f"<invoiceDetails><lineNumber>{idx}</lineNumber>"
@@ -186,9 +187,9 @@ def build_invoices_doc_xml(invoice: dict, client: dict, settings: dict) -> str:
             f"</incomeClassification></invoiceDetails>"
         )
 
-    withheld = withholding_for(invoice, settings, invoice_type, total_net)
-    total_gross = round(total_net + total_vat, 2)
-    payable = round(total_gross - withheld, 2)
+    withheld = withholding_for(invoice, settings, invoice_type, float(total_net))
+    total_gross = total_net + total_vat
+    payable = total_gross - Decimal(str(withheld))
 
     counterpart = ""
     if invoice_type not in RETAIL_TYPES:

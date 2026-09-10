@@ -30,10 +30,85 @@ def test_payroll_net_is_below_gross():
     assert p["employer_total_cost"] > p["gross_salary"]
 
 
-def test_vat_deadline_monthly_and_quarterly():
-    assert next_vat_deadline(date(2026, 8, 10), "monthly") == date(2026, 9, 30)
+def test_vat_deadline_is_the_next_one_still_pending():
+    """Η επόμενη προθεσμία είναι αυτή που ΕΚΚΡΕΜΕΙ, όχι της περιόδου που διανύουμε.
+
+    Στις 10/08 με μηνιαίο ΦΠΑ εκκρεμεί η δήλωση Ιουλίου, με προθεσμία την τελευταία
+    εργάσιμη του Αυγούστου. Ο παλιός υπολογισμός επέστρεφε 30/09 και έκρυβε την
+    επικείμενη προθεσμία — αυτό το test κωδικοποιούσε το σφάλμα.
+    """
+    assert next_vat_deadline(date(2026, 8, 10), "monthly") == date(2026, 8, 31)
+    assert next_vat_deadline(date(2026, 9, 10), "monthly") == date(2026, 9, 30)
     assert next_vat_deadline(date(2026, 8, 10), "quarterly") == date(2026, 10, 30)
     assert next_efka_deadline(date(2026, 8, 10)) == date(2026, 8, 31)
+
+
+@pytest.mark.parametrize("today,expected", [
+    (date(2026, 10, 15), date(2026, 10, 30)),   # Q3 λήγει 30/09, προθεσμία 31/10 (εργάσιμη 30/10)
+    (date(2027, 1, 15), date(2027, 1, 29)),     # Q4/2026, προθεσμία 31/01 (εργάσιμη 29/01)
+    (date(2026, 4, 20), date(2026, 4, 30)),     # Q1 λήγει 31/03, προθεσμία 30/04
+])
+def test_quarterly_vat_deadline_does_not_skip_a_quarter(today, expected):
+    """Η τριμηνιαία διαδρομή έκρυβε την προθεσμία έως και τρεις μήνες."""
+    assert next_vat_deadline(today, "quarterly") == expected
+
+
+def test_vat_deadline_for_period_end_is_month_after_period():
+    from tax_utils import vat_deadline_for_period_end
+    assert vat_deadline_for_period_end(date(2026, 8, 31), "monthly") == date(2026, 9, 30)
+    assert vat_deadline_for_period_end(date(2026, 9, 30), "quarterly") == date(2026, 10, 30)
+
+
+def test_efka_deadline_never_returns_a_past_date():
+    """Στις 31/10 η τελευταία εργάσιμη (30/10) έχει παρέλθει — δίνουμε την επόμενη."""
+    assert next_efka_deadline(date(2026, 10, 31)) == date(2026, 11, 30)
+    assert next_efka_deadline(date(2026, 5, 31)) == date(2026, 6, 30)
+
+
+def test_withholding_deadline_is_distinct_from_efka():
+    from tax_utils import next_withholding_deadline
+    d = date(2026, 9, 10)
+    assert next_withholding_deadline(d) != next_efka_deadline(d)
+    assert next_withholding_deadline(d) == date(2026, 11, 30)
+
+
+def test_efka_contributions_are_capped():
+    """Χωρίς πλαφόν, μικτά 20.000 € έδιναν εισφορά 2.774 € αντί ~1.050 €."""
+    from tax_utils import calculate_payroll, EFKA_MONTHLY_CEILING, EMPLOYEE_EFKA_RATE
+    p = calculate_payroll(20000.0)
+    assert p["employee_efka"] == round(EFKA_MONTHLY_CEILING * EMPLOYEE_EFKA_RATE, 2)
+    assert p["employee_efka"] < 20000 * EMPLOYEE_EFKA_RATE
+
+
+def test_stored_totals_match_the_xml_sent_to_aade():
+    """Το παραστατικό του πελάτη και η εγγραφή στην ΑΑΔΕ δεν επιτρέπεται να διαφέρουν."""
+    import re
+    items = [{"description": "A", "quantity": 1.5, "unit_price": 133.33, "vat_rate": 24},
+             {"description": "B", "quantity": 2.5, "unit_price": 88.88, "vat_rate": 13}]
+    stored = calculate_invoice_totals(items)
+    xml = build_invoices_doc_xml(
+        {"number": "ΤΠΥ-2026-0001", "line_items": items, "issue_date": "2026-09-10",
+         "payment_method": "Τραπεζική κατάθεση"},
+        {"name": "ΑΛΦΑ ΑΕ", "afm": "123456789", "client_type": "company"},
+        {"afm": "987654321"})
+    xml_net = float(re.search(r"<totalNetValue>([\d.]+)", xml).group(1))
+    xml_vat = float(re.search(r"<totalVatAmount>([\d.]+)", xml).group(1))
+    xml_gross = float(re.search(r"<totalGrossValue>([\d.]+)", xml).group(1))
+    assert (xml_net, xml_vat, xml_gross) == (stored["subtotal"], stored["vat_amount"], stored["total"])
+
+
+def test_line_vat_amounts_sum_to_the_declared_total():
+    """Το myDATA απορρίπτει παραστατικό όπου το άθροισμα γραμμών ≠ σύνολο."""
+    import re
+    items = [{"description": "x", "quantity": 1, "unit_price": 10.10, "vat_rate": 24}] * 50
+    xml = build_invoices_doc_xml(
+        {"number": "ΤΠΥ-2026-0002", "line_items": items, "issue_date": "2026-09-10",
+         "payment_method": "Τραπεζική κατάθεση"},
+        {"name": "ΑΛΦΑ ΑΕ", "afm": "123456789", "client_type": "company"},
+        {"afm": "987654321"})
+    line_vats = [float(v) for v in re.findall(r"<vatAmount>([\d.]+)</vatAmount>", xml)]
+    total_vat = float(re.search(r"<totalVatAmount>([\d.]+)", xml).group(1))
+    assert round(sum(line_vats), 2) == total_vat
 
 
 @pytest.mark.parametrize("raw,expected", [("1.234,56", 1234.56), ("1,234.56", 1234.56), ("-45,00 €", -45.0), ("", 0.0)])

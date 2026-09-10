@@ -33,7 +33,7 @@ from bson import ObjectId
 from db import db
 from crypto import decrypt
 from models import Notification, AutomationRun, VatPeriod, Expense
-from tax_utils import generate_tax_calendar, next_vat_deadline
+from tax_utils import generate_tax_calendar, vat_deadline_for_period_end
 from email_utils import smtp_ready, send_email_with_pdf
 from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
@@ -296,7 +296,7 @@ def closed_vat_periods(today: _date, vat_period: str = "monthly", lookback: int 
             end = (start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
             periods.append({"period": f"{y}-{m:02d}", "start": start, "end": end})
     for p in periods:
-        p["due"] = next_vat_deadline(p["end"], vat_period)
+        p["due"] = vat_deadline_for_period_end(p["end"], vat_period)
     return list(reversed(periods))
 
 
