@@ -9,10 +9,12 @@ import re
 import json
 import zipfile
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from audit import audit_read
 from fastapi.responses import Response
 from bson import ObjectId
 from db import db
+from http_utils import content_disposition
 from auth import get_current_user, require_admin
 from tenant import tenant_query, firm_id_for
 
@@ -60,8 +62,9 @@ def _from_json_safe(doc):
 
 
 @router.get("/export")
-async def export_backup(user: dict = Depends(require_admin)):
+async def export_backup(request: Request, user: dict = Depends(require_admin)):
     """Πλήρες ZIP backup όλων των collections."""
+    await audit_read(request, user, "backup_export", details="Πλήρης εξαγωγή όλων των δεδομένων του γραφείου")
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     buf = io.BytesIO()
     counts = {}
@@ -82,7 +85,7 @@ async def export_backup(user: dict = Depends(require_admin)):
     return Response(
         content=buf.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="nomos-one-backup-{ts}.zip"'},
+        headers={"Content-Disposition": content_disposition(f"nomos-one-backup-{ts}.zip")},
     )
 
 
@@ -133,7 +136,7 @@ async def import_backup(file: UploadFile = File(...), user: dict = Depends(requi
 
 
 @router.get("/gdpr/client/{client_id}")
-async def gdpr_export_client(client_id: str, user: dict = Depends(get_current_user)):
+async def gdpr_export_client(client_id: str, request: Request, user: dict = Depends(get_current_user)):
     """DSR (Data Subject Request) — εξάγει όλα τα δεδομένα ενός πελάτη σε ZIP.
     Απαιτούμενο από τον GDPR (άρθρο 15 & 20)."""
     try:
@@ -142,6 +145,8 @@ async def gdpr_export_client(client_id: str, user: dict = Depends(get_current_us
         raise HTTPException(status_code=400, detail="Μη έγκυρο id πελάτη.")
     if not client:
         raise HTTPException(status_code=404, detail="Ο πελάτης δεν βρέθηκε.")
+    await audit_read(request, user, "gdpr_export", client_id,
+                     details=f"Εξαγωγή δεδομένων πελάτη «{client.get('name', '')}» (ΓΚΠΔ άρ. 15 & 20)")
 
     invoices = await db.invoices.find(tenant_query(user, {"client_id": client_id})).to_list(5000)
     cases = await db.cases.find(tenant_query(user, {"client_id": client_id})).to_list(5000)
@@ -173,5 +178,5 @@ async def gdpr_export_client(client_id: str, user: dict = Depends(get_current_us
     return Response(
         content=buf.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="gdpr-{safe_name}.zip"'},
+        headers={"Content-Disposition": content_disposition(f"gdpr-{safe_name}.zip")},
     )

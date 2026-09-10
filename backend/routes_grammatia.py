@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from typing import Optional
 from bson import ObjectId
 from db import db
+from http_utils import content_disposition
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from models import Grammatio, Invoice, InvoiceLineItem
@@ -115,11 +116,11 @@ async def grammatio_pdf(gid: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Το γραμμάτιο δεν βρέθηκε")
     settings = await db.settings.find_one(tenant_query(user, {})) or {}
     pdf_bytes = build_grammatio_pdf(doc, settings)
-    safe = (doc.get("number") or "grammatio").replace("ΓΡΠ", "GRP")
+    safe = doc.get("number") or "grammatio"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{safe}.pdf"'},
+        headers={"Content-Disposition": content_disposition(f"{safe}.pdf")},
     )
 
 

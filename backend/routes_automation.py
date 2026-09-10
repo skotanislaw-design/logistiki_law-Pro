@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from db import db
+from http_utils import content_disposition
 from auth import get_current_user, require_admin
 from tenant import tenant_query, firm_id_for
 from models import Notification, AutomationRun, VatPeriod
@@ -184,7 +185,7 @@ async def vat_return_pdf(period: str, user: dict = Depends(get_current_user)):
     data = await _vat_return_payload(user, period)
     pdf = build_vat_return_pdf(data)
     return Response(content=pdf, media_type="application/pdf",
-                    headers={"Content-Disposition": f'attachment; filename="FPA-{period}.pdf"'})
+                    headers={"Content-Disposition": content_disposition(f"FPA-{period}.pdf")})
 
 
 @router.post("/vat-periods/{period}/submitted")
