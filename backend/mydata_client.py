@@ -41,9 +41,24 @@ INVOICE_TYPE_LABELS = {
 }
 RETAIL_TYPES = {TYPE_RECEIPT_B2C}
 
+# Χαρακτηρισμός εσόδων. Οι επιτρεπτοί συνδυασμοί ανά τύπο παραστατικού ορίζονται στο
+# επίσημο `syndiasmoi_xaraktirismwn_v2.0.1.xlsx`: για ΑΠΥ λιανικής (11.2) το
+# E3_561_001 (χονδρικές) **δεν** είναι αποδεκτό — η λιανική θέλει E3_561_003.
+CLASSIFICATION_WHOLESALE = "E3_561_001"   # Χονδρικές — επιτρεπτό στο 2.1
+CLASSIFICATION_RETAIL = "E3_561_003"      # Λιανικές — επιτρεπτό στο 11.2
+
 # Παρακρατούμενος φόρος: taxType 1, κατηγορία 2 = αμοιβές ελεύθερων επαγγελματιών 20%
 WITHHOLDING_TAX_TYPE = "1"
-WITHHOLDING_CATEGORY_FREELANCER = "2"
+
+# Κατηγορία συντελεστή παρακράτησης (Παράρτημα 8.4 του οδηγού ERP v2.0.1):
+#   2  = Δικαιώματα — 20%
+#   3  = Αμοιβές Συμβουλών Διοίκησης — 20%
+#   10 = Προκαταβλητέος Φόρος στις Αμοιβές Δικηγόρων — 15%
+# Η προεπιλογή ήταν «2» (δικαιώματα), που δεν αφορά αμοιβές υπηρεσιών. Το «3» είναι
+# το μόνο συνεπές με τον συντελεστή 20% που ήδη χρησιμοποιεί ο κώδικας και με το
+# επίσημο δείγμα αναφοράς. Αν η πρακτική του γραφείου εμπίπτει στο 10 (15%
+# προκαταβλητέος), ορίζεται μαζί με το `withholding_rate` στις Ρυθμίσεις.
+WITHHOLDING_CATEGORY_SERVICES = "3"
 WITHHOLDING_RATE_FREELANCER = 0.20
 
 
@@ -160,7 +175,11 @@ def build_invoices_doc_xml(invoice: dict, client: dict, settings: dict) -> str:
         raise MyDataError("Το πιστωτικό τιμολόγιο απαιτεί το MARK του αρχικού παραστατικού.")
 
     series, aa = _split_number(invoice.get("number") or "")
-    classification_type = settings.get("income_classification_type") or "E3_561_001"
+    if invoice_type in RETAIL_TYPES:
+        classification_type = (settings.get("income_classification_type_retail")
+                               or CLASSIFICATION_RETAIL)
+    else:
+        classification_type = settings.get("income_classification_type") or CLASSIFICATION_WHOLESALE
     classification_category = settings.get("income_classification_category") or "category1_3"
 
     # Ίδιος υπολογιστής με το αποθηκευμένο τιμολόγιο και το PDF (tax_utils), ώστε το
@@ -187,9 +206,14 @@ def build_invoices_doc_xml(invoice: dict, client: dict, settings: dict) -> str:
             f"</incomeClassification></invoiceDetails>"
         )
 
+    # Η ακαθάριστη αξία είναι **μετά** την παρακράτηση: καθαρή + ΦΠΑ − παρακρατηθέν.
+    # Ο κώδικας δήλωνε το ποσό πριν την παρακράτηση, οπότε κάθε τιμολόγιο με ενεργή
+    # παρακράτηση θα απορριπτόταν από την ΑΑΔΕ με ValidationError 203 («Η Ακαθάριστη
+    # Αξία δεν ταιριάζει με το άθροισμα της καθαρής αξίας συν τους φόρους»).
+    # Το ποσό πληρωμής ισούται με το totalGrossValue (οδηγός ERP v2.0.1, §4.2.5).
     withheld = withholding_for(invoice, settings, invoice_type, float(total_net))
-    total_gross = total_net + total_vat
-    payable = total_gross - Decimal(str(withheld))
+    total_gross = total_net + total_vat - Decimal(str(withheld))
+    payable = total_gross
 
     counterpart = ""
     if invoice_type not in RETAIL_TYPES:
@@ -202,7 +226,7 @@ def build_invoices_doc_xml(invoice: dict, client: dict, settings: dict) -> str:
 
     taxes_xml = ""
     if withheld:
-        category = str(settings.get("withholding_category") or WITHHOLDING_CATEGORY_FREELANCER)
+        category = str(settings.get("withholding_category") or WITHHOLDING_CATEGORY_SERVICES)
         taxes_xml = (
             "<taxesTotals><taxes>"
             f"<taxType>{WITHHOLDING_TAX_TYPE}</taxType>"
