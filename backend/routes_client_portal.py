@@ -6,11 +6,19 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from bson import ObjectId
+from audit import audit_portal_read
 from db import db
 from http_utils import content_disposition
 from models import ClientPortalToken
 from auth import get_current_user
+from rate_limit import enforce, key_for_token
 from tenant import tenant_query, firm_id_for
+
+# Όρια ανά λεπτό για τη **δημόσια** επιφάνεια. Το portal δεν είχε κανένα: επαληθεύτηκε
+# ότι δεχόταν 60 διαδοχικά αιτήματα χωρίς αντίσταση. Τα όρια είναι γενναιόδωρα για
+# πραγματικό πελάτη (το frontend κάνει polling) και σφιχτά για αυτοματοποιημένη κατάχρηση.
+PORTAL_TOKEN_LIMIT = 60      # ανά token
+PORTAL_IP_LIMIT = 120        # ανά IP, ώστε να πιάνεται και η σάρωση πολλών tokens
 
 router = APIRouter(prefix="/client-portal", tags=["client-portal"])
 public_router = APIRouter(prefix="/portal", tags=["portal-public"])
@@ -89,7 +97,6 @@ async def invite_client(payload: InviteRequest, user: dict = Depends(get_current
 
 @router.get("/tokens/{client_id}")
 async def list_client_tokens(client_id: str, user: dict = Depends(get_current_user)):
-    now = datetime.now(timezone.utc).isoformat()
     tokens = await db.client_portal_tokens.find(tenant_query(user, {"client_id": client_id})).sort("created_at", -1).to_list(20)
     return [{
         "id": str(t["_id"]),
@@ -97,7 +104,9 @@ async def list_client_tokens(client_id: str, user: dict = Depends(get_current_us
         "created_at": t.get("created_at"),
         "expires_at": t.get("expires_at"),
         "last_used_at": t.get("last_used_at"),
-        "active": t.get("expires_at", "") > now,
+        # Ίδιος κανόνας λήξης με το ``_validate_token``: αν η οθόνη του δικηγόρου
+        # έκρινε αλλιώς, θα έδειχνε ως ενεργό σύνδεσμο που το portal απορρίπτει.
+        "active": not _is_expired(t.get("expires_at", "")),
     } for t in tokens]
 
 
@@ -114,11 +123,43 @@ async def revoke_token(token_id: str, user: dict = Depends(get_current_user)):
 
 # === PUBLIC ENDPOINTS (no auth, token-based) ===
 
-async def _validate_token(token: str) -> dict:
+def _is_expired(expires_at: str) -> bool:
+    """Λήξη με σύγκριση ημερομηνιών, όχι συμβολοσειρών.
+
+    Η σύγκριση ISO συμβολοσειρών δούλευε όσο και τα δύο μέλη παράγονταν από τον ίδιο
+    κώδικα. Ένα token γραμμένο με άλλη ζώνη ώρας ή χωρίς μικροδευτερόλεπτα θα έσπαγε
+    σιωπηλά τη σύγκριση — και το σφάλμα θα ήταν προς την επικίνδυνη κατεύθυνση.
+    Απουσία ή μη αναγνώσιμη τιμή θεωρείται ληγμένη.
+    """
+    if not expires_at:
+        return True
+    try:
+        exp = datetime.fromisoformat(expires_at)
+    except (TypeError, ValueError):
+        return True
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return exp < datetime.now(timezone.utc)
+
+
+async def _validate_token(token: str, request: Request | None = None) -> dict:
+    """Επικύρωση portal token — **η μοναδική** υλοποίηση για όλη τη δημόσια επιφάνεια.
+
+    Υπήρχε δεύτερο, σχεδόν πανομοιότυπο αντίγραφο στο ``routes_portal_chat.py`` που δεν
+    ενημέρωνε το ``last_used_at``. Αποτέλεσμα: αν ο πελάτης χρησιμοποιούσε μόνο τη
+    συνομιλία, η στήλη «τελευταία χρήση» στην οθόνη του δικηγόρου έλεγε ψέματα — και ο
+    δικηγόρος θα ανακαλούσε έναν σύνδεσμο που φαινόταν αχρησιμοποίητος ενώ ήταν ενεργός.
+    """
+    # Ο περιορισμός προηγείται της αναζήτησης: το κόστος του είναι μία εγγραφή με κλειδί
+    # το ``_id``, ενώ κάθε αποτυχημένη δοκιμή token χτυπούσε τη collection των tokens.
+    await enforce("portal:token", key_for_token(token), PORTAL_TOKEN_LIMIT, 60)
+    if request is not None and request.client:
+        await enforce("portal:ip", request.client.host, PORTAL_IP_LIMIT, 60)
+
     tk = await db.client_portal_tokens.find_one({"token": token})
     if not tk:
         raise HTTPException(status_code=404, detail="Ο σύνδεσμος δεν είναι έγκυρος")
-    if tk.get("expires_at", "") < datetime.now(timezone.utc).isoformat():
+    if _is_expired(tk.get("expires_at", "")):
         raise HTTPException(status_code=401, detail="Ο σύνδεσμος έχει λήξει")
     await db.client_portal_tokens.update_one(
         {"_id": tk["_id"]},
@@ -128,9 +169,9 @@ async def _validate_token(token: str) -> dict:
 
 
 @public_router.get("/{token}")
-async def portal_data(token: str):
+async def portal_data(token: str, request: Request):
     """Επιστρέφει όλα τα δεδομένα που βλέπει ο πελάτης."""
-    tk = await _validate_token(token)
+    tk = await _validate_token(token, request)
     client_id = tk["client_id"]
 
     settings = await db.settings.find_one({"firm_id": tk.get("firm_id", "legacy-default-firm")}) or {}
@@ -146,7 +187,7 @@ async def portal_data(token: str):
     cases = await db.cases.find({"client_id": client_id, "firm_id": firm}).sort("created_at", -1).to_list(50)
     trust = await db.trust_accounts.find_one({"client_id": client_id, "firm_id": firm})
 
-    return {
+    payload = {
         "firm": {
             "name": settings.get("company_name", "Nomos One"),
             "address": settings.get("address", ""),
@@ -189,13 +230,16 @@ async def portal_data(token: str):
             "active_cases": sum(1 for c in cases if c.get("status") == "active"),
         },
     }
+    await audit_portal_read(request, tk, "client_portal",
+                            details=f"Άνοιγμα φακέλου: {len(invoices)} τιμολόγια, {len(cases)} υποθέσεις")
+    return payload
 
 
 @public_router.get("/{token}/invoice/{invoice_id}/pdf")
-async def portal_invoice_pdf(token: str, invoice_id: str):
+async def portal_invoice_pdf(token: str, invoice_id: str, request: Request):
     from fastapi.responses import Response
     from pdf_utils import build_invoice_pdf
-    tk = await _validate_token(token)
+    tk = await _validate_token(token, request)
     try:
         inv = await db.invoices.find_one({"_id": ObjectId(invoice_id), "firm_id": tk.get("firm_id", "legacy-default-firm")})
     except Exception:
@@ -206,5 +250,7 @@ async def portal_invoice_pdf(token: str, invoice_id: str):
     settings = await db.settings.find_one({"firm_id": tk.get("firm_id", "legacy-default-firm")}) or {}
     pdf_bytes = build_invoice_pdf(inv, client or {}, settings)
     safe = inv.get("number") or "invoice"
+    await audit_portal_read(request, tk, "invoices", invoice_id,
+                            details=f"Λήψη PDF τιμολογίου {safe} από το portal")
     return Response(content=pdf_bytes, media_type="application/pdf",
                     headers={"Content-Disposition": content_disposition(f"{safe}.pdf")})
