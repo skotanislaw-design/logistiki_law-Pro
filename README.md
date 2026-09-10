@@ -27,7 +27,7 @@
 - Σας στέλνει **ένα** ενημερωτικό email (καθημερινά ή κάθε Δευτέρα) με ό,τι έκανε και ό,τι περιμένει απόφαση
 - Ελέγχει ότι τα **αντίγραφα ασφαλείας** υπάρχουν και ανοίγουν, και σας ειδοποιεί αν χαλάσουν
 
-Σελίδα `/autopilot`, τεκμηρίωση: [`docs/AUTOPILOT.md`](./docs/AUTOPILOT.md). Ανάλυση ετοιμότητας: [`docs/READINESS_ANALYSIS.md`](./docs/READINESS_ANALYSIS.md).
+Σελίδα `/autopilot`, τεκμηρίωση: [`docs/AUTOPILOT.md`](./docs/AUTOPILOT.md). Ανάλυση ετοιμότητας: [`docs/READINESS_ANALYSIS.md`](./docs/READINESS_ANALYSIS.md). Ανεξάρτητος έλεγχος: [`docs/AUDIT.md`](./docs/AUDIT.md).
 
 ---
 
