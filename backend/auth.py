@@ -24,9 +24,10 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def create_access_token(user_id: str, email: str) -> str:
+    now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id, "email": email,
-        "exp": datetime.now(timezone.utc) + timedelta(minutes=30),
+        "iat": now, "exp": now + timedelta(minutes=30),
         "type": "access",
     }
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
@@ -56,12 +57,35 @@ def decode_mfa_token(token: str) -> str:
 
 
 def create_refresh_token(user_id: str) -> str:
+    now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
-        "exp": datetime.now(timezone.utc) + timedelta(days=7),
+        "iat": now, "exp": now + timedelta(days=7),
         "type": "refresh",
     }
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
+
+
+def token_predates_password_change(payload: dict, user: dict) -> bool:
+    """Το token εκδόθηκε πριν την τελευταία αλλαγή κωδικού;
+
+    Χωρίς αυτόν τον έλεγχο, η επαναφορά κωδικού δεν έδιωχνε κανέναν: το refresh
+    token επτά ημερών του επιτιθέμενου συνέχιζε να δουλεύει κανονικά.
+
+    Tokens εκδοθέντα πριν από αυτή την αναβάθμιση δεν φέρουν ``iat``· τους δίνεται
+    χάρη ώστε η αναβάθμιση να μην αποσυνδέσει όλους τους χρήστες.
+    """
+    changed = user.get("password_changed_at")
+    issued_at = payload.get("iat")
+    if not changed or issued_at is None:
+        return False
+    try:
+        changed_dt = datetime.fromisoformat(changed)
+    except (TypeError, ValueError):
+        return False
+    if changed_dt.tzinfo is None:
+        changed_dt = changed_dt.replace(tzinfo=timezone.utc)
+    return float(issued_at) < changed_dt.timestamp()
 
 
 def set_auth_cookies(response, access_token: str, refresh_token: str):
@@ -84,6 +108,8 @@ async def get_current_user(request: Request) -> dict:
         user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
         if not user:
             raise HTTPException(status_code=401, detail="Ο χρήστης δεν βρέθηκε")
+        if token_predates_password_change(payload, user):
+            raise HTTPException(status_code=401, detail="Ο κωδικός άλλαξε. Συνδεθείτε ξανά.")
         user["_id"] = str(user["_id"])
         # Τα μυστικά δεν ταξιδεύουν με το request-scoped user object: όποιο endpoint τα
         # χρειάζεται τα φορτώνει ρητά από τη βάση.

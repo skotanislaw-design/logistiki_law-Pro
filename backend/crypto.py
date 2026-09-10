@@ -20,68 +20,128 @@ import logging
 import os
 
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 logger = logging.getLogger(__name__)
 
-# Διακριτικό ώστε να ξεχωρίζει μια κρυπτογραφημένη τιμή από μια παλιά plaintext.
-PREFIX = "enc:v1:"
+# Διακριτικά ώστε να ξεχωρίζει μια κρυπτογραφημένη τιμή από μια παλιά plaintext.
+# v1: σκέτο SHA-256 πάνω στο passphrase — χωρίς KDF, χωρίς salt, μία πράξη ανά δοκιμή.
+#     Διατηρείται ΜΟΝΟ για ανάγνωση ήδη αποθηκευμένων τιμών.
+# v2: PBKDF2-HMAC-SHA256. Το κόστος ανά δοκιμή κλειδιού μεγαλώνει κατά ~6 τάξεις μεγέθους,
+#     ώστε ένα ανθρώπινο passphrase να μην είναι πλέον εύκολα εξαντλητικά επιτιθέμενο.
+#     Το salt είναι σταθερό ανά εγκατάσταση (το κλειδί πρέπει να παράγεται ξανά σε κάθε
+#     εκκίνηση χωρίς αποθηκευμένη κατάσταση)· αυτό αποτρέπει γενικούς rainbow πίνακες
+#     αλλά όχι στοχευμένη επίθεση — γι' αυτό το SECRETS_KEY παραμένει η σωστή ρύθμιση.
+PREFIX_V1 = "enc:v1:"
+PREFIX_V2 = "enc:v2:"
+PREFIX = PREFIX_V1  # συμβατότητα με υπάρχοντα imports
+_PBKDF2_ITERATIONS = 600_000
+_PBKDF2_SALT = b"nomos-one/secrets/v2"
 
 # Πεδία του Settings που δεν επιτρέπεται να φύγουν ποτέ προς τον client.
 SECRET_SETTINGS_FIELDS = ("smtp_password", "imap_password", "aade_subscription_key", "gocardless_secret_key")
 MASK = "••••••••"
 
-_fernet: Fernet | None = None
+_fernet_v1: Fernet | None = None
+_fernet_v2: Fernet | None = None
 
 
-def _derive_key() -> bytes:
+def _ready_fernet_key() -> bytes | None:
+    """Αν το SECRETS_KEY είναι ήδη έτοιμο Fernet key (32 bytes base64), χρησιμοποιείται
+    αυτούσιο: είναι τυχαίο κλειδί, δεν χρειάζεται — ούτε ωφελείται από — KDF."""
+    raw = os.environ.get("SECRETS_KEY") or ""
+    if not raw:
+        return None
+    try:
+        candidate = raw.encode()
+        if len(base64.urlsafe_b64decode(candidate)) == 32:
+            return candidate
+    except Exception:
+        pass
+    return None
+
+
+def _key_material() -> str:
     raw = os.environ.get("SECRETS_KEY") or ""
     if raw:
-        # Δεκτό είτε έτοιμο Fernet key (44 chars urlsafe base64) είτε οποιοδήποτε passphrase.
-        try:
-            candidate = raw.encode()
-            if len(base64.urlsafe_b64decode(candidate)) == 32:
-                return candidate
-        except Exception:
-            pass
-        return base64.urlsafe_b64encode(hashlib.sha256(raw.encode()).digest())
+        return raw
     fallback = os.environ.get("JWT_SECRET")
     if not fallback:
         raise RuntimeError("Ορίστε SECRETS_KEY (ή τουλάχιστον JWT_SECRET) για την κρυπτογράφηση μυστικών.")
-    return base64.urlsafe_b64encode(hashlib.sha256(f"nomos-secrets:{fallback}".encode()).digest())
+    return f"nomos-secrets:{fallback}"
 
 
-def _cipher() -> Fernet:
-    global _fernet
-    if _fernet is None:
-        _fernet = Fernet(_derive_key())
-    return _fernet
+def _derive_key_v1() -> bytes:
+    """Παλιά παραγωγή κλειδιού — μόνο για αποκρυπτογράφηση υπαρχόντων τιμών."""
+    ready = _ready_fernet_key()
+    if ready:
+        return ready
+    return base64.urlsafe_b64encode(hashlib.sha256(_key_material().encode()).digest())
+
+
+def _derive_key_v2() -> bytes:
+    ready = _ready_fernet_key()
+    if ready:
+        return ready
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
+                     salt=_PBKDF2_SALT, iterations=_PBKDF2_ITERATIONS)
+    return base64.urlsafe_b64encode(kdf.derive(_key_material().encode()))
+
+
+def _cipher_v1() -> Fernet:
+    global _fernet_v1
+    if _fernet_v1 is None:
+        _fernet_v1 = Fernet(_derive_key_v1())
+    return _fernet_v1
+
+
+def _cipher_v2() -> Fernet:
+    global _fernet_v2
+    if _fernet_v2 is None:
+        _fernet_v2 = Fernet(_derive_key_v2())
+    return _fernet_v2
 
 
 def reset_cipher_cache():
     """Για tests που αλλάζουν το SECRETS_KEY μέσα στη διαδικασία."""
-    global _fernet
-    _fernet = None
+    global _fernet_v1, _fernet_v2
+    _fernet_v1 = None
+    _fernet_v2 = None
 
 
 def is_encrypted(value) -> bool:
-    return isinstance(value, str) and value.startswith(PREFIX)
+    return isinstance(value, str) and value.startswith((PREFIX_V1, PREFIX_V2))
 
 
 def encrypt(value: str) -> str:
-    """Κρυπτογραφεί μια τιμή. Κενό μένει κενό· ήδη κρυπτογραφημένο δεν διπλοκρυπτογραφείται."""
+    """Κρυπτογραφεί μια τιμή. Κενό μένει κενό· ήδη κρυπτογραφημένο δεν διπλοκρυπτογραφείται.
+
+    Τιμή αποθηκευμένη με v1 αναβαθμίζεται σε v2 με την πρώτη επανεγγραφή — αν δεν
+    μπορεί να αποκρυπτογραφηθεί (αλλαγμένο κλειδί) μένει ως έχει, χωρίς απώλεια.
+    """
     if not value:
         return value
-    if is_encrypted(value):
+    if value.startswith(PREFIX_V2):
         return value
-    return PREFIX + _cipher().encrypt(value.encode("utf-8")).decode("ascii")
+    if value.startswith(PREFIX_V1):
+        plain = decrypt(value)
+        if not plain:
+            return value
+        value = plain
+    return PREFIX_V2 + _cipher_v2().encrypt(value.encode("utf-8")).decode("ascii")
 
 
 def decrypt(value: str) -> str:
     """Αποκρυπτογραφεί. Παλιά plaintext τιμή επιστρέφεται ως έχει (backwards compatible)."""
     if not value or not is_encrypted(value):
         return value or ""
+    if value.startswith(PREFIX_V2):
+        token, cipher = value[len(PREFIX_V2):], _cipher_v2()
+    else:
+        token, cipher = value[len(PREFIX_V1):], _cipher_v1()
     try:
-        return _cipher().decrypt(value[len(PREFIX):].encode("ascii")).decode("utf-8")
+        return cipher.decrypt(token.encode("ascii")).decode("utf-8")
     except InvalidToken:
         # Λάθος/αλλαγμένο κλειδί: μην σκάσεις — το feature απλώς δεν θα λειτουργήσει
         # και ο χρήστης θα κληθεί να ξανακαταχωρήσει το μυστικό.

@@ -24,7 +24,7 @@ jobs:
         env:
           MONGO_URL: mongomock://
           DB_NAME: nomos_ci
-          JWT_SECRET: ci-secret
+          JWT_SECRET: ci-secret-key-with-enough-entropy-for-hs256
           STORAGE_BACKEND: local
           AUTOPILOT_SCHEDULER: "0"
 

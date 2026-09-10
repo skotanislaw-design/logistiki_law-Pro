@@ -33,7 +33,7 @@ from bson import ObjectId
 from db import db
 from crypto import decrypt
 from models import Notification, AutomationRun, VatPeriod, Expense
-from tax_utils import generate_tax_calendar, next_vat_deadline
+from tax_utils import generate_tax_calendar, vat_deadline_for_period_end
 from email_utils import smtp_ready, send_email_with_pdf
 from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
@@ -296,7 +296,7 @@ def closed_vat_periods(today: _date, vat_period: str = "monthly", lookback: int 
             end = (start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
             periods.append({"period": f"{y}-{m:02d}", "start": start, "end": end})
     for p in periods:
-        p["due"] = next_vat_deadline(p["end"], vat_period)
+        p["due"] = vat_deadline_for_period_end(p["end"], vat_period)
     return list(reversed(periods))
 
 
@@ -960,13 +960,26 @@ async def run_firm(firm_id: str, jobs: list[str] | None = None, force: bool = Fa
     return results
 
 
+async def all_firm_ids() -> list[str]:
+    """Κάθε γραφείο που έχει χρήστη — όχι μόνο όσα έχουν αποθηκευμένες ρυθμίσεις.
+
+    Το έγγραφο settings δημιουργείται στο πρώτο ``GET /api/settings``, δηλαδή στο πρώτο
+    άνοιγμα του Dashboard. Γραφεία που δημιουργήθηκαν μέσω API, import ή seed και δεν
+    ανοίχτηκαν ποτέ στο UI έμεναν εκτός Autopilot χωρίς καμία ένδειξη πουθενά: κανένα
+    τιμολόγιο δεν στελνόταν, καμία υπενθύμιση, κανένα κλείσιμο ΦΠΑ.
+    """
+    ids = set(await db.settings.distinct("firm_id"))
+    ids.update(await db.users.distinct("firm_id"))
+    return sorted(i for i in ids if i)
+
+
 async def run_autopilot_cycle(jobs: list[str] | None = None, only_firm: str | None = None, force: bool = False) -> dict:
     """Entry point for the scheduler and the «Εκτέλεση τώρα» button."""
     if not await acquire_lock("autopilot_cycle", ttl_seconds=900):
         return {"skipped": True, "reason": "another worker is running the cycle"}
     summary = {"firms": 0, "runs": 0, "errors": 0, "started_at": _now()}
     try:
-        firm_ids = [only_firm] if only_firm else await db.settings.distinct("firm_id")
+        firm_ids = [only_firm] if only_firm else await all_firm_ids()
         for firm_id in firm_ids:
             if not firm_id:
                 continue

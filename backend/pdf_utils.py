@@ -7,6 +7,17 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
 from reportlab.lib.styles import ParagraphStyle
 
+
+def _gr_date(value) -> str:
+    """ΕΕΕΕ-ΜΜ-ΗΗ -> ΗΗ/ΜΜ/ΕΕΕΕ. Ελληνικό παραστατικό δεν γράφει ISO ημερομηνία."""
+    from datetime import date as _date
+    try:
+        return _date.fromisoformat(str(value)).strftime("%d/%m/%Y")
+    except (TypeError, ValueError):
+        return str(value or "—")
+
+
+
 # Greek-capable TrueType fonts. The first pair that exists on the host wins; without any
 # of them we fall back to ReportLab's built-in Helvetica so the API never fails to import
 # (the original hard-coded FreeSans path crashed the whole backend on hosts without it).
@@ -84,7 +95,7 @@ def build_invoice_pdf(invoice: dict, client: dict, settings: dict) -> bytes:
         _p("ΤΙΜΟΛΟΓΙΟ ΠΑΡΟΧΗΣ ΥΠΗΡΕΣΙΩΝ", 10, bold=True, color=colors.white, align=2),
         Spacer(1, 3),
         _p(invoice.get("number") or "—", 13, bold=True, color=GOLD, align=2),
-        _p(f"Ημερομηνία: {invoice.get('date', '—')}", 8.5, color=colors.HexColor("#aeb6c8"), align=2),
+        _p(f"Ημερομηνία: {_gr_date(invoice.get('date'))}", 8.5, color=colors.HexColor("#aeb6c8"), align=2),
         _p(f"Κατάσταση: {STATUS_LABEL.get(invoice.get('status'), '—')}", 8.5, color=colors.HexColor("#aeb6c8"), align=2),
     ]
 

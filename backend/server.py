@@ -126,6 +126,39 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
+def validate_environment() -> None:
+    """Αποτυγχάνουμε στην εκκίνηση, όχι στο πρώτο login.
+
+    Το docker-compose ορίζει JWT_SECRET="" όταν λείπει από το .env. Ο server ξεκινούσε
+    τότε «υγιής» (το /api/health δεν αγγίζει JWT) και κάθε login επέστρεφε 500 με
+    InvalidKeyError — η χειρότερη δυνατή εμπειρία για τον διαχειριστή.
+    """
+    secret = os.environ.get("JWT_SECRET") or ""
+    if not secret.strip():
+        raise RuntimeError(
+            "Το JWT_SECRET δεν έχει οριστεί. Ορίστε το στο .env (τυχαία συμβολοσειρά "
+            "τουλάχιστον 32 χαρακτήρων) — χωρίς αυτό καμία σύνδεση δεν λειτουργεί."
+        )
+    if len(secret) < 32:
+        logger.warning(
+            "Το JWT_SECRET έχει μόνο %d χαρακτήρες. Συνιστώνται τουλάχιστον 32 για HS256.",
+            len(secret),
+        )
+    if not (os.environ.get("SECRETS_KEY") or "").strip():
+        logger.warning(
+            "Το SECRETS_KEY δεν έχει οριστεί — τα αποθηκευμένα μυστικά κρυπτογραφούνται με "
+            "κλειδί παραγόμενο από το JWT_SECRET. Αλλαγή του JWT_SECRET θα τα καταστήσει μη αναγνώσιμα."
+        )
+    if os.environ.get("STRIPE_SECRET_KEY") and not os.environ.get("STRIPE_WEBHOOK_SECRET"):
+        logger.warning(
+            "Το STRIPE_WEBHOOK_SECRET λείπει ενώ οι πληρωμές είναι ενεργές: κάθε webhook θα "
+            "απορρίπτεται και οι εξοφλήσεις θα εντοπίζονται μόνο μέσω polling."
+        )
+
+
+validate_environment()
+
+
 async def seed_admin():
     """First-run admin. A password is only forced from the environment when ADMIN_PASSWORD is
     explicitly set; otherwise a random one is generated once and printed to the log."""
