@@ -9,7 +9,7 @@ from db import db
 from models import Invoice
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
-from tax_utils import calculate_invoice_totals
+from tax_utils import calculate_invoice_totals, VALID_VAT_RATES
 from ai_helpers import transcribe_audio, parse_invoice_from_text
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
@@ -64,9 +64,56 @@ async def get_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
     return Invoice.from_mongo(doc)
 
 
+def _validate_invoice_payload(payload: Invoice) -> None:
+    """Επικύρωση στο route, όχι στο μοντέλο.
+
+    Το ίδιο μοντέλο διαβάζει και υπάρχουσες εγγραφές από τη Mongo· αυστηροί
+    validators εκεί θα έσπαγαν την ανάγνωση παλιών τιμολογίων που γράφτηκαν πριν
+    μπει ο έλεγχος. Εδώ ελέγχουμε μόνο ό,τι φτάνει από τον χρήστη.
+    """
+    from datetime import date as _date
+
+    if not payload.line_items:
+        raise HTTPException(status_code=400, detail="Το τιμολόγιο πρέπει να έχει τουλάχιστον μία γραμμή.")
+    try:
+        _date.fromisoformat(payload.date)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Μη έγκυρη ημερομηνία — αναμένεται μορφή ΕΕΕΕ-ΜΜ-ΗΗ.")
+    for idx, line in enumerate(payload.line_items, start=1):
+        if not (line.description or "").strip():
+            raise HTTPException(status_code=400, detail=f"Γραμμή {idx}: απαιτείται περιγραφή.")
+        if line.quantity <= 0:
+            raise HTTPException(status_code=400, detail=f"Γραμμή {idx}: η ποσότητα πρέπει να είναι θετική.")
+        if line.vat_rate not in VALID_VAT_RATES:
+            allowed = ", ".join(f"{r}%" for r in VALID_VAT_RATES)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Γραμμή {idx}: μη έγκυρος συντελεστής ΦΠΑ {line.vat_rate}%. Επιτρέπονται: {allowed}.",
+            )
+
+
+def _reset_lifecycle_fields(payload: Invoice) -> None:
+    """Η κατάσταση έκδοσης και διαβίβασης ανήκει στον server.
+
+    Χωρίς αυτό, ένα POST μπορούσε να δηλώσει status="paid" και mydata_status="synced"
+    με πλαστό MARK, δηλαδή παραστατικό που εμφανίζεται διαβιβασμένο στην ΑΑΔΕ χωρίς
+    ποτέ να έχει σταλεί. Η κατάσταση αλλάζει μόνο μέσω /issue, /mark-paid, /cancel
+    και του Autopilot.
+    """
+    payload.status = "draft"
+    payload.mydata_status = "not_sent"
+    payload.mydata_mark = None
+    payload.mydata_uid = None
+    payload.mydata_error = None
+    payload.paid_at = None
+    payload.issued_at = None
+
+
 @router.post("")
 async def create_invoice(payload: Invoice, user: dict = Depends(get_current_user)):
     payload.id = None
+    _validate_invoice_payload(payload)
+    _reset_lifecycle_fields(payload)
     client_doc = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(payload.client_id)}))
     if not client_doc:
         raise HTTPException(status_code=404, detail="Ο πελάτης δεν βρέθηκε")
@@ -77,6 +124,8 @@ async def create_invoice(payload: Invoice, user: dict = Depends(get_current_user
     payload.vat_amount = totals["vat_amount"]
     payload.total = totals["total"]
     payload.vat_breakdown = totals["vat_breakdown"]
+    if payload.total <= 0:
+        raise HTTPException(status_code=400, detail="Το σύνολο του τιμολογίου πρέπει να είναι θετικό.")
     payload.number = await _next_invoice_number(firm_id_for(user))
     payload.created_by = user["email"]
     result = await db.invoices.insert_one(payload.to_mongo())
@@ -93,6 +142,16 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
     existing = await db.invoices.find_one(tenant_query(user, {"_id": invoice_oid}))
     if not existing:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    if existing.get("status") != "draft":
+        raise HTTPException(status_code=400, detail="Μόνο πρόχειρα τιμολόγια μπορούν να τροποποιηθούν.")
+    _validate_invoice_payload(payload)
+    # Η κατάσταση έκδοσης/διαβίβασης δεν έρχεται ποτέ από τον client.
+    payload.status = existing.get("status", "draft")
+    payload.mydata_status = existing.get("mydata_status", "not_sent")
+    payload.mydata_mark = existing.get("mydata_mark")
+    payload.mydata_uid = existing.get("mydata_uid")
+    payload.paid_at = existing.get("paid_at")
+    payload.issued_at = existing.get("issued_at")
     client_doc = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(payload.client_id)}))
     if not client_doc:
         raise HTTPException(status_code=404, detail="Ο πελάτης δεν βρέθηκε")
@@ -118,10 +177,18 @@ async def delete_invoice(invoice_id: str, user: dict = Depends(get_current_user)
         invoice_oid = ObjectId(invoice_id)
     except Exception:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
-    result = await db.invoices.delete_one(tenant_query(user, {"_id": invoice_oid}))
-    if result.deleted_count == 0:
+    existing = await db.invoices.find_one(tenant_query(user, {"_id": invoice_oid}))
+    if not existing:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
-    return {"message": "Το τιμολόγιο διαγράφηκε"}
+    # ΕΛΠ (Ν.4308/2014): εκδοθέν παραστατικό δεν διαγράφεται — ακυρώνεται με πιστωτικό
+    # ή αίτημα ακύρωσης στο myDATA, ώστε η σειρά αρίθμησης να μένει αδιάσπαστη.
+    if existing.get("status") != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail="Εκδοθέν τιμολόγιο δεν διαγράφεται. Χρησιμοποιήστε ακύρωση ή πιστωτικό τιμολόγιο.",
+        )
+    await db.invoices.delete_one(tenant_query(user, {"_id": invoice_oid}))
+    return {"message": "Το πρόχειρο τιμολόγιο διαγράφηκε"}
 
 
 @router.post("/{invoice_id}/issue")
