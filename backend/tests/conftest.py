@@ -5,7 +5,7 @@ from pathlib import Path
 
 os.environ.setdefault("MONGO_URL", "mongomock://")
 os.environ.setdefault("DB_NAME", "nomos_test")
-os.environ.setdefault("JWT_SECRET", "test-secret")
+os.environ.setdefault("JWT_SECRET", "test-secret-key-with-enough-entropy-for-hs256")
 os.environ.setdefault("STORAGE_BACKEND", "local")
 os.environ.setdefault("UPLOAD_DIR", str(Path(__file__).parent / ".uploads"))
 os.environ.setdefault("AUTOPILOT_SCHEDULER", "0")

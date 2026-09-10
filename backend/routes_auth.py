@@ -37,9 +37,28 @@ def to_public(user: dict) -> dict:
             "firm_id": firm_id_for(user), "mfa_enabled": bool(user.get("mfa_enabled"))}
 
 
+MIN_PASSWORD_LENGTH = 10
+
+
+def _validate_password(password: str) -> None:
+    """Ελάχιστη πολιτική κωδικού. Πριν από αυτό, το «a» ήταν αποδεκτός κωδικός."""
+    pw = password or ""
+    if len(pw) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ο κωδικός πρέπει να έχει τουλάχιστον {MIN_PASSWORD_LENGTH} χαρακτήρες.",
+        )
+    if pw.isdigit() or pw.isalpha():
+        raise HTTPException(
+            status_code=400,
+            detail="Ο κωδικός πρέπει να συνδυάζει γράμματα με αριθμούς ή σύμβολα.",
+        )
+
+
 @router.post("/register")
 async def register(payload: RegisterRequest, response: Response):
     email = payload.email.lower()
+    _validate_password(payload.password)
     existing = await db.users.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=400, detail="Υπάρχει ήδη χρήστης με αυτό το email")
@@ -102,6 +121,9 @@ async def refresh_token(request: Request, response: Response):
     user = await db.users.find_one({"_id": __import__("bson").ObjectId(payload["sub"])})
     if not user:
         raise HTTPException(status_code=401, detail="Ο χρήστης δεν βρέθηκε")
+    from auth import token_predates_password_change
+    if token_predates_password_change(payload, user):
+        raise HTTPException(status_code=401, detail="Ο κωδικός άλλαξε. Συνδεθείτε ξανά.")
     access = create_access_token(str(user["_id"]), user["email"])
     response.set_cookie(key="access_token", value=access, httponly=True, secure=True, samesite="none", max_age=1800, path="/")
     return {"message": "ok"}
@@ -157,7 +179,14 @@ async def reset_password(payload: ResetPasswordRequest):
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) > expires_at:
         raise HTTPException(status_code=400, detail="Το token έχει λήξει")
-    await db.users.update_one({"email": rec["email"]}, {"$set": {"password_hash": hash_password(payload.new_password)}})
+    _validate_password(payload.new_password)
+    # Το password_changed_at ακυρώνει κάθε token που είχε εκδοθεί νωρίτερα: η επαναφορά
+    # κωδικού διώχνει και όποιον είχε ήδη ενεργή συνεδρία.
+    await db.users.update_one(
+        {"email": rec["email"]},
+        {"$set": {"password_hash": hash_password(payload.new_password),
+                  "password_changed_at": datetime.now(timezone.utc).isoformat()}},
+    )
     await db.password_reset_tokens.update_one({"token": payload.token}, {"$set": {"used": True}})
     return {"message": "Ο κωδικός πρόσβασης άλλαξε επιτυχώς"}
 

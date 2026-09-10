@@ -256,3 +256,71 @@ def test_settings_never_return_secrets_to_the_client(client):
     client.patch("/api/settings", json={"smtp_from_name": "Γραφείο"})
     again = loop.run_until_complete(db.settings.find_one({}))
     assert crypto.decrypt(again["smtp_password"]) == "app-secret"
+
+
+# --------------------------------------------------------------------------
+# Ευρήματα ελέγχου: πολιτική κωδικών και ακύρωση συνεδριών μετά από επαναφορά.
+# --------------------------------------------------------------------------
+
+def _fresh_client():
+    from fastapi.testclient import TestClient
+    import server
+    return TestClient(server.app, base_url="https://testserver")
+
+
+@pytest.mark.parametrize("weak", ["a", "12345", "short", "123456789", "αβγδεζηθικ", "1234567890"])
+def test_registration_rejects_weak_passwords(weak):
+    """Πριν τη διόρθωση, ο κωδικός «a» γινόταν δεκτός με HTTP 200."""
+    with _fresh_client() as c:
+        r = c.post("/api/auth/register", json={"email": "w@example.gr", "password": weak, "name": "Αδύναμος"})
+        assert r.status_code == 400, f"{weak!r} έγινε δεκτός"
+
+
+def test_registration_accepts_a_reasonable_password():
+    with _fresh_client() as c:
+        r = c.post("/api/auth/register", json={"email": "ok@example.gr", "password": "Str0ngPass!", "name": "Εντάξει"})
+        assert r.status_code == 200, r.text
+
+
+def test_password_reset_invalidates_existing_sessions():
+    """Το refresh token επτά ημερών συνέχιζε να δουλεύει μετά την επαναφορά κωδικού."""
+    import asyncio
+    from db import db
+
+    with _fresh_client() as c:
+        c.post("/api/auth/register", json={"email": "victim@example.gr", "password": "Str0ngPass!", "name": "Θύμα"})
+        assert c.get("/api/auth/me").status_code == 200
+
+        c.post("/api/auth/forgot-password", json={"email": "victim@example.gr"})
+        loop = asyncio.get_event_loop_policy().new_event_loop()
+        rec = loop.run_until_complete(db.password_reset_tokens.find_one({"email": "victim@example.gr"}))
+        assert rec, "δεν δημιουργήθηκε token επαναφοράς"
+
+        r = c.post("/api/auth/reset-password", json={"token": rec["token"], "new_password": "An0therPass!"})
+        assert r.status_code == 200, r.text
+
+        # Το cookie της παλιάς συνεδρίας υπάρχει ακόμη στον client αλλά δεν ισχύει πλέον.
+        assert c.get("/api/auth/me").status_code == 401
+        assert c.post("/api/auth/refresh").status_code == 401
+
+
+def test_password_reset_also_enforces_the_policy():
+    import asyncio
+    from db import db
+
+    with _fresh_client() as c:
+        c.post("/api/auth/register", json={"email": "u2@example.gr", "password": "Str0ngPass!", "name": "Χρήστης"})
+        c.post("/api/auth/forgot-password", json={"email": "u2@example.gr"})
+        loop = asyncio.get_event_loop_policy().new_event_loop()
+        rec = loop.run_until_complete(db.password_reset_tokens.find_one({"email": "u2@example.gr"}))
+        r = c.post("/api/auth/reset-password", json={"token": rec["token"], "new_password": "a"})
+        assert r.status_code == 400
+
+
+def test_missing_jwt_secret_fails_at_startup_not_at_login(monkeypatch):
+    """Το compose όριζε JWT_SECRET="" όταν έλειπε από το .env: ο server ξεκινούσε
+    «υγιής» και κάθε login επέστρεφε 500."""
+    import server
+    monkeypatch.setenv("JWT_SECRET", "")
+    with pytest.raises(RuntimeError, match="JWT_SECRET"):
+        server.validate_environment()
