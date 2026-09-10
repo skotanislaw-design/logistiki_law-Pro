@@ -12,11 +12,36 @@ import mfa
 
 def test_encrypt_roundtrip_and_prefix():
     token = crypto.encrypt("app-password-123")
-    assert token.startswith(crypto.PREFIX)
+    assert token.startswith(crypto.PREFIX_V2)        # νέες εγγραφές πάνε σε PBKDF2
     assert "app-password-123" not in token          # δεν διαρρέει το plaintext
     assert crypto.decrypt(token) == "app-password-123"
     assert crypto.encrypt(token) == token            # δεν διπλοκρυπτογραφείται
     assert crypto.encrypt("") == "" and crypto.decrypt("") == ""
+
+
+def test_v1_secrets_stay_readable_and_upgrade_on_rewrite():
+    """Εγκαταστάσεις με μυστικά γραμμένα πριν το PBKDF2 δεν επιτρέπεται να χάσουν πρόσβαση."""
+    legacy = crypto.PREFIX_V1 + crypto._cipher_v1().encrypt(b"smtp-pw").decode("ascii")
+    assert crypto.is_encrypted(legacy) is True
+    assert crypto.decrypt(legacy) == "smtp-pw"       # διαβάζεται κανονικά
+
+    upgraded = crypto.encrypt(legacy)                # αναβάθμιση με την πρώτη επανεγγραφή
+    assert upgraded.startswith(crypto.PREFIX_V2)
+    assert crypto.decrypt(upgraded) == "smtp-pw"
+
+
+def test_ready_fernet_key_is_used_verbatim(monkeypatch):
+    """Έτοιμο τυχαίο κλειδί δεν περνά από KDF — δεν το χρειάζεται."""
+    import base64, os
+    key = base64.urlsafe_b64encode(os.urandom(32)).decode()
+    monkeypatch.setenv("SECRETS_KEY", key)
+    crypto.reset_cipher_cache()
+    try:
+        assert crypto._derive_key_v2() == key.encode()
+        assert crypto.decrypt(crypto.encrypt("x")) == "x"
+    finally:
+        monkeypatch.delenv("SECRETS_KEY", raising=False)
+        crypto.reset_cipher_cache()
 
 
 def test_legacy_plaintext_still_readable():
