@@ -412,3 +412,26 @@ async def test_payable_amount_subtracts_withholding():
     assert (payable, withheld) == (1040.0, 200.0)
     plain, none_withheld = await svc.payable_amount(FIRM, inv, {**settings, "withholding_enabled": False})
     assert (plain, none_withheld) == (1240.0, 0.0)
+
+
+def test_autopilot_covers_firms_that_never_opened_the_dashboard():
+    """Ο Autopilot άντλησε γραφεία από τη settings, που γράφεται στο πρώτο άνοιγμα του
+    Dashboard: γραφεία δημιουργημένα μέσω API/import έμεναν εκτός χωρίς καμία ένδειξη."""
+    import asyncio
+    from fastapi.testclient import TestClient
+    import server
+    from db import db
+    from automation import all_firm_ids, run_autopilot_cycle
+
+    with TestClient(server.app, base_url="https://testserver") as c:
+        firm = c.post("/api/auth/register",
+                      json={"email": "viaapi@example.gr", "password": "Str0ngPass!",
+                            "name": "Μέσω API"}).json()["firm_id"]
+
+        loop = asyncio.get_event_loop_policy().new_event_loop()
+        # Καμία κλήση στο /api/settings: το γραφείο δεν έχει ακόμη έγγραφο ρυθμίσεων.
+        assert loop.run_until_complete(db.settings.find_one({"firm_id": firm})) is None
+        assert firm in loop.run_until_complete(all_firm_ids())
+
+        loop.run_until_complete(run_autopilot_cycle())
+        assert loop.run_until_complete(db.automation_runs.count_documents({"firm_id": firm})) > 0
