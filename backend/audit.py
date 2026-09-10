@@ -55,6 +55,28 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
+def _redact_path(path: str) -> str:
+    """Αφαιρεί το portal token από τη διαδρομή πριν αυτή καταγραφεί.
+
+    Το token βρίσκεται **μέσα** στο URL (``/api/portal/<token>``) και είναι πλήρες
+    διαπιστευτήριο. Καταγεγραμμένο αυτούσιο μετέτρεπε το ίδιο το ελεγκτικό ίχνος σε
+    κατάλογο ενεργών συνδέσμων: κάθε διαχειριστής που διάβαζε το ίχνος αποκτούσε
+    πρόσβαση στον φάκελο κάθε πελάτη που είχε χρησιμοποιήσει το portal — και μάλιστα
+    χωρίς να αφήσει ο ίδιος ίχνος πρόσβασης.
+
+    Η απόκρυψη γίνεται στην ``record`` και όχι στα σημεία κλήσης, ώστε να μην μπορεί να
+    την ξεχάσει ένα καινούργιο endpoint.
+    """
+    parts = path.split("/")
+    try:
+        i = parts.index("portal")
+    except ValueError:
+        return path
+    if i + 1 < len(parts) and parts[i + 1]:
+        parts[i + 1] = "<token>"
+    return "/".join(parts)
+
+
 def _looks_like_object_id(value: str) -> bool:
     return len(value) == 24 and all(c in "0123456789abcdef" for c in value.lower())
 
@@ -116,7 +138,7 @@ async def record(
             "ip_address": ip_address,
             "user_agent": (user_agent or "")[:200],
             "method": method,
-            "path": path,
+            "path": _redact_path(path or ""),
             "status_code": status_code,
             "duration_ms": duration_ms,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -140,6 +162,29 @@ async def audit_read(request: Request, user: dict, entity: str, entity_id: str =
         entity_id=entity_id,
         user_email=user.get("email", ""),
         actor_type="user",
+        details=details,
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent", ""),
+        method="GET",
+        path=request.url.path,
+        status_code=200,
+    )
+
+
+async def audit_portal_read(request: Request, tk: dict, entity: str, entity_id: str = "",
+                            details: str = "") -> None:
+    """Καταγράφει ανάγνωση **από τον ίδιο τον πελάτη**, μέσω portal token.
+
+    Ο φάκελος βγήκε από το γραφείο: πρέπει να υπάρχει γραμμή που να το λέει. Το token
+    δεν καταγράφεται ποτέ — μόνο ο πελάτης στον οποίο αντιστοιχεί.
+    """
+    await record(
+        action=f"read:{entity}",
+        firm_id=tk.get("firm_id") or LEGACY_FIRM_ID,
+        entity=entity,
+        entity_id=entity_id or tk.get("client_id", ""),
+        user_email="",
+        actor_type="portal_client",
         details=details,
         ip_address=_client_ip(request),
         user_agent=request.headers.get("user-agent", ""),

@@ -258,6 +258,12 @@ async def startup_event():
     await db.outbox.create_index([("firm_id", 1), ("dedupe_key", 1)])
     await db.case_tracker_events.create_index([("fetched_at", -1)])
     await db.portal_messages.create_index([("client_id", 1), ("created_at", 1)])
+    # Κάθε δημόσιο αίτημα του portal ψάχνει με το token. Χωρίς index ήταν σάρωση όλης
+    # της collection — δηλαδή ο φθηνότερος τρόπος να επιβαρύνει κάποιος τη βάση από έξω.
+    # Unique: δύο ίδια tokens θα σήμαιναν δύο πελάτες πίσω από τον ίδιο σύνδεσμο.
+    await db.client_portal_tokens.create_index("token", unique=True, sparse=True)
+    # Οι μετρητές ρυθμού καθαρίζονται μόνοι τους στη λήξη του παραθύρου.
+    await db.rate_limits.create_index("expires_at", expireAfterSeconds=0)
     await seed_admin()
     try:
         init_storage()
