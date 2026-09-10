@@ -2,7 +2,8 @@
 Κάθε πελάτης πρέπει να ταυτοποιείται και να αξιολογείται με βάση κίνδυνο πριν την ανάληψη υπόθεσης.
 """
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from audit import audit_read
 from bson import ObjectId
 from db import db
 from models import KycRecord
@@ -67,10 +68,12 @@ async def list_records(user: dict = Depends(get_current_user)):
 
 
 @router.get("/records/{client_id}")
-async def get_record(client_id: str, user: dict = Depends(get_current_user)):
+async def get_record(client_id: str, request: Request, user: dict = Depends(get_current_user)):
     doc = await db.kyc.find_one(tenant_query(user, {"client_id": client_id}))
     if not doc:
         return None
+    # Ν.4557/2018: η πρόσβαση σε φάκελο δέουσας επιμέλειας καταγράφεται.
+    await audit_read(request, user, "kyc", client_id)
     return KycRecord.from_mongo(doc)
 
 

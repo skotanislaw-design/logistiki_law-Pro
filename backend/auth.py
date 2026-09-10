@@ -111,6 +111,9 @@ async def get_current_user(request: Request) -> dict:
         if token_predates_password_change(payload, user):
             raise HTTPException(status_code=401, detail="Ο κωδικός άλλαξε. Συνδεθείτε ξανά.")
         user["_id"] = str(user["_id"])
+        # Το middleware του ελεγκτικού ίχνους τρέχει αφού ολοκληρωθεί το route και δεν
+        # μπορεί να λύσει το Depends μόνο του· ο ταυτοποιημένος χρήστης αφήνεται εδώ.
+        request.state.user = user
         # Τα μυστικά δεν ταξιδεύουν με το request-scoped user object: όποιο endpoint τα
         # χρειάζεται τα φορτώνει ρητά από τη βάση.
         for secret_field in ("password_hash", "mfa_secret", "mfa_pending_secret", "mfa_backup_codes"):

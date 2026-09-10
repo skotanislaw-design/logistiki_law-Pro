@@ -42,6 +42,7 @@ from routes_case_tracker import router as case_tracker_router, run_all_tracked_c
 from routes_bank import router as bank_router
 from routes_portal_chat import router as portal_chat_router, public_router as portal_chat_public_router
 from routes_automation import router as automation_router
+from routes_audit import router as audit_router
 from ai_runtime import AIUnavailable
 
 app = FastAPI(title="Logistiki Pro API")
@@ -79,6 +80,7 @@ api_router.include_router(bank_router)
 api_router.include_router(portal_chat_router)
 api_router.include_router(portal_chat_public_router)
 api_router.include_router(automation_router)
+api_router.include_router(audit_router)
 
 
 @api_router.get("/")
@@ -112,6 +114,21 @@ def _cors_origins() -> list[str]:
     raw = os.environ.get("CORS_ORIGINS") or os.environ.get("PUBLIC_URL") or os.environ.get("PREVIEW_ENDPOINT") or ""
     origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
     return origins or ["http://localhost:3000", "http://localhost:8080"]
+
+
+@app.middleware("http")
+async def _audit_mutations(request, call_next):
+    """Κάθε αίτημα που αλλάζει κατάσταση αφήνει ίχνος — χωρίς εξαιρέσεις που ξεχνιούνται."""
+    import time
+    from audit import log_request
+
+    started = time.monotonic()
+    response = await call_next(request)
+    try:
+        await log_request(request, response, int((time.monotonic() - started) * 1000))
+    except Exception:
+        logging.getLogger("audit").exception("Το middleware ελεγκτικού ίχνους απέτυχε")
+    return response
 
 
 app.add_middleware(
@@ -196,7 +213,7 @@ async def startup_event():
         db.payroll_runs, db.cases, db.grammatia, db.paravola, db.hearings,
         db.settings, db.trust_accounts, db.trust_transactions, db.kyc,
         db.signatures, db.payment_transactions, db.client_portal_tokens,
-        db.audit_logs, db.case_tracker_events, db.bank_transactions,
+        db.case_tracker_events, db.bank_transactions,
         db.portal_messages, db.copilot_messages, db.drafting_templates,
         db.drafting_clauses,
     ):
@@ -212,7 +229,7 @@ async def startup_event():
         db.expenses, db.payroll_employees, db.payroll_runs, db.cases,
         db.grammatia, db.paravola, db.hearings, db.settings,
         db.trust_accounts, db.trust_transactions, db.kyc, db.signatures,
-        db.payment_transactions, db.client_portal_tokens, db.audit_logs,
+        db.payment_transactions, db.client_portal_tokens,
         db.case_tracker_events, db.bank_transactions, db.portal_messages,
         db.copilot_messages, db.drafting_templates, db.drafting_clauses,
     ):
@@ -226,6 +243,10 @@ async def startup_event():
     except Exception:
         pass
     await db.bank_transactions.create_index([("firm_id", 1), ("external_id", 1)], unique=True, sparse=True)
+    # Ελεγκτικό ίχνος: append-only, εξαιρείται σκόπιμα από τον βρόχο backfill παραπάνω.
+    await db.audit_logs.create_index([("firm_id", 1), ("created_at", -1)])
+    await db.audit_logs.create_index([("firm_id", 1), ("entity", 1), ("entity_id", 1)])
+    await db.audit_logs.create_index([("firm_id", 1), ("user_email", 1), ("created_at", -1)])
     await db.notifications.create_index([("firm_id", 1), ("resolved_at", 1), ("created_at", -1)])
     await db.notifications.create_index([("firm_id", 1), ("dedupe_key", 1)])
     await db.automation_runs.create_index([("firm_id", 1), ("job", 1), ("started_at", -1)])
