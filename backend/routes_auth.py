@@ -77,9 +77,16 @@ async def register(payload: RegisterRequest, response: Response):
 @router.post("/login")
 async def login(payload: LoginRequest, request: Request, response: Response):
     email = payload.email.lower()
+    # Ώστε το ελεγκτικό ίχνος να αποδίδει και τις ΑΠΟΤΥΧΗΜΕΝΕΣ απόπειρες σε email — αυτό
+    # ακριβώς ψάχνει ένας έλεγχος ασφαλείας.
+    request.state.audit_email = email
     identifier = f"{request.client.host}:{email}"
     await check_lockout(identifier)
     user = await db.users.find_one({"email": email})
+    if user:
+        # Η απόπειρα χρεώνεται στο γραφείο του λογαριασμού-στόχου: μια αποτυχημένη
+        # σύνδεση πρέπει να είναι ορατή σε αυτόν που έχει λόγο να τη δει.
+        request.state.audit_firm_id = user.get("firm_id")
     if not user or not verify_password(payload.password, user["password_hash"]):
         await record_failed_attempt(identifier)
         raise HTTPException(status_code=401, detail="Λάθος email ή κωδικός πρόσβασης")

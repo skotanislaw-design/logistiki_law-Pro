@@ -401,12 +401,22 @@ class ClientPortalToken(BaseDocument):
 
 
 class AuditLog(BaseDocument):
+    """Γραμμή ελεγκτικού ίχνους — append-only, βλ. audit.py."""
     firm_id: str = LEGACY_FIRM_ID
     action: str
     entity: str = ""  # π.χ. invoice, case, trust_tx
     entity_id: str = ""
     user_email: str = ""
+    # user: συνδεδεμένος χρήστης · portal_client: πελάτης με magic link
+    # autopilot: προγραμματισμένη εργασία · system: webhook τρίτου (Stripe)
+    actor_type: Literal["user", "portal_client", "autopilot", "system"] = "user"
     details: str = ""
+    ip_address: str = ""
+    user_agent: str = ""
+    method: str = ""
+    path: str = ""
+    status_code: Optional[int] = None
+    duration_ms: Optional[int] = None
     created_at: str = Field(default_factory=now_iso)
 
 

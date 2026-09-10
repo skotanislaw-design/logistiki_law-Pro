@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from fastapi.responses import Response
 from bson import ObjectId
 from db import db
+from http_utils import content_disposition
 from models import Invoice
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
@@ -238,11 +239,11 @@ async def invoice_pdf(invoice_id: str, user: dict = Depends(get_current_user)):
             client = None
     settings = await db.settings.find_one(tenant_query(user, {})) or {}
     pdf_bytes = build_invoice_pdf(doc, client or {}, settings)
-    safe_name = (doc.get("number") or "invoice").replace("ΤΠΥ", "TPY")
+    safe_name = doc.get("number") or "invoice"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{safe_name}.pdf"'},
+        headers={"Content-Disposition": content_disposition(f"{safe_name}.pdf")},
     )
 
 

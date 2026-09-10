@@ -12,6 +12,7 @@ from typing import Optional
 from bson import ObjectId
 from ai_runtime import LlmChat, UserMessage, TextDelta, StreamDone
 from db import db
+from http_utils import content_disposition
 from ai_helpers import EMERGENT_LLM_KEY
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
@@ -386,5 +387,5 @@ async def render_docx(payload: DocxRequest, user: dict = Depends(get_current_use
     return Response(
         content=doc_bytes,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f'attachment; filename="{safe}.docx"'},
+        headers={"Content-Disposition": content_disposition(f"{safe}.docx")},
     )

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from bson import ObjectId
 from db import db
+from http_utils import content_disposition
 from models import ClientPortalToken
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
@@ -204,6 +205,6 @@ async def portal_invoice_pdf(token: str, invoice_id: str):
     client = await db.clients.find_one({"_id": ObjectId(tk["client_id"]), "firm_id": tk.get("firm_id", "legacy-default-firm")})
     settings = await db.settings.find_one({"firm_id": tk.get("firm_id", "legacy-default-firm")}) or {}
     pdf_bytes = build_invoice_pdf(inv, client or {}, settings)
-    safe = (inv.get("number") or "invoice").replace("ΤΠΥ", "TPY")
+    safe = inv.get("number") or "invoice"
     return Response(content=pdf_bytes, media_type="application/pdf",
-                    headers={"Content-Disposition": f'attachment; filename="{safe}.pdf"'})
+                    headers={"Content-Disposition": content_disposition(f"{safe}.pdf")})
