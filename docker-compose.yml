@@ -8,10 +8,13 @@ services:
       - ./backups:/backups
     environment:
       MONGO_INITDB_DATABASE: ${DB_NAME:-nomos_one}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-nomos}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?ορίστε MONGO_PASSWORD στο .env}
     ports:
       - "127.0.0.1:27017:27017"
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--quiet", "-u", "${MONGO_USER:-nomos}", "-p", "${MONGO_PASSWORD}",
+             "--authenticationDatabase", "admin", "--eval", "db.adminCommand('ping')"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -26,7 +29,7 @@ services:
       mongo:
         condition: service_healthy
     environment:
-      MONGO_URL: "mongodb://mongo:27017"
+      MONGO_URL: "mongodb://${MONGO_USER:-nomos}:${MONGO_PASSWORD}@mongo:27017/?authSource=admin"
       DB_NAME: "${DB_NAME:-nomos_one}"
       JWT_SECRET: "${JWT_SECRET}"
       SECRETS_KEY: "${SECRETS_KEY:-}"
@@ -62,7 +65,7 @@ services:
       mongo:
         condition: service_healthy
     environment:
-      MONGO_URL: "mongodb://mongo:27017"
+      MONGO_URL: "mongodb://${MONGO_USER:-nomos}:${MONGO_PASSWORD}@mongo:27017/?authSource=admin"
       DB_NAME: "${DB_NAME:-nomos_one}"
       JWT_SECRET: "${JWT_SECRET}"
       SECRETS_KEY: "${SECRETS_KEY:-}"
@@ -103,10 +106,14 @@ services:
       - ./backups:/backups
     environment:
       DB_NAME: "${DB_NAME:-nomos_one}"
+      MONGO_USER: "${MONGO_USER:-nomos}"
+      MONGO_PASSWORD: "${MONGO_PASSWORD:?ορίστε MONGO_PASSWORD στο .env}"
     entrypoint: >
       sh -c 'while true; do
         echo "Starting daily backup at $$(date)";
-        mongodump --host mongo --db $$DB_NAME --archive=/backups/nomos-$$(date +%Y%m%d-%H%M%S).archive --gzip;
+        mongodump --host mongo --db $$DB_NAME
+          --username "$$MONGO_USER" --password "$$MONGO_PASSWORD" --authenticationDatabase admin
+          --archive=/backups/nomos-$$(date +%Y%m%d-%H%M%S).archive --gzip;
         find /backups -name "nomos-*.archive" -mtime +14 -delete;
         sleep 86400;
       done'
