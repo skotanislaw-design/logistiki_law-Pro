@@ -120,12 +120,17 @@ def test_rate_limit_response_tells_the_client_when_to_retry(client):
 
 def test_counter_resets_in_the_next_window(client):
     """Το όριο είναι παύση, όχι μόνιμος αποκλεισμός."""
+    import time
+
     import rate_limit
+
+    # Ευθυγράμμιση στην αρχή του παραθύρου: αλλιώς οι δύο πρώτες κλήσεις μπορεί να
+    # πέσουν εκατέρωθεν του ορίου και το test να αποτύχει χωρίς να υπάρχει σφάλμα.
+    time.sleep(1.0 - (time.time() % 1.0))
     allowed, _ = _run(rate_limit.check("δοκιμή", "κλειδί", limit=1, window_seconds=1))
     assert allowed
     assert _run(rate_limit.check("δοκιμή", "κλειδί", limit=1, window_seconds=1))[0] is False
     # Επόμενο παράθυρο: νέο έγγραφο, μηδενισμένος μετρητής.
-    import time
     time.sleep(1.1)
     assert _run(rate_limit.check("δοκιμή", "κλειδί", limit=1, window_seconds=1))[0] is True
 

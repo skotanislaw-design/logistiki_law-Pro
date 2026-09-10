@@ -97,7 +97,6 @@ async def invite_client(payload: InviteRequest, user: dict = Depends(get_current
 
 @router.get("/tokens/{client_id}")
 async def list_client_tokens(client_id: str, user: dict = Depends(get_current_user)):
-    now = datetime.now(timezone.utc).isoformat()
     tokens = await db.client_portal_tokens.find(tenant_query(user, {"client_id": client_id})).sort("created_at", -1).to_list(20)
     return [{
         "id": str(t["_id"]),
@@ -105,7 +104,9 @@ async def list_client_tokens(client_id: str, user: dict = Depends(get_current_us
         "created_at": t.get("created_at"),
         "expires_at": t.get("expires_at"),
         "last_used_at": t.get("last_used_at"),
-        "active": t.get("expires_at", "") > now,
+        # Ίδιος κανόνας λήξης με το ``_validate_token``: αν η οθόνη του δικηγόρου
+        # έκρινε αλλιώς, θα έδειχνε ως ενεργό σύνδεσμο που το portal απορρίπτει.
+        "active": not _is_expired(t.get("expires_at", "")),
     } for t in tokens]
 
 
