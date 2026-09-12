@@ -7,16 +7,25 @@
 Τα XSD στο ``fixtures/mydata/`` είναι τα επίσημα αρχεία της ΑΑΔΕ (έκδοση 2.0.1,
 Μάρτιος 2026). Το namespace παρέμεινε ``v1.0`` σε όλες τις εκδόσεις.
 
-Δύο σφάλματα εντοπίστηκαν έτσι, και τα δύο θα απορρίπτονταν από την ΑΑΔΕ:
+Τρία σφάλματα εντοπίστηκαν έτσι, και τα τρία θα απορρίπτονταν από την ΑΑΔΕ:
   * η ακαθάριστη αξία δεν αφαιρούσε την παρακράτηση (ValidationError 203)
   * η ΑΠΥ λιανικής δήλωνε χαρακτηρισμό χονδρικής (μη επιτρεπτός συνδυασμός)
+  * **κάθε** πιστωτικό διαβιβαζόταν με αρνητικά ποσά (`AmountType` με `minInclusive="0"`)
+
+Το τρίτο διέφυγε την πρώτη φορά επειδή το test έχτιζε πιστωτικό στο χέρι, με θετικά
+ποσά. Ένα παραστατικό φτιαγμένο από το test αποδεικνύει μόνο ότι το test είναι έγκυρο:
+το ``test_credit_note_built_by_the_app_is_accepted`` περνά πλέον από την πραγματική
+διαδρομή έκδοσης, γι' αυτό και βρήκε αυτό που το προηγούμενο δεν μπορούσε να δει.
 """
+import asyncio
 import pathlib
 
 import pytest
+from bson import ObjectId
+from fastapi.testclient import TestClient
 from lxml import etree
 
-from mydata_client import build_invoices_doc_xml
+from mydata_client import MyDataError, build_invoices_doc_xml
 
 XSD = pathlib.Path(__file__).parent / "fixtures" / "mydata" / "InvoicesDoc-v2.0.1.xsd"
 NS = "{http://www.aade.gr/myDATA/invoice/v1.0}"
@@ -190,3 +199,72 @@ def test_endpoints_match_the_official_documentation():
         "https://mydatapi.aade.gr/myDATA/SendInvoices"
     assert _urls({"aade_environment": "sandbox"})["send"] == \
         "https://mydataapidev.aade.gr/SendInvoices"
+
+
+# ---------------------------------------------------------------------------
+# Πιστωτικά: μέσα από την πραγματική διαδρομή έκδοσης, όχι από χειροποίητο fixture.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def app_client():
+    import server
+    with TestClient(server.app, base_url="https://testserver") as c:
+        yield c
+
+
+def _run(coro):
+    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
+
+
+def _issued_invoice(app_client, price=1000.0):
+    """Εκδοθέν τιμολόγιο με MARK — προϋπόθεση για να επιτραπεί πιστωτικό."""
+    from db import db
+
+    app_client.post("/api/auth/register",
+                    json={"email": "d@example.gr", "password": "Str0ngPass!", "name": "Δ"})
+    cid = app_client.post("/api/clients", json={
+        "name": "ΑΛΦΑ ΑΕ", "afm": "987654321", "client_type": "company"}).json()["id"]
+    iid = app_client.post("/api/invoices", json={
+        "client_id": cid, "date": "2026-09-10",
+        "line_items": [_line(price)]}).json()["id"]
+    app_client.post(f"/api/invoices/{iid}/issue")
+    _run(db.invoices.update_one({"_id": ObjectId(iid)}, {"$set": {
+        "mydata_status": "synced", "mydata_mark": "400001111111111"}}))
+    return cid, iid
+
+
+@pytest.mark.parametrize("payload,expected_net", [
+    ({"reason": "Ακύρωση"}, "1000.00"),
+    ({"reason": "Μερική έκπτωση", "amount": 300}, "300.00"),
+])
+def test_credit_note_built_by_the_app_is_accepted(app_client, schema, payload, expected_net):
+    """Το πιστωτικό που παράγει η εφαρμογή, όπως ακριβώς το αποθηκεύει.
+
+    Η εφαρμογή αποθηκεύει αρνητικά ποσά — σκόπιμα, ώστε το πιστωτικό να μειώνει έσοδα
+    και ΦΠΑ σε κάθε άθροισμα. Το myDATA όμως δέχεται μόνο θετικά: το είδος 5.1 φέρει το
+    πρόσημο. Πριν τη διόρθωση απορρίπτονταν και τα δύο, με οκτώ παραβιάσεις σχήματος.
+    """
+    from db import db
+
+    cid, iid = _issued_invoice(app_client)
+    r = app_client.post(f"/api/invoices/{iid}/credit-note", json=payload)
+    assert r.status_code == 200, r.text
+
+    credit = _run(db.invoices.find_one({"_id": ObjectId(r.json()["id"])}))
+    client_doc = _run(db.clients.find_one({"_id": ObjectId(cid)}))
+    assert credit["total"] < 0, "η αποθήκευση οφείλει να παραμείνει αρνητική"
+
+    doc = _doc(credit, client_doc)
+    assert schema.validate(doc), [e.message for e in schema.error_log]
+    assert _text(doc, "invoiceType") == "5.1"
+    assert _text(doc, "netValue") == expected_net
+    assert _text(doc, "correlatedInvoices") == "400001111111111"
+    assert not any(v.text.startswith("-") for v in doc.iter() if v.text and v.text.strip())
+
+
+def test_negative_line_outside_a_credit_note_is_refused():
+    """Σιωπηλή διόρθωση θα έκρυβε το πραγματικό πρόβλημα: λείπει πιστωτικό ή η γραμμή
+    είναι λάθος. Και τα δύο θέλουν άνθρωπο."""
+    invoice = {"number": "ΤΠΥ-2026-0099", "date": "2026-09-10", "line_items": [_line(-100.0)]}
+    with pytest.raises(MyDataError, match="πιστωτικ"):
+        build_invoices_doc_xml(invoice, COMPANY, FIRM)

@@ -277,6 +277,9 @@ async def build_credit_note(firm_id: str, invoice: dict, user_email: str,
     if invoice.get("credit_note_id"):
         raise InvoiceWorkflowError("Έχει ήδη εκδοθεί πιστωτικό για αυτό το τιμολόγιο.")
 
+    # Τα ποσά αποθηκεύονται **αρνητικά** σκόπιμα: έτσι το πιστωτικό μειώνει έσοδα, ΦΠΑ
+    # και τζίρο σε κάθε άθροισμα, χωρίς καμία συγκεντρωτική να χρειάζεται να το εξαιρέσει.
+    # Προς την ΑΑΔΕ διαβιβάζονται θετικά — βλ. CREDIT_TYPES στο mydata_client.
     original_lines = invoice.get("line_items") or []
     if amount is None:
         lines = [
