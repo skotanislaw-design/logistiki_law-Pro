@@ -9,8 +9,17 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Plus, PencilSimple, Trash, Link as LinkIcon, DownloadSimple } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
+// Ο έλεγχος ψηφίου ελέγχου ΑΦΜ αφορά μόνο ελληνικά ΑΦΜ. Χώρες που συναντά στην πράξη
+// ένα δικηγορικό γραφείο· η λίστα επεκτείνεται χωρίς άλλη αλλαγή.
+const COUNTRIES = [
+  ["GR", "Ελλάδα"], ["CY", "Κύπρος"], ["DE", "Γερμανία"], ["GB", "Ηνωμένο Βασίλειο"],
+  ["FR", "Γαλλία"], ["IT", "Ιταλία"], ["NL", "Ολλανδία"], ["BE", "Βέλγιο"],
+  ["BG", "Βουλγαρία"], ["RO", "Ρουμανία"], ["ES", "Ισπανία"], ["US", "ΗΠΑ"],
+];
+
 function emptyForm() {
-  return { name: "", afm: "", doy: "", address: "", email: "", phone: "", client_type: "individual" };
+  return { name: "", afm: "", doy: "", address: "", email: "", phone: "",
+           client_type: "individual", country: "GR" };
 }
 
 export default function Clients() {
@@ -23,7 +32,7 @@ export default function Clients() {
   useEffect(() => { load(); }, []);
 
   const openNew = () => { setEditing(null); setForm(emptyForm()); setOpen(true); };
-  const openEdit = (c) => { setEditing(c); setForm(c); setOpen(true); };
+  const openEdit = (c) => { setEditing(c); setForm({ ...c, country: c.country || "GR" }); setOpen(true); };
 
   const handleSubmit = async () => {
     if (!form.name) return toast.error("Το όνομα είναι υποχρεωτικό");
@@ -139,15 +148,28 @@ export default function Clients() {
                 <Input value={form.doy} onChange={(e) => setForm({ ...form, doy: e.target.value })} className="mt-1.5" />
               </div>
             </div>
-            <div>
-              <Label>Τύπος Πελάτη</Label>
-              <Select value={form.client_type} onValueChange={(v) => setForm({ ...form, client_type: v })}>
-                <SelectTrigger className="mt-1.5"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="individual">Ιδιώτης</SelectItem>
-                  <SelectItem value="company">Εταιρεία</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Τύπος Πελάτη</Label>
+                <Select value={form.client_type} onValueChange={(v) => setForm({ ...form, client_type: v })}>
+                  <SelectTrigger className="mt-1.5"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="individual">Ιδιώτης</SelectItem>
+                    <SelectItem value="company">Εταιρεία</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Χώρα</Label>
+                <Select value={form.country || "GR"} onValueChange={(v) => setForm({ ...form, country: v })}>
+                  <SelectTrigger className="mt-1.5"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {COUNTRIES.map(([code, label]) => (
+                      <SelectItem key={code} value={code}>{label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             <div>
               <Label>Διεύθυνση</Label>
