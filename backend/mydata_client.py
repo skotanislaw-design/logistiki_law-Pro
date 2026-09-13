@@ -41,6 +41,13 @@ INVOICE_TYPE_LABELS = {
 }
 RETAIL_TYPES = {TYPE_RECEIPT_B2C}
 
+# Είδη που εκφράζουν πίστωση. Στο myDATA το **είδος** του παραστατικού φέρει το πρόσημο:
+# τα ποσά υποβάλλονται πάντα θετικά (`AmountType` με `minInclusive="0"`). Εσωτερικά η
+# εφαρμογή αποθηκεύει το πιστωτικό με αρνητικά ποσά, γιατί έτσι μειώνει έσοδα και ΦΠΑ σε
+# κάθε άθροισμα — καμία συγκεντρωτική δεν εξαιρεί τα πιστωτικά. Οι δύο συμβάσεις
+# συμφιλιώνονται εδώ, στο σημείο της διαβίβασης, και πουθενά αλλού.
+CREDIT_TYPES = {TYPE_CREDIT_NOTE}
+
 # Χαρακτηρισμός εσόδων. Οι επιτρεπτοί συνδυασμοί ανά τύπο παραστατικού ορίζονται στο
 # επίσημο `syndiasmoi_xaraktirismwn_v2.0.1.xlsx`: για ΑΠΥ λιανικής (11.2) το
 # E3_561_001 (χονδρικές) **δεν** είναι αποδεκτό — η λιανική θέλει E3_561_003.
@@ -143,7 +150,7 @@ def withholding_for(invoice: dict, settings: dict, invoice_type: str, net_value:
         return round(float(invoice["withholding_amount"]), 2)
     if not settings.get("withholding_enabled", False):
         return 0.0
-    if invoice_type in RETAIL_TYPES or invoice_type == TYPE_CREDIT_NOTE:
+    if invoice_type in RETAIL_TYPES or invoice_type in CREDIT_TYPES:
         return 0.0
     threshold = float(settings.get("withholding_min_net", 300) or 0)
     if net_value < threshold:
@@ -186,10 +193,27 @@ def build_invoices_doc_xml(invoice: dict, client: dict, settings: dict) -> str:
     # παραστατικό του πελάτη και η εγγραφή στην ΑΑΔΕ να μη διαφέρουν ποτέ ούτε κατά λεπτό.
     from tax_utils import compute_line_values
 
+    line_values = compute_line_values(invoice.get("line_items", []))
+
+    # Το πρόσημο κανονικοποιείται **μία φορά**, πριν συντεθεί οτιδήποτε: όλα τα ποσά του
+    # παραστατικού (σύνολα, χαρακτηρισμοί, τρόπος πληρωμής) προκύπτουν από αυτές τις
+    # γραμμές, οπότε μια διόρθωση εδώ τα καλύπτει όλα.
+    if invoice_type in CREDIT_TYPES:
+        line_values = [{"net": abs(v["net"]), "vat": abs(v["vat"]), "rate": v["rate"]} for v in line_values]
+    else:
+        # Αρνητικό ποσό σε μη πιστωτικό δεν διορθώνεται σιωπηλά: είτε λείπει το πιστωτικό
+        # είτε η γραμμή είναι λάθος, και τα δύο θέλουν άνθρωπο. Το μήνυμα φτάνει στον
+        # δικηγόρο ως αποτυχία διαβίβασης, εκεί ακριβώς που θα το ψάξει.
+        if any(v["net"] < 0 or v["vat"] < 0 for v in line_values):
+            raise MyDataError(
+                "Το myDATA δέχεται αρνητικά ποσά μόνο σε πιστωτικά παραστατικά. "
+                "Εκδώστε πιστωτικό τιμολόγιο ή διορθώστε τη γραμμή με το αρνητικό ποσό."
+            )
+
     lines_xml = []
     total_net = Decimal("0")
     total_vat = Decimal("0")
-    for idx, values in enumerate(compute_line_values(invoice.get("line_items", [])), start=1):
+    for idx, values in enumerate(line_values, start=1):
         net, vat, rate = values["net"], values["vat"], values["rate"]
         total_net += net
         total_vat += vat

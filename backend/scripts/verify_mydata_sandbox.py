@@ -8,9 +8,12 @@ offline. Αυτό το script τρέχει μια πλήρη μπαταρία ε
 πρώτη δοκιμή σε πραγματικά παραστατικά.
 
     cd backend
+    export AADE_SUBSCRIPTION_KEY=...        # όχι στη γραμμή εντολών: μένει στο ιστορικό
     python scripts/verify_mydata_sandbox.py \\
-        --user-id ΟΝΟΜΑ_ΧΡΗΣΤΗ --key SUBSCRIPTION_KEY --afm 123456789 \\
-        --counterpart-afm 987654321
+        --user-id ΟΝΟΜΑ_ΧΡΗΣΤΗ --afm ΑΦΜ_ΓΡΑΦΕΙΟΥ --counterpart-afm ΑΦΜ_ΔΟΚΙΜΗΣ
+
+Διαπιστευτήρια sandbox: εγγραφή στο https://mydata-dev.portal.azure-api.net
+(ο λογαριασμός δημιουργείται από εσάς — το script δεν αποθηκεύει πουθενά το κλειδί).
 
 Προαιρετικά:
     --production        (χτυπά το πραγματικό περιβάλλον — ΜΟΝΟ αν ξέρετε τι κάνετε)
@@ -24,6 +27,7 @@ offline. Αυτό το script τρέχει μια πλήρη μπαταρία ε
 import argparse
 import asyncio
 import json
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -134,8 +138,10 @@ async def run(args) -> Report:
             marks.append(mark_withheld)
 
     if mark_b2b:
+        # Θετικά ποσά: στο myDATA το είδος 5.1 φέρει το πρόσημο. Η εφαρμογή αποθηκεύει
+        # αρνητικά και τα κανονικοποιεί κατά τη διαβίβαση (CREDIT_TYPES στο mydata_client).
         credit = {"number": f"ΠΙΣ-TEST{stamp}-0001", "date": today, "correlated_mark": mark_b2b,
-                  "credit_note_for": "test", "line_items": [_line(1, -100, 24)], "withholding_amount": 0}
+                  "credit_note_for": "test", "line_items": [_line(1, 100, 24)], "withholding_amount": 0}
         mark_credit = await _send(settings, credit, company, report, "Πιστωτικό 5.1")
         if mark_credit:
             marks.append(mark_credit)
@@ -174,15 +180,21 @@ async def run(args) -> Report:
 def main():
     parser = argparse.ArgumentParser(description="Επαλήθευση myDATA στο sandbox της ΑΑΔΕ")
     parser.add_argument("--user-id", required=True, help="aade-user-id")
-    parser.add_argument("--key", required=True, help="Ocp-Apim-Subscription-Key")
+    parser.add_argument("--key", default=os.environ.get("AADE_SUBSCRIPTION_KEY", ""),
+                        help="Ocp-Apim-Subscription-Key (προτιμότερα μέσω AADE_SUBSCRIPTION_KEY)")
     parser.add_argument("--afm", required=True, help="ΑΦΜ του γραφείου (εκδότης)")
-    parser.add_argument("--counterpart-afm", default="123456789", help="ΑΦΜ δοκιμαστικού πελάτη-επιχείρησης")
+    parser.add_argument("--counterpart-afm", default="123456783",
+                        help="ΑΦΜ δοκιμαστικού πελάτη-επιχείρησης (προεπιλογή: έγκυρο ψηφίο ελέγχου, placeholder)")
     parser.add_argument("--classification-type", default="E3_561_001")
     parser.add_argument("--classification-category", default="category1_3")
     parser.add_argument("--production", action="store_true", help="Πραγματικό περιβάλλον (δημιουργεί αληθινά παραστατικά!)")
     parser.add_argument("--skip-cancel", action="store_true")
     parser.add_argument("--json", help="Αρχείο αποθήκευσης αναφοράς")
     args = parser.parse_args()
+
+    if not args.key:
+        print(f"{RED}Λείπει το Subscription Key.{RESET} Ορίστε AADE_SUBSCRIPTION_KEY ή δώστε --key.")
+        return 1
 
     if args.production:
         answer = input(f"{RED}Θα σταλούν ΠΡΑΓΜΑΤΙΚΑ παραστατικά στην ΑΑΔΕ. Γράψτε «ΝΑΙ» για να συνεχίσετε: {RESET}")

@@ -201,7 +201,10 @@ def test_mydata_credit_note_requires_correlated_mark():
     xml = build_invoices_doc_xml({**credit, "correlated_mark": "400001234567890"}, company, settings)
     assert "<invoiceType>5.1</invoiceType>" in xml
     assert "<correlatedInvoices>400001234567890</correlatedInvoices>" in xml
-    assert "<totalNetValue>-100.00</totalNetValue>" in xml
+    # Το test απαιτούσε «-100.00»: κωδικοποιούσε το σφάλμα. Το myDATA δέχεται μόνο
+    # θετικά ποσά (`AmountType` με `minInclusive="0"`) — το είδος 5.1 φέρει το πρόσημο.
+    # Η αποθηκευμένη γραμμή παραμένει -100 · αλλάζει μόνο ό,τι φεύγει προς την ΑΑΔΕ.
+    assert "<totalNetValue>100.00</totalNetValue>" in xml
 
 
 def test_resolve_invoice_type_precedence():
