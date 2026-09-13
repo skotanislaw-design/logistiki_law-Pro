@@ -293,7 +293,7 @@ def _fresh_client():
     return TestClient(server.app, base_url="https://testserver")
 
 
-@pytest.mark.parametrize("weak", ["a", "12345", "short", "123456789", "αβγδεζηθικ", "1234567890"])
+@pytest.mark.parametrize("weak", ["a", "12345", "short", "123456783", "αβγδεζηθικ", "1234567830"])
 def test_registration_rejects_weak_passwords(weak):
     """Πριν τη διόρθωση, ο κωδικός «a» γινόταν δεκτός με HTTP 200."""
     with _fresh_client() as c:

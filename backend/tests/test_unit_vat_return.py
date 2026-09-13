@@ -6,7 +6,7 @@ from vat_return import build_vat_return, build_vat_return_pdf, form_codes, DEFAU
 
 PERIOD = {"period": "2026-08", "period_start": "2026-08-01", "period_end": "2026-08-31",
           "due_date": "2026-09-30", "status": "computed"}
-SETTINGS = {"company_name": "Γραφείο", "afm": "123456789", "doy": "Α΄ Αθηνών", "vat_period": "monthly"}
+SETTINGS = {"company_name": "Γραφείο", "afm": "123456783", "doy": "Α΄ Αθηνών", "vat_period": "monthly"}
 
 
 def _line(data, key):
@@ -131,9 +131,9 @@ def test_sandbox_harness_builds_every_document_type_offline():
     harness = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(harness)
 
-    settings = {"afm": "123456789", "aade_user_id": "u", "aade_subscription_key": "k",
+    settings = {"afm": "123456783", "aade_user_id": "u", "aade_subscription_key": "k",
                 "withholding_enabled": True, "withholding_min_net": 0}
-    company = {"name": "ΑΕ", "afm": "987654321", "client_type": "company"}
+    company = {"name": "ΑΕ", "afm": "987654324", "client_type": "company"}
     individual = {"name": "Ιδιώτης", "client_type": "individual"}
     today = "2026-09-01"
 

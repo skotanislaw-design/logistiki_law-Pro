@@ -28,7 +28,7 @@ def _firm_with_portal_client(client, email="dikigoros@example.gr", name="ΠΕΛ�
     client.post("/api/auth/register",
                 json={"email": email, "password": "Str0ngPass!", "name": "Δικηγόρος"})
     cid = client.post("/api/clients", json={
-        "name": name, "afm": "123456789", "email": "pelatis@example.gr"}).json()["id"]
+        "name": name, "afm": "123456783", "email": "pelatis@example.gr"}).json()["id"]
     token = client.post("/api/client-portal/invite", json={"client_id": cid}).json()["token"]
     return cid, token
 
@@ -101,7 +101,7 @@ def test_throttle_is_per_token_not_global(client):
     """Ένας πελάτης που ξεπερνά το όριο δεν κλειδώνει τους υπόλοιπους."""
     _, token_a = _firm_with_portal_client(client)
     cid_b = client.post("/api/clients", json={
-        "name": "ΠΕΛΑΤΗΣ ΔΥΟ", "afm": "987654321", "email": "duo@example.gr"}).json()["id"]
+        "name": "ΠΕΛΑΤΗΣ ΔΥΟ", "afm": "987654324", "email": "duo@example.gr"}).json()["id"]
     token_b = client.post("/api/client-portal/invite", json={"client_id": cid_b}).json()["token"]
 
     for i in range(12):

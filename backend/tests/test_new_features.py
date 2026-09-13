@@ -92,7 +92,7 @@ class TestMyDataSync:
     def invoice_id(self, auth):
         # need a client with ΑΦΜ
         rc = auth.post(f"{API}/clients", json={
-            "name": "TEST_ SyncClient", "afm": "123456789", "client_type": "company"
+            "name": "TEST_ SyncClient", "afm": "123456783", "client_type": "company"
         })
         assert rc.status_code == 200
         cid = rc.json()["id"]
@@ -118,7 +118,7 @@ class TestMyDataSync:
     def test_sync_live_fails_and_marks_failed(self, auth, invoice_id):
         # Save AFM to settings so we get to AADE call
         _put_settings(auth, aade_user_id="testuser", aade_subscription_key="testkey",
-                      aade_environment="sandbox", afm="123456789")
+                      aade_environment="sandbox", afm="123456783")
         r = auth.post(f"{API}/mydata/sync/{invoice_id}")
         assert r.status_code == 400, r.text
         detail = r.json()["detail"]
@@ -143,7 +143,7 @@ class TestIssueMock:
     def test_issue_draft_mock(self, auth):
         _put_settings(auth, aade_user_id="", aade_subscription_key="")
         rc = auth.post(f"{API}/clients", json={
-            "name": "TEST_ IssueMock", "afm": "222333444", "client_type": "company"
+            "name": "TEST_ IssueMock", "afm": "222333440", "client_type": "company"
         })
         cid = rc.json()["id"]
         ri = auth.post(f"{API}/invoices", json={
@@ -183,7 +183,7 @@ class TestCasesSolonFields:
     def test_create_update_delete_with_solon(self, auth):
         # Need client
         rc = auth.post(f"{API}/clients", json={
-            "name": "TEST_ CaseClient", "afm": "555666777", "client_type": "individual"
+            "name": "TEST_ CaseClient", "afm": "555666770", "client_type": "individual"
         })
         cid = rc.json()["id"]
         rcase = auth.post(f"{API}/cases", json={

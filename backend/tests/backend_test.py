@@ -54,7 +54,7 @@ class TestAuth:
 class TestClients:
     def test_create_list_update_delete(self, auth_client):
         r = auth_client.post(f"{API}/clients", json={
-            "name": "TEST_ Πελάτης ΑΕ", "afm": "123456789", "client_type": "company", "doy": "Α ΑΘΗΝΩΝ"
+            "name": "TEST_ Πελάτης ΑΕ", "afm": "123456783", "client_type": "company", "doy": "Α ΑΘΗΝΩΝ"
         })
         assert r.status_code == 200, r.text
         c = r.json()
@@ -67,7 +67,7 @@ class TestClients:
         assert any(x["id"] == cid for x in r2.json())
 
         r3 = auth_client.put(f"{API}/clients/{cid}", json={
-            "name": "TEST_ Πελάτης ΑΕ Updated", "afm": "123456789", "client_type": "company"
+            "name": "TEST_ Πελάτης ΑΕ Updated", "afm": "123456783", "client_type": "company"
         })
         assert r3.status_code == 200
         assert r3.json()["name"] == "TEST_ Πελάτης ΑΕ Updated"
@@ -81,7 +81,7 @@ class TestInvoices:
     @pytest.fixture(scope="class")
     def client_id(self, auth_client):
         r = auth_client.post(f"{API}/clients", json={
-            "name": "TEST_ Πελάτης Τιμολ.", "afm": "111222333", "client_type": "company"
+            "name": "TEST_ Πελάτης Τιμολ.", "afm": "111222336", "client_type": "company"
         })
         assert r.status_code == 200
         return r.json()["id"]
@@ -180,7 +180,7 @@ class TestInvoiceCRUD:
     def test_update_and_delete_invoice(self, auth_client):
         # need a client
         rc = auth_client.post(f"{API}/clients", json={
-            "name": "TEST_ Inv Upd", "afm": "444555666", "client_type": "company"
+            "name": "TEST_ Inv Upd", "afm": "444555667", "client_type": "company"
         })
         cid = rc.json()["id"]
         r = auth_client.post(f"{API}/invoices", json={
@@ -272,7 +272,7 @@ class TestSettings:
         assert "id" in s and "_id" not in s
 
         r2 = auth_client.put(f"{API}/settings", json={
-            "company_name": "TEST Νομική ΕΠΕ", "afm": "999888777", "doy": "Α ΑΘΗΝΩΝ",
+            "company_name": "TEST Νομική ΕΠΕ", "afm": "999888771", "doy": "Α ΑΘΗΝΩΝ",
             "vat_period": "quarterly", "aade_user_id": "mockuser", "aade_subscription_key": "mockkey"
         })
         assert r2.status_code == 200, r2.text

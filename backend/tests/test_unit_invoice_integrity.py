@@ -24,7 +24,7 @@ def owner(client):
                     json={"email": "acct@example.gr", "password": "Str0ngPass!", "name": "Λογιστής"})
     assert r.status_code == 200, r.text
     return client.post("/api/clients",
-                       json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456789", "client_type": "company"}).json()["id"]
+                       json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456783", "client_type": "company"}).json()["id"]
 
 
 LINE = [{"description": "Αμοιβή", "quantity": 1, "unit_price": 1000.0, "vat_rate": 24}]
@@ -61,7 +61,7 @@ def test_client_cannot_forge_mydata_transmission(client, owner):
     """Ο client δήλωνε μόνος του synced + MARK, δηλαδή παραστατικό «διαβιβασμένο»
     στην ΑΑΔΕ που δεν στάλθηκε ποτέ."""
     inv = _draft(client, owner, status="paid", mydata_status="synced",
-                 mydata_mark="400001234567890", paid_at="2020-01-01T00:00:00Z").json()
+                 mydata_mark="400001234567830", paid_at="2020-01-01T00:00:00Z").json()
     assert inv["status"] == "draft"
     assert inv["mydata_status"] == "not_sent"
     assert inv["mydata_mark"] is None
