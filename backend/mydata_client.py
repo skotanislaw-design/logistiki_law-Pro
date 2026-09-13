@@ -172,6 +172,19 @@ def build_invoices_doc_xml(invoice: dict, client: dict, settings: dict) -> str:
         raise MyDataError("Συμπληρώστε το ΑΦΜ της εταιρείας στις Ρυθμίσεις πριν τη διαβίβαση στο myDATA.")
 
     invoice_type = resolve_invoice_type(invoice, client)
+
+    # Αλλοδαπός λήπτης: ο κώδικας δήλωνε <country>GR</country> για κάθε πελάτη, οπότε ένα
+    # ΑΦΜ άλλης χώρας έφευγε ως ελληνικό και επέστρεφε δυσνόητη απόρριψη. Η αποτυχία εδώ
+    # λέει τι πραγματικά λείπει. Τα είδη 2.2/2.3 (ενδοκοινοτική / τρίτες χώρες) δεν
+    # υλοποιούνται — είναι χαρακτηριστικό, όχι διόρθωση.
+    country = ((client or {}).get("country") or "GR").upper()
+    if country != "GR":
+        raise MyDataError(
+            f"Ο πελάτης «{(client or {}).get('name', '')}» έχει χώρα {country}. "
+            "Η διαβίβαση προς αλλοδαπό λήπτη απαιτεί είδος παραστατικού 2.2/2.3, "
+            "που δεν υποστηρίζεται ακόμη."
+        )
+
     client_afm = ((client or {}).get("afm") or "").strip()
     if invoice_type not in RETAIL_TYPES and not client_afm:
         raise MyDataError(

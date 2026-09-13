@@ -30,7 +30,7 @@ def client():
 @pytest.fixture()
 def client_id(client):
     return client.post("/api/clients", json={
-        "name": "ΑΛΦΑ ΑΕ", "afm": "123456789", "doy": "ΦΑΕ ΑΘΗΝΩΝ",
+        "name": "ΑΛΦΑ ΑΕ", "afm": "123456783", "doy": "ΦΑΕ ΑΘΗΝΩΝ",
         "address": "Σταδίου 1", "email": "info@alfa.gr", "phone": "2101234567",
         "client_type": "company",
     }).json()["id"]
@@ -62,7 +62,7 @@ def test_expense_form_is_accepted(client):
 
 def test_payroll_employee_form_is_accepted(client):
     r = client.post("/api/payroll/employees", json={
-        "name": "Μαρία Παπαδοπούλου", "afm": "987654321", "amka": "01019012345",
+        "name": "Μαρία Παπαδοπούλου", "afm": "987654324", "amka": "01019012345",
         "position": "Δικηγόρος", "gross_salary": 1500, "dependents": 0,
         "hire_date": "2024-01-15", "active": True,
     })

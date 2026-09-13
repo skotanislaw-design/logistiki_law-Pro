@@ -30,9 +30,9 @@ from mydata_client import MyDataError, build_invoices_doc_xml
 XSD = pathlib.Path(__file__).parent / "fixtures" / "mydata" / "InvoicesDoc-v2.0.1.xsd"
 NS = "{http://www.aade.gr/myDATA/invoice/v1.0}"
 
-FIRM = {"afm": "123456789"}
-FIRM_WITH_WITHHOLDING = {"afm": "123456789", "withholding_enabled": True}
-COMPANY = {"name": "ΑΛΦΑ ΑΕ", "afm": "987654321", "client_type": "company"}
+FIRM = {"afm": "123456783"}
+FIRM_WITH_WITHHOLDING = {"afm": "123456783", "withholding_enabled": True}
+COMPANY = {"name": "ΑΛΦΑ ΑΕ", "afm": "987654324", "client_type": "company"}
 INDIVIDUAL = {"name": "Ιωάννης Παπαδόπουλος", "client_type": "individual"}
 
 
@@ -72,7 +72,7 @@ def _assert_valid(schema, doc):
     ("B2B με παρακράτηση", {"number": "ΤΠΥ-2026-0004", "date": "2026-09-10",
                             "line_items": [_line(5000.0)]}, COMPANY, FIRM_WITH_WITHHOLDING),
     ("Πιστωτικό 5.1", {"number": "ΠΙΣ-2026-0001", "date": "2026-09-10",
-                       "correlated_mark": "400001234567890",
+                       "correlated_mark": "400001234567830",
                        "line_items": [_line(1000.0)]}, COMPANY, FIRM),
     ("ΑΠΥ λιανικής 11.2", {"number": "ΑΠΥ-2026-0001", "date": "2026-09-10",
                            "line_items": [_line(200.0)]}, INDIVIDUAL, FIRM),
@@ -184,10 +184,10 @@ def test_withholding_category_is_configurable():
 
 def test_credit_note_carries_the_correlated_mark(schema):
     doc = _doc({"number": "ΠΙΣ-2026-0001", "date": "2026-09-10",
-                "correlated_mark": "400001234567890", "line_items": [_line(1000.0)]}, COMPANY, FIRM)
+                "correlated_mark": "400001234567830", "line_items": [_line(1000.0)]}, COMPANY, FIRM)
     _assert_valid(schema, doc)
     assert _text(doc, "invoiceType") == "5.1"
-    assert _text(doc, "correlatedInvoices") == "400001234567890"
+    assert _text(doc, "correlatedInvoices") == "400001234567830"
 
 
 def test_endpoints_match_the_official_documentation():
@@ -223,7 +223,7 @@ def _issued_invoice(app_client, price=1000.0):
     app_client.post("/api/auth/register",
                     json={"email": "d@example.gr", "password": "Str0ngPass!", "name": "Δ"})
     cid = app_client.post("/api/clients", json={
-        "name": "ΑΛΦΑ ΑΕ", "afm": "987654321", "client_type": "company"}).json()["id"]
+        "name": "ΑΛΦΑ ΑΕ", "afm": "987654324", "client_type": "company"}).json()["id"]
     iid = app_client.post("/api/invoices", json={
         "client_id": cid, "date": "2026-09-10",
         "line_items": [_line(price)]}).json()["id"]

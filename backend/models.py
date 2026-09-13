@@ -51,6 +51,9 @@ class Client(BaseDocument):
     email: str = ""
     phone: str = ""
     client_type: Literal["individual", "company"] = "individual"
+    # Ο έλεγχος ψηφίου ελέγχου αφορά μόνο ελληνικά ΑΦΜ. Οι υπάρχουσες εγγραφές δεν έχουν
+    # το πεδίο και διαβάζονται ως «GR» — ακριβώς όπως τις διαβίβαζε ήδη ο κώδικας.
+    country: str = "GR"
     created_at: str = Field(default_factory=now_iso)
     created_by: Optional[str] = None
 

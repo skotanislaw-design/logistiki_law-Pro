@@ -36,7 +36,7 @@ def _rows(client, **params):
 def test_state_change_leaves_exactly_one_row(client):
     _admin(client)
     before = len(_rows(client))
-    client.post("/api/clients", json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456789"})
+    client.post("/api/clients", json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456783"})
     rows = _rows(client)
     created = [r for r in rows if r["action"] == "post:clients"]
     assert len(created) == 1
@@ -51,7 +51,7 @@ def test_state_change_leaves_exactly_one_row(client):
 def test_reads_are_not_logged_by_default(client):
     """Αν καταγραφόταν κάθε GET, το ίχνος θα πνιγόταν σε θόρυβο και θα ήταν άχρηστο."""
     _admin(client)
-    client.post("/api/clients", json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456789"})
+    client.post("/api/clients", json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456783"})
     before = len(_rows(client))
     client.get("/api/clients")
     client.get("/api/invoices")
@@ -61,7 +61,7 @@ def test_reads_are_not_logged_by_default(client):
 def test_sensitive_read_is_logged_explicitly(client):
     """Ο φάκελος δέουσας επιμέλειας είναι η εξαίρεση: η ανάγνωσή του καταγράφεται."""
     _admin(client)
-    cid = client.post("/api/clients", json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456789"}).json()["id"]
+    cid = client.post("/api/clients", json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456783"}).json()["id"]
     client.post("/api/kyc/records", json={"client_id": cid, "client_name": "ΑΛΦΑ ΑΕ",
                                           "id_type": "id_card", "id_number": "ΑΒ123456"})
     client.get(f"/api/kyc/records/{cid}")
@@ -74,7 +74,7 @@ def test_sensitive_read_is_logged_explicitly(client):
 def test_sub_action_distinguishes_issue_from_create(client):
     """Χωρίς υπο-ενέργεια, η έκδοση και η δημιουργία ήταν και οι δύο «post:invoices»."""
     _admin(client)
-    cid = client.post("/api/clients", json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456789"}).json()["id"]
+    cid = client.post("/api/clients", json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456783"}).json()["id"]
     iid = client.post("/api/invoices", json={
         "client_id": cid, "date": "2026-09-10",
         "line_items": [{"description": "Αμοιβή", "quantity": 1, "unit_price": 1000.0, "vat_rate": 24}],
@@ -115,7 +115,7 @@ def test_audit_trail_is_tenant_scoped(client):
     import server
 
     _admin(client, "firm-a@example.gr")
-    client.post("/api/clients", json={"name": "ΠΕΛΑΤΗΣ ΤΟΥ Α", "afm": "123456789"})
+    client.post("/api/clients", json={"name": "ΠΕΛΑΤΗΣ ΤΟΥ Α", "afm": "123456783"})
     assert any(r["action"] == "post:clients" for r in _rows(client))
 
     with TestClient(server.app, base_url="https://testserver") as other:
@@ -142,7 +142,7 @@ def test_audit_write_failure_does_not_break_the_request(client, monkeypatch):
         raise RuntimeError("η βάση του ίχνους έπεσε")
 
     monkeypatch.setattr(audit.db.audit_logs, "insert_one", boom)
-    r = client.post("/api/clients", json={"name": "ΒΗΤΑ ΕΠΕ", "afm": "987654321"})
+    r = client.post("/api/clients", json={"name": "ΒΗΤΑ ΕΠΕ", "afm": "987654324"})
     assert r.status_code == 200, r.text
 
 
@@ -171,7 +171,7 @@ def test_greek_filenames_do_not_break_http_headers():
 def test_gdpr_export_works_for_a_greek_client_name(client):
     """Το endpoint επέστρεφε 500 για κάθε πελάτη με ελληνικό όνομα — δηλαδή για όλους."""
     _admin(client)
-    cid = client.post("/api/clients", json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456789"}).json()["id"]
+    cid = client.post("/api/clients", json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456783"}).json()["id"]
     r = client.get(f"/api/backup/gdpr/client/{cid}")
     assert r.status_code == 200, r.text
     assert r.content[:2] == b"PK"          # έγκυρο ZIP
@@ -184,7 +184,7 @@ def test_credit_note_pdf_downloads(client):
     from db import db
 
     _admin(client)
-    cid = client.post("/api/clients", json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456789",
+    cid = client.post("/api/clients", json={"name": "ΑΛΦΑ ΑΕ", "afm": "123456783",
                                             "client_type": "company"}).json()["id"]
     iid = client.post("/api/invoices", json={
         "client_id": cid, "date": "2026-09-10",

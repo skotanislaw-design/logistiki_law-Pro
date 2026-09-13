@@ -3,9 +3,26 @@ from bson import ObjectId
 from db import db
 from models import Client
 from auth import get_current_user
+from tax_utils import afm_error, is_valid_afm
 from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/clients", tags=["clients"])
+
+
+def _validate_client_payload(payload: Client) -> None:
+    """Έλεγχος στη διαδρομή, όχι στο μοντέλο.
+
+    Το μοντέλο χρησιμοποιείται και για **ανάγνωση** υπαρχουσών εγγραφών: αν ο έλεγχος
+    έμπαινε εκεί, ένας παλιός πελάτης με λανθασμένο ΑΦΜ θα γινόταν αόρατος στη λίστα
+    αντί να διορθωθεί. Εδώ ελέγχεται μόνο ό,τι γράφεται τώρα.
+    """
+    afm = (payload.afm or "").strip()
+    if not afm:
+        return                      # ιδιώτης χωρίς ΑΦΜ: νόμιμο, εκδίδεται ΑΠΥ λιανικής
+    if (payload.country or "GR").upper() != "GR":
+        return                      # αλλοδαπός: άλλος κανόνας αρίθμησης, δεν ελέγχεται εδώ
+    if not is_valid_afm(afm):
+        raise HTTPException(status_code=400, detail=afm_error(afm, "ΑΦΜ πελάτη"))
 
 
 @router.get("")
@@ -16,6 +33,7 @@ async def list_clients(user: dict = Depends(get_current_user)):
 
 @router.post("")
 async def create_client(payload: Client, user: dict = Depends(get_current_user)):
+    _validate_client_payload(payload)
     payload.id = None
     payload.firm_id = firm_id_for(user)
     payload.created_by = user["email"]
@@ -26,6 +44,7 @@ async def create_client(payload: Client, user: dict = Depends(get_current_user))
 
 @router.put("/{client_id}")
 async def update_client(client_id: str, payload: Client, user: dict = Depends(get_current_user)):
+    _validate_client_payload(payload)
     try:
         oid = ObjectId(client_id)
     except Exception:

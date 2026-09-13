@@ -18,9 +18,19 @@ async def get_settings(user: dict = Depends(get_current_user)):
     return Settings.from_mongo(mask_settings_secrets(doc))
 
 
+def _validate_firm_afm(afm: str) -> None:
+    """Το ΑΦΜ του γραφείου. Λάθος εδώ δεν χαλάει ένα τιμολόγιο — τα απορρίπτει όλα."""
+    from tax_utils import afm_error, is_valid_afm
+
+    value = (afm or "").strip()
+    if value and not is_valid_afm(value):
+        raise HTTPException(status_code=400, detail=afm_error(value, "ΑΦΜ του γραφείου"))
+
+
 @router.put("")
 async def update_settings(payload: Settings, user: dict = Depends(require_admin)):
     from datetime import datetime, timezone
+    _validate_firm_afm(payload.afm)
     doc = await db.settings.find_one(tenant_query(user, {}))
     data = payload.model_dump(exclude={"id", "firm_id"})
     # Ο client δεν λαμβάνει ποτέ τα μυστικά, άρα στέλνει πίσω μάσκα: κράτα τα αποθηκευμένα.
@@ -45,6 +55,8 @@ async def patch_settings(payload: dict, user: dict = Depends(require_admin)):
     data = {k: v for k, v in payload.items() if k in allowed}
     if not data:
         raise HTTPException(status_code=400, detail="Δεν δόθηκαν έγκυρα πεδία ρυθμίσεων")
+    if "afm" in data:
+        _validate_firm_afm(data["afm"])
     current = await db.settings.find_one(tenant_query(user, {}))
     if not current:
         current = Settings(firm_id=firm_id_for(user)).to_mongo()

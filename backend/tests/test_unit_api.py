@@ -39,7 +39,7 @@ def test_settings_endpoint_works_and_is_tenant_scoped(client):
 
 def test_issue_without_aade_credentials_stays_pending_not_synced(client):
     _login(client)
-    c = client.post("/api/clients", json={"name": "Πελάτης Α", "afm": "123456789", "email": ""}).json()
+    c = client.post("/api/clients", json={"name": "Πελάτης Α", "afm": "123456783", "email": ""}).json()
     inv = client.post("/api/invoices", json={"client_id": c["id"], "date": "2026-09-01",
                                               "line_items": [{"description": "Συμβουλευτική", "quantity": 1, "unit_price": 100, "vat_rate": 24}]}).json()
     assert inv["number"].startswith("ΤΠΥ-") and inv["total"] == 124
@@ -83,7 +83,7 @@ def test_invoice_types_endpoint(client):
 
 def test_cancel_and_credit_note_endpoints_enforce_workflow(client):
     _login(client)
-    c = client.post("/api/clients", json={"name": "Πελάτης Α", "afm": "123456789", "client_type": "company"}).json()
+    c = client.post("/api/clients", json={"name": "Πελάτης Α", "afm": "123456783", "client_type": "company"}).json()
     body = {"client_id": c["id"], "date": "2026-09-01",
             "line_items": [{"description": "Συμβουλευτική", "quantity": 1, "unit_price": 100, "vat_rate": 24}]}
     inv = client.post("/api/invoices", json=body).json()
@@ -102,7 +102,7 @@ def test_cancel_and_credit_note_endpoints_enforce_workflow(client):
 
 def test_credit_note_amount_must_be_positive(client):
     _login(client)
-    c = client.post("/api/clients", json={"name": "Πελάτης Β", "afm": "123456789", "client_type": "company"}).json()
+    c = client.post("/api/clients", json={"name": "Πελάτης Β", "afm": "123456783", "client_type": "company"}).json()
     inv = client.post("/api/invoices", json={"client_id": c["id"], "date": "2026-09-01",
                                              "line_items": [{"description": "x", "quantity": 1, "unit_price": 100, "vat_rate": 24}]}).json()
     r = client.post(f"/api/invoices/{inv['id']}/credit-note", json={"amount": -5})

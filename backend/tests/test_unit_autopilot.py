@@ -91,7 +91,7 @@ def test_build_digest_mentions_decisions_and_unpaid():
 async def _seed(settings_extra=None):
     settings = {**BASE_SETTINGS, **(settings_extra or {})}
     await db.settings.insert_one(dict(settings))
-    client = await db.clients.insert_one({"firm_id": FIRM, "name": "Παπαδόπουλος", "email": "client@example.gr", "afm": "123456789"})
+    client = await db.clients.insert_one({"firm_id": FIRM, "name": "Παπαδόπουλος", "email": "client@example.gr", "afm": "123456783"})
     return settings, str(client.inserted_id)
 
 
@@ -213,7 +213,7 @@ async def test_reminder_is_sent_when_due_and_counted(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_mydata_retry_transmits_when_credentials_exist(monkeypatch):
-    settings, client_id = await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "111111111"})
+    settings, client_id = await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "111111114"})
     calls = []
 
     async def fake_send_invoice(settings, invoice, client):
@@ -276,7 +276,7 @@ async def _async_value(v):
 
 @pytest.mark.asyncio
 async def test_mydata_expense_sync_creates_expenses_once(monkeypatch):
-    settings, _ = await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456789"})
+    settings, _ = await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456783"})
     calls = []
 
     async def fake_request_docs(settings, mark):
@@ -324,7 +324,7 @@ async def test_mydata_expense_sync_skips_without_credentials_or_afm(monkeypatch)
 @pytest.mark.asyncio
 async def test_mydata_expense_sync_reports_aade_failure(monkeypatch):
     from mydata_client import MyDataError as _E
-    await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456789"})
+    await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456783"})
 
     async def boom(settings, mark):
         raise _E("Υπέρβαση ορίου κλήσεων προς την ΑΑΔΕ.")
@@ -341,7 +341,7 @@ async def test_mydata_expense_sync_reports_aade_failure(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancel_invoice_calls_aade_and_blocks_paid(monkeypatch):
     import invoice_services as svc
-    settings, client_id = await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456789"})
+    settings, client_id = await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456783"})
     cancelled = []
 
     async def fake_cancel(settings, mark):
@@ -366,7 +366,7 @@ async def test_cancel_invoice_calls_aade_and_blocks_paid(monkeypatch):
 @pytest.mark.asyncio
 async def test_credit_note_mirrors_original_and_links_both_ways():
     import invoice_services as svc
-    settings, client_id = await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456789"})
+    settings, client_id = await _seed({"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456783"})
     original = await db.invoices.insert_one({
         "firm_id": FIRM, "number": "ΤΠΥ-2026-0001", "client_id": client_id, "client_name": "Παπαδόπουλος",
         "status": "paid", "mydata_status": "synced", "mydata_mark": "400001", "total": 124.0,
@@ -406,7 +406,7 @@ async def test_credit_note_partial_amount_and_requires_mark():
 async def test_payable_amount_subtracts_withholding():
     import invoice_services as svc
     settings, client_id = await _seed({"withholding_enabled": True, "withholding_min_net": 300})
-    company = await db.clients.insert_one({"firm_id": FIRM, "name": "ΑΕ", "afm": "987654321", "client_type": "company"})
+    company = await db.clients.insert_one({"firm_id": FIRM, "name": "ΑΕ", "afm": "987654324", "client_type": "company"})
     inv = {"_id": "x", "firm_id": FIRM, "client_id": str(company.inserted_id), "subtotal": 1000.0, "total": 1240.0, "line_items": []}
     payable, withheld = await svc.payable_amount(FIRM, inv, settings)
     assert (payable, withheld) == (1040.0, 200.0)
