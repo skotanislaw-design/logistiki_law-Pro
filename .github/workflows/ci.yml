@@ -42,6 +42,10 @@ jobs:
           cache: yarn
           cache-dependency-path: frontend/yarn.lock
       - run: yarn install --frozen-lockfile
+      # Οι ευπάθειες είχαν μπαλωθεί χειροκίνητα μέσω resolutions και είχαν παλιώσει σιωπηλά:
+      # κάποιες καρφωμένες εκδόσεις ήταν ακριβώς οι ευάλωτες. Το φράγμα μετατρέπει το
+      # «τα διορθώσαμε κάποτε» σε «θα το μάθουμε όταν ξαναεμφανιστούν».
+      - run: yarn audit --level high
       - run: yarn build
         env:
           CI: "true"
