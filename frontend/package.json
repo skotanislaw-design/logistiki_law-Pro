@@ -65,7 +65,7 @@
   "scripts": {
     "start": "craco start",
     "build": "craco build",
-    "test": "craco test"
+    "test": "vitest run"
   },
   "browserslist": {
     "production": [
@@ -83,7 +83,12 @@
     "@babel/plugin-proposal-private-property-in-object": "7.21.11",
     "@craco/craco": "7.1.0",
     "@eslint/js": "9.23.0",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/lodash": "4.17.24",
+    "@vitejs/plugin-react": "6.1.1",
     "autoprefixer": "10.4.20",
     "dotenv": "16.4.5",
     "eslint": "9.23.0",
@@ -92,8 +97,11 @@
     "eslint-plugin-react": "7.37.4",
     "eslint-plugin-react-hooks": "5.2.0",
     "globals": "15.15.0",
+    "jsdom": "26.1.0",
+    "msw": "^2.15.0",
     "postcss": "8.5.28",
-    "tailwindcss": "3.4.17"
+    "tailwindcss": "3.4.17",
+    "vitest": "4.1.11"
   },
   "resolutions": {
     "react-router": "7.18.3",
@@ -103,8 +111,6 @@
     "qs": "6.16.0",
     "diff": "4.0.4",
     "follow-redirects": "1.16.0",
-    "path-to-regexp": "0.1.13",
-    "rollup": "2.80.0",
     "underscore": "1.13.8",
     "@babel/plugin-transform-modules-systemjs": "7.29.4",
     "@eslint/plugin-kit": "0.3.4",
@@ -137,7 +143,9 @@
     "**/readdirp/picomatch": "2.3.2",
     "**/jest-util/picomatch": "2.3.2",
     "**/tinyglobby/picomatch": "4.0.4",
-    "**/@svgr/plugin-svgo/svgo": "2.8.4"
+    "**/@svgr/plugin-svgo/svgo": "2.8.4",
+    "**/workbox-build/rollup": "2.80.0",
+    "**/express/path-to-regexp": "0.1.13"
   },
   "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
 }
