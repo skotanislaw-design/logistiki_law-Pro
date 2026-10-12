@@ -256,6 +256,7 @@ def _webhook(client, monkeypatch, event_type, session_id, payment_status="paid")
     import routes_payments
     event = {"type": event_type, "data": {"object": {"id": session_id, "payment_intent": "pi_1",
                                                       "payment_status": payment_status}}}
+    monkeypatch.setattr(routes_payments, "STRIPE_WEBHOOK_SECRET", "whsec_test")      # χωρίς μυστικό το webhook δίνει 503
     monkeypatch.setattr(routes_payments.stripe.Webhook, "construct_event",
                         staticmethod(lambda payload, sig, secret: event))
     return client.post("/api/stripe/webhook", content=b"{}", headers={"stripe-signature": "t=1,v1=x"})

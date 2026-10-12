@@ -328,21 +328,28 @@ async def _apply_card_payment(tx: dict) -> str:
     paid = round(float(tx.get("amount") or 0), 2)
 
     async def alert(type_: str, title: str, message: str) -> None:
-        try:
-            await notify(firm_id, type_, "critical", title, message, entity="invoice", entity_id=invoice_id,
-                         requires_action=True, dedupe_key=f"{type_}:{session_id}")
-        except Exception:  # noqa: BLE001 — η ειδοποίηση δεν πρέπει να κρύψει το αρχικό πρόβλημα
-            logger.exception("Δεν καταχωρήθηκε ειδοποίηση πληρωμής κάρτας (συνεδρία %s)", session_id)
+        # Η ειδοποίηση ΠΡΕΠΕΙ να καταχωρηθεί. Αν αποτύχει, το σφάλμα φεύγει προς τα πάνω, η εφαρμογή μένει εκκρεμής
+        # (`apply_pending`) και ξαναδοκιμάζεται — αλλιώς μια πληρωμή που χρειάζεται άνθρωπο θα έκλεινε χωρίς να το
+        # μάθει κανείς. Οι επαναλήψεις είναι φραγμένες από τον μετρητή προσπαθειών (`APPLY_MAX_ATTEMPTS`).
+        await notify(firm_id, type_, "critical", title, message, entity="invoice", entity_id=invoice_id,
+                     requires_action=True, dedupe_key=f"{type_}:{session_id}")
+
+    def _is_settled_by_this_payment(doc: dict) -> bool:
+        return doc.get("status") == "paid" and doc.get("paid_via") == "stripe" and doc.get("paid_ref") == session_id
 
     try:
         invoice = await db.invoices.find_one({"_id": ObjectId(invoice_id), "firm_id": firm_id}) or {}
         number = invoice.get("number") or "τιμολόγιο"
-        settled_here = (invoice.get("status") == "paid" and invoice.get("paid_via") == "stripe"
-                        and invoice.get("paid_ref") == session_id)
-        if invoice.get("status") != "issued" and not settled_here:
+        settled_here = _is_settled_by_this_payment(invoice)
+        # Όλες οι άλλες διαδρομές αρνούνται τιμολόγιο με πιστωτικό (checkout, σύνδεσμος πληρωμής, υπενθύμιση, κατάθεση
+        # τράπεζας, πελατολογικός): μια συνεδρία που άνοιξε πριν εκδοθεί το πιστωτικό δεν πρέπει να το «εξοφλήσει».
+        credited = invoice.get("status") == "issued" and bool(invoice.get("credit_note_id"))
+        if (invoice.get("status") != "issued" or credited) and not settled_here:
+            reason = ("για το τιμολόγιο εκδόθηκε πιστωτικό" if credited
+                      else f"είχε κατάσταση «{invoice.get('status') or 'άγνωστη'}»")
             await alert(
                 "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} για τιμολόγιο που δεν ήταν ανοιχτό",
-                f"Το {number} είχε κατάσταση «{invoice.get('status') or 'άγνωστη'}» όταν ολοκληρώθηκε η πληρωμή "
+                f"Το {number}: {reason} όταν ολοκληρώθηκε η πληρωμή "
                 f"(συνεδρία {session_id}). Τα χρήματα έχουν εισπραχθεί: ελέγξτε αν χρειάζεται επιστροφή ή σύνδεση "
                 "με άλλο παραστατικό.")
             return "not_open"
@@ -359,12 +366,15 @@ async def _apply_card_payment(tx: dict) -> str:
                 return "underpaid"
             if not await mark_paid(firm_id, invoice["_id"], paid_via="stripe", ref=session_id):
                 fresh = await db.invoices.find_one({"_id": invoice["_id"], "firm_id": firm_id}) or {}
-                await alert(
-                    "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} για τιμολόγιο που δεν ήταν ανοιχτό",
-                    f"Το {number} είχε κατάσταση «{fresh.get('status') or 'άγνωστη'}» όταν ολοκληρώθηκε η πληρωμή "
-                    f"(συνεδρία {session_id}). Τα χρήματα έχουν εισπραχθεί: ελέγξτε αν χρειάζεται επιστροφή ή σύνδεση "
-                    "με άλλο παραστατικό.")
-                return "not_open"
+                # Άλλη προσπάθεια της ΙΔΙΑΣ πληρωμής (το κλείδωμα έληξε ενώ εμείς καθυστερούσαμε) πρόλαβε και
+                # εξόφλησε το τιμολόγιο με αυτή τη συνεδρία: δεν είναι πρόβλημα — συνεχίζουμε με τον έλεγχο ποσού.
+                if not _is_settled_by_this_payment(fresh):
+                    await alert(
+                        "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} για τιμολόγιο που δεν ήταν ανοιχτό",
+                        f"Το {number} είχε κατάσταση «{fresh.get('status') or 'άγνωστη'}» όταν ολοκληρώθηκε η πληρωμή "
+                        f"(συνεδρία {session_id}). Τα χρήματα έχουν εισπραχθεί: ελέγξτε αν χρειάζεται επιστροφή ή σύνδεση "
+                        "με άλλο παραστατικό.")
+                    return "not_open"
         if to_cents(paid) > to_cents(due):
             await alert(
                 "card_payment_overpaid", f"Πληρωμή κάρτας {_fmt(paid)} μεγαλύτερη από το οφειλόμενο",
@@ -386,6 +396,11 @@ async def _apply_card_payment(tx: dict) -> str:
 async def stripe_webhook(request: Request):
     payload = await request.body()
     sig = request.headers.get("stripe-signature", "")
+    if not (STRIPE_WEBHOOK_SECRET or "").strip():
+        # Με κενό μυστικό η βιβλιοθήκη του Stripe δέχεται κάθε γεγονός υπογεγραμμένο με κενό κλειδί (HMAC του b""): όποιος
+        # ξέρει ένα session_id θα μπορούσε να «εξοφλήσει» τιμολόγιο. Χωρίς μυστικό το webhook δεν λειτουργεί καθόλου·
+        # οι εξοφλήσεις εντοπίζονται από το polling (που ρωτά το ίδιο το Stripe με το μυστικό κλειδί του γραφείου).
+        raise HTTPException(status_code=503, detail="Webhook payments are not configured")
     try:
         event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
     except stripe.error.SignatureVerificationError:

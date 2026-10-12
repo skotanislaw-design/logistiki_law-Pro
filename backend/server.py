@@ -171,8 +171,9 @@ def validate_environment() -> None:
         )
     if os.environ.get("STRIPE_SECRET_KEY") and not os.environ.get("STRIPE_WEBHOOK_SECRET"):
         logger.warning(
-            "Το STRIPE_WEBHOOK_SECRET λείπει ενώ οι πληρωμές είναι ενεργές: κάθε webhook θα "
-            "απορρίπτεται και οι εξοφλήσεις θα εντοπίζονται μόνο μέσω polling."
+            "Το STRIPE_WEBHOOK_SECRET λείπει ενώ οι πληρωμές είναι ενεργές: το webhook του Stripe απενεργοποιείται "
+            "(απάντηση 503, για λόγους ασφαλείας — χωρίς μυστικό δεν μπορεί να ελεγχθεί η υπογραφή) και οι εξοφλήσεις "
+            "θα εντοπίζονται μόνο μέσω polling."
         )
 
 

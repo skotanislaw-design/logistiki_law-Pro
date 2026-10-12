@@ -227,14 +227,16 @@ async def test_the_job_finishes_old_unapplied_payments_and_leaves_everything_els
     await _stuck_tx("cs_other", other_inv, firm=OTHER, paid_at=_ago(minutes=30))
 
     r = (await run_firm(FIRM, ["card_payments"]))[0]
-    assert r["status"] == "ok" and r["stats"] == {"pending": 1, "applied": 1}
+    # Η πληρωμή της παλιάς έκδοσης δεν εφαρμόζεται ποτέ αυτόματα· αναφέρεται μία φορά (βλ. test_unit_card_payments_r5b).
+    assert r["status"] == "ok" and r["stats"] == {"pending": 1, "applied": 1, "legacy_reported": 1}
     assert (await _invoice_doc(old_inv))["status"] == "paid"
     assert (await _invoice_doc(fresh_inv))["status"] == "issued"
     assert (await _invoice_doc(legacy_inv))["status"] == "issued"
     assert (await _invoice_doc(other_inv))["status"] == "issued"
+    assert await db.notifications.count_documents({"dedupe_key": "card_payment_unapplied:cs_legacy"}) == 1
 
     again = (await run_firm(FIRM, ["card_payments"]))[0]
-    assert again["stats"] == {"pending": 0, "applied": 0}
+    assert again["stats"] == {"pending": 0, "applied": 0, "legacy_reported": 0}
 
 
 @pytest.mark.asyncio

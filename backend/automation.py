@@ -269,6 +269,8 @@ def reminder_due(invoice: dict, settings: dict, today: _date | None = None) -> b
         return False
     if invoice.get("credit_note_id"):
         return False        # υπάρχει πιστωτικό: το ποσό που οφείλεται δεν είναι πια το ποσό του τιμολογίου
+    if invoice.get("credit_note_for") or float(invoice.get("total") or 0) < 0:
+        return False        # το ίδιο το πιστωτικό δεν «οφείλεται» — δεν υπενθυμίζεται (θα έδειχνε οφειλόμενο 0,00 €)
     today = today or athens_today()
     try:
         issued = _date.fromisoformat((invoice.get("date") or "")[:10])
@@ -1161,7 +1163,44 @@ async def job_card_payments(firm_id: str, settings: dict) -> dict:
         pending += 1
         if await apply_pending_card_payment(tx["session_id"]):
             applied += 1
-    return {"pending": pending, "applied": applied}
+    return {"pending": pending, "applied": applied, "legacy_reported": await report_legacy_card_payments(firm_id)}
+
+
+async def report_legacy_card_payments(firm_id: str) -> int:
+    """Ειδοποιεί (ΜΟΝΟ ειδοποιεί) για πληρωμές κάρτας που άφησε κολλημένες η προηγούμενη έκδοση της εφαρμογής.
+
+    Η προηγούμενη έκδοση σημείωνε τη συναλλαγή «paid» και μετά εφάρμοζε την πληρωμή στο τιμολόγιο· αν η διεργασία
+    έπεφτε ανάμεσα, τα χρήματα είχαν εισπραχθεί και το τιμολόγιο έμενε ανοιχτό, χωρίς δείκτη εκκρεμότητας — ο
+    Autopilot δεν μπορούσε να την εντοπίσει. Μια τέτοια συναλλαγή είναι «paid» χωρίς `apply_pending` και χωρίς
+    `apply_result` (η νέα έκδοση βάζει πάντα το πρώτο και, όταν τελειώσει, το δεύτερο).
+
+    Δεν εφαρμόζεται αυτόματα: ό,τι έγινε με την παλιά λογική δεν ξέρουμε αν διευθετήθηκε αλλιώς (χειροκίνητη εξόφληση,
+    επιστροφή). Το γραφείο ειδοποιείται μία φορά και η συναλλαγή σημειώνεται, ώστε να μην ξαναελεγχθεί ούτε να
+    ξανανοίξει κάρτα που έκλεισε άνθρωπος.
+    """
+    reported = 0
+    async for tx in db.payment_transactions.find(firm_query(firm_id, {
+            "payment_status": "paid", "apply_pending": {"$exists": False}, "apply_result": {"$exists": False}})):
+        invoice = None
+        try:
+            invoice = await db.invoices.find_one(firm_query(firm_id, {"_id": ObjectId(tx.get("invoice_id") or "")}))
+        except Exception:  # noqa: BLE001 — άκυρο id: δεν υπάρχει τιμολόγιο να ειδοποιηθεί κανείς γι' αυτό
+            invoice = None
+        outcome = "legacy_checked"
+        if invoice and invoice.get("status") == "issued":
+            paid = round(float(tx.get("amount") or 0), 2)
+            await notify(
+                firm_id, "card_payment_unapplied", "critical", f"Πληρωμή κάρτας {_fmt(paid)} που δεν εφαρμόστηκε",
+                f"Η πληρωμή (συνεδρία {tx.get('session_id')}) εισπράχθηκε και καταγράφηκε από προηγούμενη έκδοση της "
+                f"εφαρμογής, αλλά το {invoice.get('number') or 'τιμολόγιο'} είναι ακόμη ανοιχτό. Δεν εφαρμόζεται "
+                "αυτόματα: ελέγξτε αν έχει εξοφληθεί αλλιώς και συμφωνήστε την πληρωμή χειροκίνητα.",
+                entity="invoice", entity_id=str(invoice["_id"]), requires_action=True,
+                dedupe_key=f"card_payment_unapplied:{tx.get('session_id')}")
+            outcome = "legacy_reported"
+            reported += 1
+        await db.payment_transactions.update_one(
+            {"_id": tx["_id"], "apply_result": {"$exists": False}}, {"$set": {"apply_result": outcome}})
+    return reported
 
 
 # ---------------------------------------------------------------- cycle -----
