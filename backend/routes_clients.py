@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from bson import ObjectId
-from db import db
+from db import db, fetch_all
 from models import Client
 from auth import get_current_user
 from tax_utils import afm_error, is_valid_afm
@@ -27,7 +27,8 @@ def _validate_client_payload(payload: Client) -> None:
 
 @router.get("")
 async def list_clients(user: dict = Depends(get_current_user)):
-    docs = await db.clients.find(tenant_query(user)).sort("name", 1).to_list(1000)
+    # Όλοι οι πελάτες: με όριο, ο πελάτης «Ω…» χανόταν από τη λίστα και δεν μπορούσε να επιλεγεί σε νέο τιμολόγιο.
+    docs = await fetch_all(db.clients.find(tenant_query(user)).sort("name", 1))
     return [Client.from_mongo(d) for d in docs]
 
 

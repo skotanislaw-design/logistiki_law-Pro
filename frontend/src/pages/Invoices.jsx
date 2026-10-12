@@ -41,10 +41,16 @@ export default function Invoices() {
   const [issuingId, setIssuingId] = useState(null);
   const [markingPaidId, setMarkingPaidId] = useState(null);
   const [filter, setFilter] = useState("all");
+  // Ο server στέλνει όλα τα πρόχειρα και τα εκδοθέντα, αλλά μόνο τα τελευταία εξοφλημένα/ακυρωμένα. Όταν κόπηκαν
+  // παλαιότερα, τα σύνολα «Εξοφλημένα» και «Σύνολο» αφορούν μόνο όσα φορτώθηκαν — το δηλώνουμε αντί να τα παρουσιάζουμε ως πλήρη.
+  const [closedTruncated, setClosedTruncated] = useState(false);
   const mediaRef = useState({ recorder: null, chunks: [] })[0];
 
   const load = () => {
-    axios.get(`${API}/invoices`).then((r) => setInvoices(r.data)).catch((e) => toast.error(errMsg(e)));
+    axios.get(`${API}/invoices`).then((r) => {
+      setInvoices(r.data);
+      setClosedTruncated(r.headers?.["x-closed-truncated"] === "1");
+    }).catch((e) => toast.error(errMsg(e)));
     axios.get(`${API}/clients`).then((r) => setClients(r.data)).catch(() => {});
   };
 
@@ -313,6 +319,13 @@ export default function Invoices() {
           <div className="mt-1 text-xs text-muted-foreground">{invoices.length} τιμολόγια συνολικά</div>
         </button>
       </div>
+
+      {closedTruncated && (
+        <div className="text-xs text-muted-foreground border border-border/60 rounded-md px-3 py-2" data-testid="closed-truncated-notice">
+          Εμφανίζονται όλα τα πρόχειρα και τα εκδοθέντα και τα τελευταία 1.000 εξοφλημένα/ακυρωμένα τιμολόγια. Τα «Ανείσπρακτα» είναι
+          πλήρη· τα «Εξοφλημένα» και το «Σύνολο» αφορούν μόνο όσα εμφανίζονται.
+        </div>
+      )}
 
       <div className="lux-card overflow-hidden animate-in-up">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border/60">

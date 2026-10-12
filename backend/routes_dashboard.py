@@ -1,6 +1,6 @@
 import calendar as pycal
 from fastapi import APIRouter, Depends
-from db import db
+from db import db, fetch_all
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from tax_utils import athens_today, next_vat_deadline, next_efka_deadline
@@ -16,8 +16,19 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
     settings = await db.settings.find_one(tenant_query(user, {}))
     vat_period = settings.get("vat_period", "monthly") if settings else "monthly"
 
-    invoices = await db.invoices.find(tenant_query(user, {"status": {"$in": ["issued", "paid"]}})).to_list(2000)
-    expenses = await db.expenses.find(tenant_query(user, {})).to_list(2000)
+    # Τα έσοδα/έξοδα του μήνα, του έτους και του εξαμηνιαίου γραφήματος χρειάζονται μόνο το πρόσφατο παράθυρο ημερομηνιών.
+    # Παλιότερα διαβάζονταν «τα πρώτα 2.000» χωρίς σειρά, και ό,τι περίσσευε έλειπε σιωπηλά από τα σύνολα.
+    chart_months = []
+    for i in range(5, -1, -1):
+        m, y = today.month - i, today.year
+        while m <= 0:
+            m += 12
+            y -= 1
+        chart_months.append((y, m))
+    window_start = min(f"{today.year}-01-01", f"{chart_months[0][0]}-{chart_months[0][1]:02d}-01")
+    invoices = await fetch_all(db.invoices.find(
+        tenant_query(user, {"status": {"$in": ["issued", "paid"]}, "date": {"$gte": window_start}})))
+    expenses = await fetch_all(db.expenses.find(tenant_query(user, {"date": {"$gte": window_start}})))
 
     month_invoices = [i for i in invoices if i.get("date", "") >= month_start]
     month_expenses = [e for e in expenses if e.get("date", "") >= month_start]
@@ -38,12 +49,7 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
         d["id"] = str(d.pop("_id"))
 
     chart_data = []
-    for i in range(5, -1, -1):
-        m = today.month - i
-        y = today.year
-        while m <= 0:
-            m += 12
-            y -= 1
+    for y, m in chart_months:
         month_str = f"{y}-{m:02d}-01"
         next_m = m + 1
         next_y = y
@@ -61,7 +67,8 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
     year_expense = round(sum(e.get("amount", 0) - e.get("vat_amount", 0) for e in expenses if e.get("date", "") >= year_start), 2)
     # Ανείσπρακτα = ό,τι πράγματι απομένει να εισπραχθεί (μετά την παρακράτηση και ό,τι εξοφλήθηκε από πελατολογικό),
     # όχι το μεικτό σύνολο — ο ίδιος ορισμός με την πύλη του πελάτη (βλ. invoice_services.invoice_balances).
-    unpaid = [i for i in invoices if i.get("status") == "issued"]
+    # ΟΛΑ τα εκδοθέντα, ανεξάρτητα από ημερομηνία: ένα τιμολόγιο του περασμένου έτους που δεν εισπράχθηκε μετράει.
+    unpaid = await fetch_all(db.invoices.find(tenant_query(user, {"status": "issued"})))
     balances = await invoice_balances(firm_id_for(user), unpaid, settings or {})
     unpaid_total = open_total(unpaid, balances)
 

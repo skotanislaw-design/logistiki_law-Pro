@@ -3,7 +3,7 @@ import re
 import uuid
 from ai_runtime import LlmChat, UserMessage, TextDelta, StreamDone
 from ai_helpers import EMERGENT_LLM_KEY
-from db import db
+from db import db, fetch_all
 from tenant import tenant_query, firm_id_for
 from tax_utils import athens_today, next_vat_deadline, next_efka_deadline
 from invoice_services import invoice_balances, open_total
@@ -13,24 +13,30 @@ def _fmt(v):
     return f"{(v or 0):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+CLIENT_NAMES_LIMIT = 200      # πόσα ονόματα πελατών μπαίνουν στο πλαίσιο του βοηθού (ο συνολικός αριθμός δίνεται χωριστά)
+
+
 async def build_context(user: dict) -> dict:
     today = athens_today()
     month_start = today.replace(day=1).isoformat()
     q = lambda extra=None: tenant_query(user, extra)  # noqa: E731
     settings = await db.settings.find_one(q()) or {}
-    invoices = await db.invoices.find(q()).sort("created_at", -1).to_list(500)
-    expenses = await db.expenses.find(q()).sort("created_at", -1).to_list(500)
-    clients = await db.clients.find(q()).to_list(200)
+    # Τα ανεξόφλητα διαβάζονται ΟΛΑ: το «οφειλόμενο» και το πλήθος δεν επιτρέπεται να εξαρτώνται από το αν το παλαιό
+    # τιμολόγιο χωρά στα «τελευταία 500». Τα υπόλοιπα είναι ή φιλτραρισμένα στον τρέχοντα μήνα ή ρητά «τα τελευταία N».
+    unpaid = await fetch_all(db.invoices.find(q({"status": "issued"})).sort("created_at", -1))
+    month_inv = await fetch_all(db.invoices.find(q({"status": {"$in": ["issued", "paid"]}, "date": {"$gte": month_start}})))
+    month_exp = await fetch_all(db.expenses.find(q({"date": {"$gte": month_start}})))
+    draft_count = await db.invoices.count_documents(q({"status": "draft"}))
+    recent_invoices = await db.invoices.find(q()).sort("created_at", -1).limit(10).to_list(10)
+    recent_expenses = await db.expenses.find(q()).sort("created_at", -1).limit(10).to_list(10)
+    clients = await db.clients.find(q(), {"name": 1}).sort("name", 1).limit(CLIENT_NAMES_LIMIT).to_list(CLIENT_NAMES_LIMIT)
+    client_count = await db.clients.count_documents(q())
     cases = await db.cases.find(q()).sort("created_at", -1).to_list(200)
     hearings = await db.hearings.find(q({"status": {"$ne": "completed"}})).sort("date", 1).to_list(100)
 
-    issued = [i for i in invoices if i.get("status") in ("issued", "paid")]
-    month_inv = [i for i in issued if i.get("date", "") >= month_start]
-    month_exp = [e for e in expenses if e.get("date", "") >= month_start]
-    unpaid = [i for i in invoices if i.get("status") == "issued"]
     # «Οφειλόμενο» = ό,τι απομένει να εισπραχθεί (μετά την παρακράτηση και τα εξοφλημένα από πελατολογικό): αν ο βοηθός
     # έβλεπε μόνο το σύνολο, θα απαντούσε «οφείλονται 1.240 €» για ποσό που ο πελάτης χρωστά 640.
-    balances = await invoice_balances(firm_id_for(user), unpaid, settings, {str(c["_id"]): c for c in clients})
+    balances = await invoice_balances(firm_id_for(user), unpaid, settings)
 
     output_vat = round(sum(i.get("vat_amount", 0) for i in month_inv), 2)
     input_vat = round(sum(e.get("vat_amount", 0) for e in month_exp), 2)
@@ -49,6 +55,7 @@ async def build_context(user: dict) -> dict:
         "επόμενη_προθεσμία_ΦΠΑ": next_vat_deadline(today, settings.get("vat_period", "monthly")).isoformat(),
         "επόμενη_προθεσμία_ΕΦΚΑ": next_efka_deadline(today).isoformat(),
         "πελάτες": [c["name"] for c in clients],
+        "πελάτες_σύνολο": client_count,
         "υποθέσεις": [
             {"αριθμός": cs.get("number"), "τίτλος": cs.get("title"), "πελάτης": cs.get("client_name"), "δικαστήριο": cs.get("court"), "κατάσταση": cs.get("status"), "επόμενη_ενέργεια": cs.get("next_action")}
             for cs in cases[:30]
@@ -58,19 +65,20 @@ async def build_context(user: dict) -> dict:
             for h in hearings[:20]
         ],
         "ανείσπρακτα_σύνολο": _fmt(open_total(unpaid, balances)),
+        "ανεξόφλητα_πλήθος": len(unpaid),
         "ανεξόφλητα_τιμολόγια": [
             {"αριθμός": i.get("number"), "πελάτης": i.get("client_name"), "σύνολο": _fmt(i.get("total")),
              "οφειλόμενο": _fmt(balances[str(i["_id"])][1]), "ημερομηνία": i.get("date")}
             for i in unpaid[:20]
         ],
-        "πρόχειρα_τιμολόγια": sum(1 for i in invoices if i.get("status") == "draft"),
+        "πρόχειρα_τιμολόγια": draft_count,
         "τελευταία_τιμολόγια": [
             {"αριθμός": i.get("number"), "πελάτης": i.get("client_name"), "σύνολο": _fmt(i.get("total")), "κατάσταση": i.get("status"), "ημερομηνία": i.get("date")}
-            for i in invoices[:10]
+            for i in recent_invoices
         ],
         "τελευταία_έξοδα": [
             {"προμηθευτής": e.get("vendor"), "ποσό": _fmt(e.get("amount")), "κατηγορία": e.get("category"), "ημερομηνία": e.get("date")}
-            for e in expenses[:10]
+            for e in recent_expenses
         ],
     }
 

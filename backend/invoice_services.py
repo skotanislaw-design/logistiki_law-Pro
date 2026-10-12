@@ -6,6 +6,7 @@ decided it was time.
 """
 import os
 import re
+import math
 import asyncio
 import logging
 from datetime import datetime, timezone, date as _date
@@ -76,9 +77,15 @@ def check_explicit_withholding(invoice: dict, invoice_type: str) -> None:
     πρέπει να είναι από 0 έως την καθαρή αξία. Το 0 επιτρέπεται παντού («καμία παρακράτηση»).
     """
     amount = invoice.get("withholding_amount")
-    if amount is None or float(amount) == 0:
+    if amount is None:
         return
     amount = float(amount)
+    if not math.isfinite(amount):
+        # Το NaN δεν «σπάει» κανέναν από τους ελέγχους ορίων παρακάτω (κάθε σύγκριση είναι ψευδής) και θα διέδιδε NaN
+        # στο πληρωτέο και στο ανείσπρακτο ολόκληρου του γραφείου.
+        raise InvoiceWorkflowError("Η παρακράτηση πρέπει να είναι έγκυρος αριθμός.")
+    if amount == 0:
+        return
     if invoice_type in CREDIT_TYPES:
         raise InvoiceWorkflowError(
             f"Το πιστωτικό τιμολόγιο δεν φέρει παρακράτηση ({_eur(amount)}). Η παρακράτηση του αρχικού τιμολογίου "

@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from db import db
+from db import db, fetch_all
 from http_utils import content_disposition
 from auth import get_current_user, require_admin
 from tenant import tenant_query, firm_id_for
@@ -166,9 +166,10 @@ async def _vat_return_payload(user: dict, period: str) -> dict:
         raise HTTPException(status_code=404, detail=f"Η περίοδος {period} δεν έχει υπολογιστεί ακόμη.")
     settings = await db.settings.find_one(tenant_query(user)) or {}
     start, end = doc["period_start"], doc["period_end"] + "T23:59:59"
-    invoices = await db.invoices.find(tenant_query(user, {
-        "status": {"$in": ["issued", "paid"]}, "date": {"$gte": start, "$lte": end}})).to_list(20000)
-    expenses = await db.expenses.find(tenant_query(user, {"date": {"$gte": start, "$lte": end}})).to_list(20000)
+    # Χωρίς όριο: η δήλωση Φ2 είναι αντίγραφο για το TAXISnet — κάθε παραστατικό της περιόδου πρέπει να μετράει.
+    invoices = await fetch_all(db.invoices.find(tenant_query(user, {
+        "status": {"$in": ["issued", "paid"]}, "date": {"$gte": start, "$lte": end}})))
+    expenses = await fetch_all(db.expenses.find(tenant_query(user, {"date": {"$gte": start, "$lte": end}})))
     return build_vat_return(doc, invoices, expenses, settings)
 
 

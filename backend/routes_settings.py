@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 from db import db
 from models import Settings
 from auth import get_current_user, require_admin
@@ -18,10 +19,13 @@ async def get_settings(user: dict = Depends(get_current_user)):
     return Settings.from_mongo(mask_settings_secrets(doc))
 
 
-def _validate_firm_afm(afm: str) -> None:
+def _validate_firm_afm(afm) -> None:
     """Το ΑΦΜ του γραφείου. Λάθος εδώ δεν χαλάει ένα τιμολόγιο — τα απορρίπτει όλα."""
     from tax_utils import afm_error, is_valid_afm
 
+    if afm is not None and not isinstance(afm, str):
+        # Το PATCH δέχεται ελεύθερο JSON: ένας αριθμός ή μια λίστα εδώ έσκαγε με AttributeError (500).
+        raise HTTPException(status_code=400, detail="Το ΑΦΜ του γραφείου πρέπει να είναι κείμενο.")
     value = (afm or "").strip()
     if value and not is_valid_afm(value):
         raise HTTPException(status_code=400, detail=afm_error(value, "ΑΦΜ του γραφείου"))
@@ -30,12 +34,28 @@ def _validate_firm_afm(afm: str) -> None:
 MAX_WITHHOLDING_RATE = 0.5
 
 
+def _as_number(value, label: str) -> float:
+    """Ο αριθμός ενός πεδίου ρύθμισης, ή 400. Το PATCH δέχεται ελεύθερο JSON: «abc», μια λίστα ή ένα `bool` εδώ
+    έσκαγαν με ValueError/TypeError (500), ενώ το `NaN` περνούσε από κάθε σύγκριση ορίων ως «έγκυρο»."""
+    from tax_utils import is_finite_number
+
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError:
+            value = None
+    if not is_finite_number(value):
+        raise HTTPException(status_code=400, detail=f"{label}: αναμένεται έγκυρος αριθμός.")
+    return float(value)
+
+
 def _validate_withholding(category=None, rate=None, min_net=None) -> None:
     """Οι παράμετροι παρακράτησης που επηρεάζουν παραστατικά και διαβίβαση στο myDATA.
 
     * Κατηγορία: διαβιβάζεται αυτούσια ως `taxCategory`· τιμή εκτός λίστας απορρίπτεται από την ΑΑΔΕ μόλις εκδοθεί
       το πρώτο τιμολόγιο με παρακράτηση.
     * Συντελεστής: κλάσμα (0,20 = 20%). Το 20 αντί για 0,20 θα έβγαζε παρακράτηση 20 φορές την καθαρή αξία.
+    * Όριο καθαρής αξίας: όχι αρνητικό και όχι NaN (με NaN η παρακράτηση θα εφαρμοζόταν σε κάθε τιμολόγιο).
     Ελέγχονται μόνο οι παράμετροι που δίνονται (το PATCH δεν στέλνει όλες).
     """
     from mydata_client import WITHHOLDING_CATEGORIES
@@ -44,11 +64,13 @@ def _validate_withholding(category=None, rate=None, min_net=None) -> None:
         raise HTTPException(status_code=400, detail=(
             f"Η κατηγορία παρακράτησης «{category}» δεν είναι έγκυρη. Επιτρέπονται οι κατηγορίες 2, 3 ή 10 "
             "(" + "· ".join(f"{k}: {v}" for k, v in WITHHOLDING_CATEGORIES.items()) + ")."))
-    if rate is not None and not (0 <= float(rate) <= MAX_WITHHOLDING_RATE):
-        raise HTTPException(status_code=400, detail=(
-            f"Ο συντελεστής παρακράτησης {rate} δεν είναι έγκυρος: δίνεται ως ποσοστό σε μορφή δεκαδικού "
-            f"(π.χ. 0,20 για 20%) και δεν ξεπερνά το {MAX_WITHHOLDING_RATE:g}."))
-    if min_net is not None and float(min_net) < 0:
+    if rate is not None:
+        number = _as_number(rate, "Ο συντελεστής παρακράτησης")
+        if not (0 <= number <= MAX_WITHHOLDING_RATE):
+            raise HTTPException(status_code=400, detail=(
+                f"Ο συντελεστής παρακράτησης {rate} δεν είναι έγκυρος: δίνεται ως ποσοστό σε μορφή δεκαδικού "
+                f"(π.χ. 0,20 για 20%) και δεν ξεπερνά το {MAX_WITHHOLDING_RATE:g}."))
+    if min_net is not None and _as_number(min_net, "Το όριο καθαρής αξίας για παρακράτηση") < 0:
         raise HTTPException(status_code=400, detail="Το όριο καθαρής αξίας για παρακράτηση δεν μπορεί να είναι αρνητικό.")
 
 
@@ -90,7 +112,12 @@ async def patch_settings(payload: dict, user: dict = Depends(require_admin)):
         await db.settings.insert_one(current)
     merged = {**current, **merge_masked_secrets(data, current)}
     merged.pop("_id", None)
-    validated = Settings(**{k: v for k, v in merged.items() if k in Settings.model_fields})
+    try:
+        validated = Settings(**{k: v for k, v in merged.items() if k in Settings.model_fields})
+    except ValidationError as e:
+        # Λάθος τύπος σε ελεύθερο JSON (π.χ. `autopilot_enabled: "όχι"`): απάντηση 400 με το πεδίο που φταίει, όχι 500.
+        fields = ", ".join(sorted({".".join(str(part) for part in err["loc"]) for err in e.errors()}))
+        raise HTTPException(status_code=400, detail=f"Μη έγκυρη τιμή στο πεδίο: {fields}.")
     data = encrypt_settings_secrets(validated.model_dump(exclude={"id", "firm_id"}))
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
     data["mydata_connected"] = bool(validated.aade_user_id and data.get("aade_subscription_key"))

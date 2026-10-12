@@ -212,6 +212,32 @@ describe("Τιμολόγια — ανείσπρακτα", () => {
   });
 });
 
+describe("Τιμολόγια — κομμένα εξοφλημένα", () => {
+  const issued = { ...base, id: "i1", number: "ΤΠΥ-2019-0001", status: "issued", mydata_status: "synced", outstanding: 124 };
+
+  it("όταν ο server δηλώσει ότι κόπηκαν παλαιότερα εξοφλημένα, το λέει και ξεκαθαρίζει ποια σύνολα είναι πλήρη", async () => {
+    server.use(
+      http.get(`${API}/invoices`, () => HttpResponse.json([issued], { headers: { "X-Closed-Truncated": "1" } })),
+      http.get(`${API}/clients`, () => HttpResponse.json([])),
+    );
+    render(<><Invoices /><Toaster /></>);
+    const notice = await screen.findByTestId("closed-truncated-notice");
+    expect(notice).toHaveTextContent("τελευταία 1.000 εξοφλημένα");
+    expect(notice).toHaveTextContent("«Ανείσπρακτα» είναι πλήρη");
+    expect(screen.getByTestId("kpi-unpaid-total")).toHaveTextContent("124,00");
+  });
+
+  it("χωρίς την κεφαλίδα δεν δείχνει καμία ειδοποίηση", async () => {
+    server.use(
+      http.get(`${API}/invoices`, () => HttpResponse.json([issued])),
+      http.get(`${API}/clients`, () => HttpResponse.json([])),
+    );
+    render(<><Invoices /><Toaster /></>);
+    await screen.findByTestId("invoice-row-i1");
+    expect(screen.queryByTestId("closed-truncated-notice")).not.toBeInTheDocument();
+  });
+});
+
 describe("unpaidTotal / owedAmount", () => {
   const row = (client, total, outstanding, status = "issued") => ({ client_id: client, total, outstanding, status });
 

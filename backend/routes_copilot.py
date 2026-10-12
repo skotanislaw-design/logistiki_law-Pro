@@ -3,10 +3,10 @@ from pydantic import BaseModel
 from datetime import date, datetime, timezone
 import tempfile
 import os
-from db import db
+from db import db, fetch_all
 from auth import get_current_user
 from models import Invoice, InvoiceLineItem
-from tax_utils import calculate_invoice_totals, athens_today
+from tax_utils import calculate_invoice_totals, athens_today, is_finite_number, MAX_LINE_VALUE
 from copilot import copilot_llm, _try_action
 from tenant import tenant_query, firm_id_for
 
@@ -34,7 +34,7 @@ async def _execute_create_invoice(action: dict, user: dict):
     name = (action.get("client_name") or "").strip().lower()
     if not name:
         return None, "Δεν κατάλαβα για ποιον πελάτη. Πες μου το όνομα του πελάτη."
-    clients = await db.clients.find(tenant_query(user)).to_list(200)
+    clients = await fetch_all(db.clients.find(tenant_query(user), {"name": 1}))      # ΟΛΟΙ οι πελάτες, όχι οι πρώτοι 200
     matches = [c for c in clients if name in c["name"].lower() or c["name"].lower() in name]
     if not matches:
         available = ", ".join(c["name"] for c in clients[:10]) or "κανένας"
@@ -42,10 +42,18 @@ async def _execute_create_invoice(action: dict, user: dict):
     if len(matches) > 1:
         return None, "Βρήκα πολλούς πελάτες με παρόμοιο όνομα: " + ", ".join(c["name"] for c in matches[:5]) + ". Ποιον εννοείς;"
     client = matches[0]
-    amount = float(action.get("amount") or 0)
-    if amount <= 0:
+    # Το ποσό έρχεται από κείμενο που παρήγαγε το μοντέλο: «NaN»/«inf»/«abc» δεν είναι ποσό (το NaN θα περνούσε από τον
+    # έλεγχο «> 0» και θα αποθηκευόταν ως σύνολο τιμολογίου).
+    try:
+        amount = float(action.get("amount") or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    if not is_finite_number(amount) or amount <= 0 or amount > MAX_LINE_VALUE:
         return None, "Χρειάζομαι το ποσό του τιμολογίου. Πόσο είναι η καθαρή αξία;"
-    vat_rate = int(action.get("vat_rate") or 24)
+    try:
+        vat_rate = int(action.get("vat_rate") or 24)
+    except (TypeError, ValueError):
+        vat_rate = 24
     if vat_rate not in (24, 13, 6, 0):
         vat_rate = 24
     inv = Invoice(

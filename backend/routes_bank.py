@@ -305,7 +305,7 @@ async def build_match_pool(firm_id: str, settings: dict) -> list[dict]:
             continue
         taken.add(d["matched_invoice_id"])
     pool, clients = [], {}
-    async for inv in db.invoices.find(firm_query(firm_id, {"status": "issued"})).limit(2000):
+    async for inv in db.invoices.find(firm_query(firm_id, {"status": "issued"})):
         if str(inv["_id"]) in taken or float(inv.get("total") or 0) <= 0:
             continue                              # ήδη δεσμευμένο, ή πιστωτικό (αρνητικό σύνολο)
         client_id = inv.get("client_id")

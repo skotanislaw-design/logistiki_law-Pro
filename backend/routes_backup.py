@@ -18,7 +18,7 @@ from audit import audit_read
 from fastapi.responses import Response
 from bson import ObjectId
 from pymongo.errors import BulkWriteError, DuplicateKeyError
-from db import db
+from db import db, fetch_all
 from http_utils import content_disposition
 from auth import get_current_user, require_admin
 from tenant import tenant_query, firm_id_for
@@ -363,11 +363,12 @@ async def gdpr_export_client(client_id: str, request: Request, user: dict = Depe
     await audit_read(request, user, "gdpr_export", client_id,
                      details=f"Εξαγωγή δεδομένων πελάτη «{client.get('name', '')}» (ΓΚΠΔ άρ. 15 & 20)")
 
-    invoices = await db.invoices.find(tenant_query(user, {"client_id": client_id})).to_list(5000)
-    cases = await db.cases.find(tenant_query(user, {"client_id": client_id})).to_list(5000)
-    grammatia = await db.grammatia.find(tenant_query(user, {"client_id": client_id})).to_list(5000)
-    trust_accounts = await db.trust_accounts.find(tenant_query(user, {"client_id": client_id})).to_list(100)
-    trust_txs = await db.trust_transactions.find(tenant_query(user, {"client_id": client_id})).to_list(5000)
+    # Χωρίς όριο: το δικαίωμα πρόσβασης (ΓΚΠΔ άρ. 15) δεν ικανοποιείται με «τα πρώτα 5.000» εγγραφές.
+    invoices = await fetch_all(db.invoices.find(tenant_query(user, {"client_id": client_id})))
+    cases = await fetch_all(db.cases.find(tenant_query(user, {"client_id": client_id})))
+    grammatia = await fetch_all(db.grammatia.find(tenant_query(user, {"client_id": client_id})))
+    trust_accounts = await fetch_all(db.trust_accounts.find(tenant_query(user, {"client_id": client_id})))
+    trust_txs = await fetch_all(db.trust_transactions.find(tenant_query(user, {"client_id": client_id})))
 
     dataset = {
         "client": _to_json_safe(client),

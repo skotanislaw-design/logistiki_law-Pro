@@ -15,6 +15,7 @@
 """
 
 import calendar
+import math
 import os
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -36,6 +37,20 @@ def athens_today() -> date:
 # --------------------------------------------------------------- χρήμα ---
 
 _CENT = Decimal("0.01")
+
+
+def is_finite_number(value) -> bool:
+    """Πραγματικός αριθμός (όχι `bool`) που δεν είναι NaN ούτε άπειρο.
+
+    Η `json` της Python δέχεται τα `NaN`, `Infinity` και `1e999`, και οι συγκρίσεις με `<`/`>` δίνουν για NaN πάντα
+    `False` — άρα ένας έλεγχος ορίων του τύπου «αρνητικό ή μεγαλύτερο από το μέγιστο» δεν το πιάνει ποτέ.
+    """
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+# Ανώτατη αξία γραμμής τιμολογίου — ίδιο όριο με την κίνηση πελατολογικού (routes_trust.MAX_AMOUNT). Πάνω από αυτό είναι
+# πάντα λάθος πληκτρολόγησης, και τα πολύ μεγάλα ποσά ξεπερνούν την ακρίβεια του υπολογισμού ΦΠΑ (σφάλμα 500).
+MAX_LINE_VALUE = 1_000_000_000
 
 # Οι συντελεστές ΦΠΑ που δέχεται το myDATA (βλ. VAT_CATEGORY στο mydata_client).
 VALID_VAT_RATES = (0, 6, 13, 24)
@@ -100,6 +115,12 @@ def afm_check_digit(prefix8: str) -> int:
     return (total % 11) % 10
 
 
+def _ascii_digits(text: str) -> bool:
+    """Μόνο τα ψηφία 0–9. Η `str.isdigit()` δέχεται και «²», αραβικά-ινδικά ή πλήρους πλάτους ψηφία: το «12345678²»
+    έσκαγε με ValueError στο `int()` (σφάλμα 500) και τα αραβικά περνούσαν ως ΑΦΜ, για να τα απορρίψει αργότερα η ΑΑΔΕ."""
+    return text.isascii() and text.isdigit()
+
+
 def is_valid_afm(afm: str) -> bool:
     """Έλεγχος ελληνικού ΑΦΜ: εννέα ψηφία και σωστό ψηφίο ελέγχου.
 
@@ -112,7 +133,7 @@ def is_valid_afm(afm: str) -> bool:
     ΑΦΜ, και απορρίπτεται ρητά.
     """
     afm = (afm or "").strip()
-    if len(afm) != 9 or not afm.isdigit() or afm == "000000000":
+    if len(afm) != 9 or not _ascii_digits(afm) or afm == "000000000":
         return False
     return afm_check_digit(afm[:8]) == int(afm[8])
 
@@ -120,7 +141,7 @@ def is_valid_afm(afm: str) -> bool:
 def afm_error(afm: str, label: str = "ΑΦΜ") -> str:
     """Μήνυμα που λέει τι ακριβώς φταίει — όχι απλώς «μη έγκυρο»."""
     value = (afm or "").strip()
-    if not value.isdigit():
+    if not _ascii_digits(value):
         return f"Το {label} «{value}» περιέχει μη αριθμητικούς χαρακτήρες."
     if len(value) != 9:
         return (f"Το {label} «{value}» έχει {len(value)} ψηφία — το ελληνικό ΑΦΜ έχει 9. "

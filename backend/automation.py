@@ -31,7 +31,7 @@ from zoneinfo import ZoneInfo
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
-from db import db
+from db import db, fetch_all
 from crypto import decrypt
 from models import Notification, AutomationRun, VatPeriod, Expense
 from tax_utils import athens_today, generate_tax_calendar, vat_deadline_for_period_end
@@ -564,8 +564,10 @@ async def job_stale_drafts(firm_id: str, settings: dict) -> dict:
 
 async def compute_vat_period(firm_id: str, period: dict) -> VatPeriod:
     start, end = period["start"].isoformat(), period["end"].isoformat()
-    invoices = await db.invoices.find(firm_query(firm_id, {"status": {"$in": ["issued", "paid"]}, "date": {"$gte": start, "$lte": end + "T23:59:59"}})).to_list(10000)
-    expenses = await db.expenses.find(firm_query(firm_id, {"date": {"$gte": start, "$lte": end + "T23:59:59"}})).to_list(10000)
+    # Χωρίς όριο: η περίοδος ΦΠΑ είναι φορολογικός υπολογισμός — ένα «μέχρι 10.000 εγγραφές» θα έδινε μικρότερο ΦΠΑ
+    # εκροών/εισροών χωρίς κανένα σφάλμα.
+    invoices = await fetch_all(db.invoices.find(firm_query(firm_id, {"status": {"$in": ["issued", "paid"]}, "date": {"$gte": start, "$lte": end + "T23:59:59"}})))
+    expenses = await fetch_all(db.expenses.find(firm_query(firm_id, {"date": {"$gte": start, "$lte": end + "T23:59:59"}})))
     output_vat = round(sum(i.get("vat_amount", 0) for i in invoices), 2)
     input_vat = round(sum(e.get("vat_amount", 0) for e in expenses), 2)
     breakdown: dict = {}
@@ -737,7 +739,7 @@ async def job_mydata_expenses(firm_id: str, settings: dict) -> dict:
         raise
 
     created = skipped = 0
-    suppliers = {c.get("afm"): c.get("name") for c in await db.clients.find(firm_query(firm_id)).to_list(2000) if c.get("afm")}
+    suppliers = {c.get("afm"): c.get("name") for c in await fetch_all(db.clients.find(firm_query(firm_id), {"afm": 1, "name": 1})) if c.get("afm")}
     for doc in docs:
         if await db.expenses.find_one(firm_query(firm_id, {"mydata_mark": doc["mark"]})):
             skipped += 1
@@ -786,10 +788,11 @@ async def job_mydata_expenses(firm_id: str, settings: dict) -> dict:
 async def firm_snapshot(firm_id: str, settings: dict, since: datetime | None = None) -> dict:
     today = athens_today()
     month_start = today.replace(day=1).isoformat()
-    invoices = await db.invoices.find(firm_query(firm_id, {"status": {"$in": ["issued", "paid"]}})).to_list(5000)
-    expenses = await db.expenses.find(firm_query(firm_id, {"date": {"$gte": month_start}})).to_list(5000)
-    month_inv = [i for i in invoices if (i.get("date") or "") >= month_start]
-    issued = [i for i in invoices if i.get("status") == "issued"]
+    # Τα έσοδα του μήνα (φιλτραρισμένα με ημερομηνία) και ΟΛΑ τα εκδοθέντα για τα ανείσπρακτα: το προηγούμενο
+    # «πρώτα 5.000 χωρίς σειρά» μπορούσε να αφήσει έξω παλιά ανεξόφλητα και να στείλει μικρότερο ποσό στη λογίστρια.
+    month_inv = await fetch_all(db.invoices.find(firm_query(firm_id, {"status": {"$in": ["issued", "paid"]}, "date": {"$gte": month_start}})))
+    expenses = await fetch_all(db.expenses.find(firm_query(firm_id, {"date": {"$gte": month_start}})))
+    issued = await fetch_all(db.invoices.find(firm_query(firm_id, {"status": "issued"})))
     # Ανείσπρακτα = ό,τι απομένει να εισπραχθεί (μετά την παρακράτηση και τα εξοφλημένα από πελατολογικό), όχι το μεικτό σύνολο.
     balances = await invoice_balances(firm_id, issued, settings)
     unpaid = sorted([{**i, "open_amount": balances[str(i["_id"])][1]} for i in issued], key=lambda i: i.get("date", ""))

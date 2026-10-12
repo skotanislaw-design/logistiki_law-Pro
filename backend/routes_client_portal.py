@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from bson import ObjectId
 from audit import audit_portal_read
-from db import db
+from db import db, fetch_all
 from http_utils import content_disposition
 from models import ClientPortalToken
 from auth import get_current_user
@@ -19,6 +19,7 @@ from tenant import tenant_query, firm_id_for
 # πραγματικό πελάτη (το frontend κάνει polling) και σφιχτά για αυτοματοποιημένη κατάχρηση.
 PORTAL_TOKEN_LIMIT = 60      # ανά token
 PORTAL_IP_LIMIT = 120        # ανά IP, ώστε να πιάνεται και η σάρωση πολλών tokens
+PORTAL_PAID_LIMIT = 200      # πόσα εξοφλημένα τιμολόγια δείχνει η πύλη ως ιστορικό (τα ανεξόφλητα δείχνονται ΠΑΝΤΑ όλα)
 
 router = APIRouter(prefix="/client-portal", tags=["client-portal"])
 public_router = APIRouter(prefix="/portal", tags=["portal-public"])
@@ -187,7 +188,14 @@ async def portal_data(token: str, request: Request):
         raise HTTPException(status_code=404, detail="Ο πελάτης δεν βρέθηκε")
 
     firm = tk.get("firm_id", "legacy-default-firm")
-    invoices = await db.invoices.find({"client_id": client_id, "firm_id": firm, "status": {"$in": ["issued", "paid"]}}).sort("date", -1).to_list(200)
+    # Όλα τα ανεξόφλητα (ό,τι οφείλει ο πελάτης δεν επιτρέπεται να κρύβεται επειδή το τιμολόγιο είναι παλιό) και, για
+    # ιστορικό, τα τελευταία εξοφλημένα. Παλιότερα: «τα 200 πρόσφατα» — ένας πελάτης με πολλά τιμολόγια έβλεπε
+    # μικρότερο ποσό οφειλής από το πραγματικό.
+    owner = {"client_id": client_id, "firm_id": firm}
+    issued = await fetch_all(db.invoices.find({**owner, "status": "issued"}).sort("date", -1))
+    paid = await db.invoices.find({**owner, "status": "paid"}).sort("date", -1).limit(PORTAL_PAID_LIMIT).to_list(PORTAL_PAID_LIMIT)
+    paid_total = await db.invoices.count_documents({**owner, "status": "paid"})
+    invoices = sorted(issued + paid, key=lambda d: d.get("date") or "", reverse=True)
     cases = await db.cases.find({"client_id": client_id, "firm_id": firm}).sort("created_at", -1).to_list(50)
     trust = await db.trust_accounts.find_one({"client_id": client_id, "firm_id": firm})
 
@@ -242,7 +250,7 @@ async def portal_data(token: str, request: Request):
             # Το άθροισμα είναι προσημασμένο: ένα πιστωτικό συμψηφίζει το τιμολόγιο που πιστώνει. Μόνο το σύνολο
             # δεν πέφτει κάτω από το μηδέν (πιστωτικό μεγαλύτερο από τα ανεξόφλητα δεν είναι «οφειλή» του πελάτη).
             "unpaid_total": open_total(invoices, amounts),
-            "paid_count": sum(1 for i in invoices if i.get("status") == "paid"),
+            "paid_count": paid_total,
             "active_cases": sum(1 for c in cases if c.get("status") == "active"),
         },
     }

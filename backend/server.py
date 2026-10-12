@@ -44,6 +44,7 @@ from routes_portal_chat import router as portal_chat_router, public_router as po
 from routes_automation import router as automation_router
 from routes_audit import router as audit_router
 from ai_runtime import AIUnavailable
+from json_guard import RejectNonFiniteJson
 from invoice_services import flag_unchecked_bank_suggestions  # noqa: F401 — επίσης: τρέχει στην εκκίνηση
 from invoice_services import ensure_invoice_number_index, INVOICE_NUMBER_INDEX  # noqa: F401 — επίσης: τρέχει στην εκκίνηση
 
@@ -133,6 +134,9 @@ async def _audit_mutations(request, call_next):
         logging.getLogger("audit").exception("Το middleware ελεγκτικού ίχνους απέτυχε")
     return response
 
+
+# Εσωτερικότερο από το CORS (ώστε και η απόρριψη να φέρει τις κεφαλίδες του) και εξωτερικότερο από το ίχνος ελέγχου.
+app.add_middleware(RejectNonFiniteJson)
 
 app.add_middleware(
     CORSMiddleware,

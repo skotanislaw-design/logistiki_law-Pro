@@ -6,12 +6,12 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from fastapi.responses import Response
 from bson import ObjectId
-from db import db
+from db import db, fetch_all
 from http_utils import content_disposition
 from models import Invoice
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
-from tax_utils import calculate_invoice_totals, VALID_VAT_RATES
+from tax_utils import calculate_invoice_totals, is_finite_number, MAX_LINE_VALUE, VALID_VAT_RATES
 from mydata_client import INVOICE_TYPE_LABELS, TYPE_SERVICES_B2B, TYPE_RECEIPT_B2C, TYPE_CREDIT_NOTE, resolve_invoice_type
 from ai_helpers import transcribe_audio, parse_invoice_from_text
 
@@ -20,6 +20,8 @@ router = APIRouter(prefix="/invoices", tags=["invoices"])
 # Είδη που μπορεί να ζητήσει ο χρήστης σε πρόχειρο. Το 5.1 (πιστωτικό) δημιουργείται μόνο από
 # το /credit-note.
 USER_INVOICE_TYPES = (TYPE_SERVICES_B2B, TYPE_RECEIPT_B2C)
+
+VOICE_PROMPT_CLIENTS = 300       # πόσα ονόματα πελατών βλέπει το μοντέλο στη φωνητική εντολή
 
 # Πεδία που ανήκουν στον server (με την αρχική τιμή τους): ο client δεν τα ορίζει ποτέ, ούτε στη
 # δημιουργία ούτε στην τροποποίηση. Τα `status`/`mydata_*`/`issued_at`/`paid_at` έχουν δικούς
@@ -33,12 +35,28 @@ SERVER_OWNED_DEFAULTS = {
 }
 
 
+# Πόσα εξοφλημένα/ακυρωμένα επιστρέφει η λίστα. Τα πρόχειρα και τα εκδοθέντα δεν έχουν όριο: από αυτά βγαίνουν τα
+# «Ανείσπρακτα» και οι υποψήφιοι της συμφωνίας τράπεζας — ένα όριο «τα τελευταία 1.000 ανά ημερομηνία δημιουργίας» έκοβε
+# ακριβώς τα παλαιότερα, δηλαδή τα ληξιπρόθεσμα, και το άθροισμα έβγαινε μικρότερο χωρίς καμία ένδειξη.
+CLOSED_LIST_LIMIT = 1000
+TRUNCATED_HEADER = "X-Closed-Truncated"
+
+
 @router.get("")
-async def list_invoices(user: dict = Depends(get_current_user)):
+async def list_invoices(response: Response, user: dict = Depends(get_current_user)):
     """Τα τιμολόγια του γραφείου, καθένα με το `outstanding`: ό,τι απομένει να εισπραχθεί (μετά την παρακράτηση και
-    όσα εξοφλήθηκαν από πελατολογικό). Υπολογίζεται εδώ και δεν αποθηκεύεται — βλ. invoice_services.invoice_balances."""
+    όσα εξοφλήθηκαν από πελατολογικό). Υπολογίζεται εδώ και δεν αποθηκεύεται — βλ. invoice_services.invoice_balances.
+
+    Όλα τα πρόχειρα και όλα τα εκδοθέντα, συν τα τελευταία `CLOSED_LIST_LIMIT` εξοφλημένα/ακυρωμένα. Αν υπάρχουν
+    παλαιότερα εξοφλημένα που δεν περιλαμβάνονται, η απάντηση φέρει την κεφαλίδα `X-Closed-Truncated: 1`."""
     from invoice_services import invoice_balances
-    docs = await db.invoices.find(tenant_query(user)).sort("created_at", -1).to_list(1000)
+    open_docs = await fetch_all(db.invoices.find(tenant_query(user, {"status": {"$in": ["draft", "issued"]}})))
+    closed = await db.invoices.find(tenant_query(user, {"status": {"$nin": ["draft", "issued"]}})) \
+        .sort("created_at", -1).limit(CLOSED_LIST_LIMIT + 1).to_list(CLOSED_LIST_LIMIT + 1)
+    if len(closed) > CLOSED_LIST_LIMIT:
+        closed = closed[:CLOSED_LIST_LIMIT]
+        response.headers[TRUNCATED_HEADER] = "1"
+    docs = sorted(open_docs + closed, key=lambda d: d.get("created_at") or "", reverse=True)
     settings = await db.settings.find_one(tenant_query(user, {})) or {}
     balances = await invoice_balances(firm_id_for(user), [d for d in docs if d.get("status") == "issued"], settings)
     rows = []
@@ -97,8 +115,14 @@ def _validate_invoice_payload(payload: Invoice) -> None:
     for idx, line in enumerate(payload.line_items, start=1):
         if not (line.description or "").strip():
             raise HTTPException(status_code=400, detail=f"Γραμμή {idx}: απαιτείται περιγραφή.")
+        # Πριν από κάθε σύγκριση: το NaN δεν είναι ούτε θετικό ούτε αρνητικό, άρα περνά από όλους τους ελέγχους ορίων,
+        # και το «άπειρο» κάνει τον υπολογισμό ΦΠΑ να σκάει με 500.
+        if not (is_finite_number(line.quantity) and is_finite_number(line.unit_price)):
+            raise HTTPException(status_code=400, detail=f"Γραμμή {idx}: η ποσότητα και η τιμή πρέπει να είναι έγκυροι αριθμοί.")
         if line.quantity <= 0:
             raise HTTPException(status_code=400, detail=f"Γραμμή {idx}: η ποσότητα πρέπει να είναι θετική.")
+        if abs(line.unit_price) > MAX_LINE_VALUE or line.quantity > MAX_LINE_VALUE or abs(line.quantity * line.unit_price) > MAX_LINE_VALUE:
+            raise HTTPException(status_code=400, detail=f"Γραμμή {idx}: το ποσό είναι υπερβολικά μεγάλο — ελέγξτε την ποσότητα και την τιμή.")
         if line.vat_rate not in VALID_VAT_RATES:
             allowed = ", ".join(f"{r}%" for r in VALID_VAT_RATES)
             raise HTTPException(
@@ -106,6 +130,8 @@ def _validate_invoice_payload(payload: Invoice) -> None:
                 detail=f"Γραμμή {idx}: μη έγκυρος συντελεστής ΦΠΑ {line.vat_rate}%. Επιτρέπονται: {allowed}.",
             )
     if payload.withholding_amount is not None:
+        if not is_finite_number(payload.withholding_amount):
+            raise HTTPException(status_code=400, detail="Η παρακράτηση πρέπει να είναι έγκυρος αριθμός.")
         net = calculate_invoice_totals(payload.line_items)["subtotal"]
         if payload.withholding_amount < 0 or payload.withholding_amount > net:
             raise HTTPException(
@@ -480,8 +506,9 @@ async def voice_parse_invoice(audio: UploadFile = File(...), user: dict = Depend
         tmp_path = tmp.name
     try:
         transcript = await transcribe_audio(tmp_path)
-        clients = await db.clients.find(tenant_query(user)).to_list(200)
-        client_names = [c["name"] for c in clients]
+        # Η αντιστοίχιση γίνεται με ΟΛΟΥΣ τους πελάτες· στο prompt του μοντέλου πάνε το πολύ VOICE_PROMPT_CLIENTS ονόματα.
+        clients = await fetch_all(db.clients.find(tenant_query(user), {"name": 1}))
+        client_names = [c["name"] for c in clients][:VOICE_PROMPT_CLIENTS]
         parsed = await parse_invoice_from_text(transcript, client_names)
         matched_client = None
         for c in clients:
