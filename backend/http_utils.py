@@ -14,7 +14,8 @@
 δεύτερο και εμφανίζουν το όνομα ακέραιο στα ελληνικά.
 """
 
-from urllib.parse import quote
+import os
+from urllib.parse import quote, urlsplit
 
 # Μεταγραφή για το ASCII fallback. Δεν είναι πρότυπο μεταγραφής — αρκεί να παράγει
 # αναγνωρίσιμο όνομα στους ελάχιστους πελάτες που αγνοούν το filename*.
@@ -52,3 +53,70 @@ def content_disposition(filename: str, disposition: str = "attachment") -> str:
     fallback = ascii_filename(filename)
     quoted = quote(filename or "download", safe="")
     return f'{disposition}; filename="{fallback}"; filename*=UTF-8\'\'{quoted}'
+
+
+# ------------------------------------------------------------------ επιτρεπτές διευθύνσεις ---
+
+DEFAULT_DEV_ORIGINS = ["http://localhost:3000", "http://localhost:8080"]
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def allowed_origins() -> list[str]:
+    """Οι διευθύνσεις (scheme://host[:port]) από τις οποίες λειτουργεί η εφαρμογή του γραφείου.
+
+    **Μία** λίστα για δύο χρήσεις: το CORS (credentials + wildcard απορρίπτεται από τους browsers) και οι διευθύνσεις
+    επιστροφής μετά την πληρωμή. Δύο αντίγραφα θα αποκλίνονταν. Προτεραιότητα: ``CORS_ORIGINS`` (κόμμα-χωρισμένα) →
+    ``PUBLIC_URL`` → ``PREVIEW_ENDPOINT`` → διευθύνσεις ανάπτυξης.
+    """
+    raw = os.environ.get("CORS_ORIGINS") or os.environ.get("PUBLIC_URL") or os.environ.get("PREVIEW_ENDPOINT") or ""
+    origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
+    return origins or list(DEFAULT_DEV_ORIGINS)
+
+
+def _origin_key(scheme: str, host: str, port: int | None) -> str:
+    host = host.lower()
+    if ":" in host:                                   # IPv6
+        host = f"[{host}]"
+    if port is not None and port != _DEFAULT_PORTS.get(scheme):
+        host = f"{host}:{port}"
+    return f"{scheme}://{host}"
+
+
+def checked_return_url(url, allowed, *, allowed_paths: tuple[str, ...] = ("",)) -> str | None:
+    """Η διεύθυνση επιστροφής της πληρωμής σε κανονική μορφή — ή ``None`` αν δεν επιτρέπεται.
+
+    Το ``origin_url`` γίνεται ``success_url``/``cancel_url`` της συνεδρίας Stripe, δηλαδή η σελίδα όπου οδηγείται ο
+    πελάτης αφού πληρώσει σε γνήσια σελίδα πληρωμής. Αν το όριζε ο καλών, ένας κακόβουλος θα έστηνε πληρωμή που
+    καταλήγει στη δική του διεύθυνση. Επιτρέπεται μόνο: σχήμα http(s), origin που ανήκει στη λίστα ``allowed``, χωρίς
+    στοιχεία χρήστη, query ή fragment, και διαδρομή **ακριβώς** μία από τις ``allowed_paths`` (π.χ. ``/portal/<token>``).
+    Η κανονική μορφή δεν έχει τελική κάθετο ούτε προεπιλεγμένη θύρα.
+    """
+    if not isinstance(url, str):
+        return None
+    url = url.strip()
+    if not url or any(ch in url for ch in " \\") or any(ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        return None
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in _DEFAULT_PORTS or not parts.hostname:
+        return None
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc or parts.query or parts.fragment:
+        return None
+    origin = _origin_key(parts.scheme, parts.hostname, port)
+    permitted = set()
+    for entry in allowed:
+        try:
+            ep = urlsplit(str(entry).strip())
+            if ep.scheme in _DEFAULT_PORTS and ep.hostname:
+                permitted.add(_origin_key(ep.scheme, ep.hostname, ep.port))
+        except ValueError:
+            continue
+    if origin not in permitted:
+        return None
+    path = parts.path.rstrip("/")
+    if path not in allowed_paths:
+        return None
+    return origin + path

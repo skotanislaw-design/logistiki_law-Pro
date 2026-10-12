@@ -67,6 +67,13 @@ WITHHOLDING_TAX_TYPE = "1"
 # προκαταβλητέος), ορίζεται μαζί με το `withholding_rate` στις Ρυθμίσεις.
 WITHHOLDING_CATEGORY_SERVICES = "3"
 WITHHOLDING_RATE_FREELANCER = 0.20
+# Οι μόνες κατηγορίες που δέχονται οι Ρυθμίσεις (έλεγχος στο PUT/PATCH /api/settings και επιλογές στην οθόνη).
+# Τιμή εκτός λίστας θα διαβιβαζόταν ως `taxCategory` και θα απορριπτόταν από την ΑΑΔΕ τη στιγμή της έκδοσης.
+WITHHOLDING_CATEGORIES = {
+    "2": "Δικαιώματα — 20%",
+    "3": "Αμοιβές Συμβουλών Διοίκησης — 20%",
+    "10": "Προκαταβλητέος Φόρος στις Αμοιβές Δικηγόρων — 15%",
+}
 
 
 class MyDataError(Exception):

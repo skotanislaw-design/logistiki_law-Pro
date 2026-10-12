@@ -159,6 +159,10 @@ async def _validate_token(token: str, request: Request | None = None) -> dict:
     tk = await db.client_portal_tokens.find_one({"token": token})
     if not tk:
         raise HTTPException(status_code=404, detail="Ο σύνδεσμος δεν είναι έγκυρος")
+    if request is not None:
+        # Για το ελεγκτικό ίχνος: το γραφείο και ο πελάτης πίσω από το token (όχι το ίδιο το token). Ορίζεται πριν τον
+        # έλεγχο λήξης ώστε και η προσπάθεια με ληγμένο σύνδεσμο να φαίνεται στο γραφείο που ανήκει.
+        request.state.audit_portal = {"firm_id": tk.get("firm_id"), "client_id": tk.get("client_id")}
     if _is_expired(tk.get("expires_at", "")):
         raise HTTPException(status_code=401, detail="Ο σύνδεσμος έχει λήξει")
     await db.client_portal_tokens.update_one(

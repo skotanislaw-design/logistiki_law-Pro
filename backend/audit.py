@@ -232,11 +232,21 @@ async def log_request(request: Request, response, duration_ms: int) -> None:
 
     entity, entity_id, sub = _entity_from_path(path)
     user = getattr(request.state, "user", None)
+    portal = getattr(request.state, "audit_portal", None)
 
     if user:
         firm_id = user.get("firm_id") or LEGACY_FIRM_ID
         email = user.get("email", "")
         actor = "user"
+    elif portal:
+        # Ο πελάτης πίσω από ένα portal token, όπως τον έλυσε το ``_validate_token``: ισχύει για κάθε δημόσιο endpoint
+        # του portal, όποια κι αν είναι η διαδρομή του (π.χ. ``/api/payments/portal-checkout``, που δεν έχει
+        # ``/portal/`` στο path και αλλιώς θα καταγραφόταν ως ανώνυμο αίτημα του LEGACY_FIRM_ID).
+        firm_id = portal.get("firm_id") or LEGACY_FIRM_ID
+        email = ""
+        actor = "portal_client"
+        if portal.get("client_id"):
+            entity, entity_id = "client_portal", portal["client_id"]
     elif "/portal/" in path:
         firm_id, client_id = await _portal_actor(path)
         email = ""
@@ -265,6 +275,7 @@ async def log_request(request: Request, response, duration_ms: int) -> None:
         user_email=email,
         actor_type=actor,
         ip_address=_client_ip(request),
+        details=getattr(request.state, "audit_details", "") or "",
         user_agent=request.headers.get("user-agent", ""),
         method=request.method,
         path=path,

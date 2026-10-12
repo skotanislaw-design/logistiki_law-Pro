@@ -5,9 +5,18 @@ from db import db
 from models import PayrollEmployee, PayrollRun
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
-from tax_utils import calculate_payroll
+from tax_utils import afm_error, calculate_payroll, is_valid_afm
 
 router = APIRouter(prefix="/payroll", tags=["payroll"])
+
+
+def _validate_employee_afm(payload: PayrollEmployee) -> None:
+    """Έλεγχος στη διαδρομή, όχι στο μοντέλο (όπως στους πελάτες): το μοντέλο διαβάζει και υπάρχουσες εγγραφές, και
+    ένας παλιός εργαζόμενος με λανθασμένο ΑΦΜ θα γινόταν αόρατος στη λίστα αντί να διορθωθεί. Το κενό επιτρέπεται."""
+    afm = (payload.afm or "").strip()
+    payload.afm = afm
+    if afm and not is_valid_afm(afm):
+        raise HTTPException(status_code=400, detail=afm_error(afm, "ΑΦΜ εργαζομένου"))
 
 
 @router.get("/employees")
@@ -18,6 +27,7 @@ async def list_employees(user: dict = Depends(get_current_user)):
 
 @router.post("/employees")
 async def create_employee(payload: PayrollEmployee, user: dict = Depends(get_current_user)):
+    _validate_employee_afm(payload)
     payload.id = None
     payload.firm_id = firm_id_for(user)
     result = await db.payroll_employees.insert_one(payload.to_mongo())
@@ -27,6 +37,7 @@ async def create_employee(payload: PayrollEmployee, user: dict = Depends(get_cur
 
 @router.put("/employees/{employee_id}")
 async def update_employee(employee_id: str, payload: PayrollEmployee, user: dict = Depends(get_current_user)):
+    _validate_employee_afm(payload)
     payload.id = employee_id
     data = payload.to_mongo()
     data.pop("_id", None)

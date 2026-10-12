@@ -27,10 +27,36 @@ def _validate_firm_afm(afm: str) -> None:
         raise HTTPException(status_code=400, detail=afm_error(value, "ΑΦΜ του γραφείου"))
 
 
+MAX_WITHHOLDING_RATE = 0.5
+
+
+def _validate_withholding(category=None, rate=None, min_net=None) -> None:
+    """Οι παράμετροι παρακράτησης που επηρεάζουν παραστατικά και διαβίβαση στο myDATA.
+
+    * Κατηγορία: διαβιβάζεται αυτούσια ως `taxCategory`· τιμή εκτός λίστας απορρίπτεται από την ΑΑΔΕ μόλις εκδοθεί
+      το πρώτο τιμολόγιο με παρακράτηση.
+    * Συντελεστής: κλάσμα (0,20 = 20%). Το 20 αντί για 0,20 θα έβγαζε παρακράτηση 20 φορές την καθαρή αξία.
+    Ελέγχονται μόνο οι παράμετροι που δίνονται (το PATCH δεν στέλνει όλες).
+    """
+    from mydata_client import WITHHOLDING_CATEGORIES
+
+    if category is not None and str(category) not in WITHHOLDING_CATEGORIES:
+        raise HTTPException(status_code=400, detail=(
+            f"Η κατηγορία παρακράτησης «{category}» δεν είναι έγκυρη. Επιτρέπονται οι κατηγορίες 2, 3 ή 10 "
+            "(" + "· ".join(f"{k}: {v}" for k, v in WITHHOLDING_CATEGORIES.items()) + ")."))
+    if rate is not None and not (0 <= float(rate) <= MAX_WITHHOLDING_RATE):
+        raise HTTPException(status_code=400, detail=(
+            f"Ο συντελεστής παρακράτησης {rate} δεν είναι έγκυρος: δίνεται ως ποσοστό σε μορφή δεκαδικού "
+            f"(π.χ. 0,20 για 20%) και δεν ξεπερνά το {MAX_WITHHOLDING_RATE:g}."))
+    if min_net is not None and float(min_net) < 0:
+        raise HTTPException(status_code=400, detail="Το όριο καθαρής αξίας για παρακράτηση δεν μπορεί να είναι αρνητικό.")
+
+
 @router.put("")
 async def update_settings(payload: Settings, user: dict = Depends(require_admin)):
     from datetime import datetime, timezone
     _validate_firm_afm(payload.afm)
+    _validate_withholding(payload.withholding_category, payload.withholding_rate, payload.withholding_min_net)
     doc = await db.settings.find_one(tenant_query(user, {}))
     data = payload.model_dump(exclude={"id", "firm_id"})
     # Ο client δεν λαμβάνει ποτέ τα μυστικά, άρα στέλνει πίσω μάσκα: κράτα τα αποθηκευμένα.
@@ -57,6 +83,7 @@ async def patch_settings(payload: dict, user: dict = Depends(require_admin)):
         raise HTTPException(status_code=400, detail="Δεν δόθηκαν έγκυρα πεδία ρυθμίσεων")
     if "afm" in data:
         _validate_firm_afm(data["afm"])
+    _validate_withholding(data.get("withholding_category"), data.get("withholding_rate"), data.get("withholding_min_net"))
     current = await db.settings.find_one(tenant_query(user, {}))
     if not current:
         current = Settings(firm_id=firm_id_for(user)).to_mongo()

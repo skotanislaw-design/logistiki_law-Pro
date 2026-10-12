@@ -10,6 +10,7 @@ import { DownloadSimple, UploadSimple, Database, ShieldCheck } from "@phosphor-i
 import { TwoFactorSettings } from "@/components/TwoFactorSettings";
 import { BankConnection } from "@/components/BankConnection";
 import { toast } from "sonner";
+import { WITHHOLDING_CATEGORIES } from "@/lib/withholding";
 
 export default function Settings() {
   const [form, setForm] = useState(null);
@@ -19,6 +20,9 @@ export default function Settings() {
   const [importingBackup, setImportingBackup] = useState(false);
   const [importingClients, setImportingClients] = useState(false);
   const [importResult, setImportResult] = useState(null);
+  const [backupResult, setBackupResult] = useState(null);
+  // Το κείμενο του ποσοστού κρατιέται χωριστά ώστε να πληκτρολογείται «12,5» χωρίς να "τρώγεται" η υποδιαστολή.
+  const [rateText, setRateText] = useState(null);
   const backupFileRef = useRef();
   const clientsFileRef = useRef();
 
@@ -40,13 +44,17 @@ export default function Settings() {
 
   const importBackup = async (file) => {
     if (!file) return;
-    if (!window.confirm("Η επαναφορά θα αντικαταστήσει τα δεδομένα με ίδιο id. Συνέχεια;")) return;
-    setImportingBackup(true);
+    if (!window.confirm(
+      "Η επαναφορά αντικαθιστά τα δεδομένα με ίδιο id. Το ελεγκτικό ίχνος μόνο συμπληρώνεται (δεν αντικαθίσταται ποτέ) "
+      + "και οι μετρητές αρίθμησης δεν γυρίζουν πίσω. Συνέχεια;")) return;
+    setImportingBackup(true); setBackupResult(null);
     try {
       const fd = new FormData();
       fd.append("file", file);
       const { data } = await axios.post(`${API}/backup/import`, fd, { headers: { "Content-Type": "multipart/form-data" } });
-      toast.success(data.message);
+      setBackupResult(data);
+      const needsAttention = (data.failed || 0) > 0 || Object.keys(data.differing || {}).length > 0;
+      (needsAttention ? toast.warning : toast.success)(data.message);
     } catch (e) { toast.error(errMsg(e)); }
     finally { setImportingBackup(false); }
   };
@@ -112,7 +120,21 @@ export default function Settings() {
     }
   };
 
+  const chooseWithholdingCategory = (value) => {
+    const category = WITHHOLDING_CATEGORIES.find((c) => c.value === value);
+    setRateText(null);
+    setForm({ ...form, withholding_category: value, withholding_rate: category ? category.rate : form.withholding_rate });
+  };
+
+  const changeWithholdingRate = (text) => {
+    setRateText(text);
+    const n = Number(text.replace(",", "."));
+    if (text.trim() !== "" && Number.isFinite(n)) setForm({ ...form, withholding_rate: n / 100 });
+  };
+
   if (!form) return <div className="text-muted-foreground">Φόρτωση...</div>;
+
+  const ratePercent = rateText ?? String(Math.round((form.withholding_rate ?? 0) * 10000) / 100);
 
   return (
     <div className="space-y-6 max-w-2xl" data-testid="settings-page">
@@ -170,6 +192,38 @@ export default function Settings() {
           <Label>Τράπεζα</Label>
           <Input value={form.bank_name || ""} onChange={(e) => setForm({ ...form, bank_name: e.target.value })} className="mt-1.5" placeholder="π.χ. Εθνική Τράπεζα" data-testid="settings-bank" />
         </div>
+      </div>
+
+      <div className="lux-card p-6 space-y-4" data-testid="settings-withholding">
+        <h3 className="font-heading text-lg font-medium">Παρακράτηση φόρου</h3>
+        <p className="text-sm text-muted-foreground">
+          Εφαρμόζεται σε τιμολόγια παροχής υπηρεσιών προς επιχειρήσεις, όταν είναι ενεργή (Autopilot → Κανόνες). Η κατηγορία και το
+          ποσοστό διαβιβάζονται στο myDATA· ορίστε τα σε συνεννόηση με τον λογιστή σας.
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label>Κατηγορία myDATA</Label>
+            <Select value={form.withholding_category || ""} onValueChange={chooseWithholdingCategory}>
+              <SelectTrigger className="mt-1.5" data-testid="settings-withholding-category">
+                <SelectValue placeholder="Επιλέξτε κατηγορία" />
+              </SelectTrigger>
+              <SelectContent>
+                {WITHHOLDING_CATEGORIES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Ποσοστό παρακράτησης (%)</Label>
+            <Input type="number" min="0" max="50" step="0.01" value={ratePercent} className="mt-1.5"
+              onChange={(e) => changeWithholdingRate(e.target.value)} data-testid="settings-withholding-rate" />
+          </div>
+        </div>
+        {form.withholding_category === "2" && (
+          <p className="text-xs text-[hsl(var(--warning))]" data-testid="settings-withholding-legacy">
+            Η κατηγορία «2» (δικαιώματα) δεν αφορά αμοιβές υπηρεσιών· τα νέα γραφεία ξεκινούν με «3». Δεν έχει αλλάξει αυτόματα —
+            επιβεβαιώστε με τον λογιστή ποια ισχύει για εσάς.
+          </p>
+        )}
       </div>
 
       <div className="lux-card p-6 space-y-4">
@@ -283,7 +337,7 @@ export default function Settings() {
           <h3 className="font-heading text-lg font-medium">Backup & Επαναφορά</h3>
         </div>
         <p className="text-sm text-muted-foreground">
-          Πλήρες αντίγραφο ασφαλείας των δεδομένων σας σε αρχείο ZIP. Προτείνεται εβδομαδιαία λήψη και αποθήκευση σε δεύτερο μέσο.
+          Πλήρες αντίγραφο ασφαλείας των δεδομένων σας σε αρχείο ZIP — περιλαμβάνει και το ελεγκτικό ίχνος, τις τραπεζικές κινήσεις και τις περιόδους ΦΠΑ· δεν περιλαμβάνει κωδικούς χρηστών. Προτείνεται εβδομαδιαία λήψη και αποθήκευση σε δεύτερο μέσο.
         </p>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={exportBackup} disabled={exportingBackup} data-testid="export-backup-button">
@@ -295,6 +349,20 @@ export default function Settings() {
             <UploadSimple size={16} className="mr-1.5" /> {importingBackup ? "Επαναφορά..." : "Επαναφορά από Backup"}
           </Button>
         </div>
+        {backupResult && (
+          <div className="text-sm p-3 rounded-xl bg-[hsl(var(--success))]/5 border border-[hsl(var(--success))]/25" data-testid="backup-result">
+            <div className="text-[hsl(var(--success))]">✓ {backupResult.message}</div>
+            {(backupResult.notes || []).map((note) => (
+              <div key={note} className="text-xs text-muted-foreground mt-1" data-testid="backup-note">{note}</div>
+            ))}
+            {backupResult.errors?.length > 0 && (
+              <details className="mt-1 text-xs">
+                <summary className="cursor-pointer text-[hsl(var(--destructive))]">Έγγραφα που δεν επαναφέρθηκαν ({backupResult.failed ?? backupResult.errors.length})</summary>
+                <ul className="mt-1">{backupResult.errors.map((e, i) => <li key={i}>· {e}</li>)}</ul>
+              </details>
+            )}
+          </div>
+        )}
         <div className="flex items-start gap-2 text-xs text-muted-foreground border-t border-border/50 pt-3">
           <ShieldCheck size={14} className="shrink-0 mt-0.5 text-[hsl(var(--gold))]" />
           <span>

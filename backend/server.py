@@ -112,10 +112,11 @@ app.include_router(api_router)
 app.include_router(payments_public_router)
 
 def _cors_origins() -> list[str]:
-    """Credentials + wildcard is rejected by browsers; default to the configured public URL."""
-    raw = os.environ.get("CORS_ORIGINS") or os.environ.get("PUBLIC_URL") or os.environ.get("PREVIEW_ENDPOINT") or ""
-    origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
-    return origins or ["http://localhost:3000", "http://localhost:8080"]
+    """Credentials + wildcard is rejected by browsers; default to the configured public URL.
+
+    Η ίδια λίστα ορίζει και τις επιτρεπτές διευθύνσεις επιστροφής της πληρωμής (http_utils.allowed_origins)."""
+    from http_utils import allowed_origins
+    return allowed_origins()
 
 
 @app.middleware("http")

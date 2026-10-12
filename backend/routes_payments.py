@@ -12,6 +12,9 @@ from pymongo import ReturnDocument
 from db import db
 from models import PaymentTransaction
 from auth import get_current_user
+from http_utils import allowed_origins, checked_return_url
+from rate_limit import enforce, key_for_token
+from routes_client_portal import _validate_token
 from tenant import tenant_query, firm_id_for
 
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or "sk_test_emergent"
@@ -19,6 +22,10 @@ STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "")
 
 logger = logging.getLogger(__name__)
+
+# Κάθε επιτυχημένη κλήση του checkout της πύλης δημιουργεί συνεδρία στο Stripe. Ένας πελάτης χρειάζεται μία (ή λίγες,
+# αν πληρώνει περισσότερα τιμολόγια)· το όριο κόβει την κατάχρηση χωρίς να ενοχλεί τη χρήση.
+PORTAL_CHECKOUT_LIMIT = 10        # συνεδρίες πληρωμής ανά token ανά λεπτό
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 public_router = APIRouter(tags=["payments-public"])  # για webhook & public status
@@ -116,26 +123,57 @@ async def _create_session(inv: dict, amount: float, origin_url: str) -> dict:
     return {"checkout_url": session.url, "session_id": session.id}
 
 
+async def _return_url(origin_url: str, firm_id: str, *, portal_token: str = "") -> str:
+    """Η διεύθυνση επιστροφής μετά την πληρωμή, επικυρωμένη (βλ. ``http_utils.checked_return_url``).
+
+    Επιτρέπονται οι διευθύνσεις της εγκατάστασης (``allowed_origins``) και η ``public_url`` των Ρυθμίσεων του γραφείου
+    στο οποίο ανήκει το τιμολόγιο. Η πύλη μπορεί να επιστρέφει και στη δική της σελίδα (``/portal/<token>``)."""
+    settings = await db.settings.find_one({"firm_id": firm_id}) or {}
+    origins = allowed_origins()
+    if settings.get("public_url"):
+        origins = [*origins, settings["public_url"]]
+    paths = ("", f"/portal/{portal_token}") if portal_token else ("",)
+    url = checked_return_url(origin_url, origins, allowed_paths=paths)
+    if url is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Μη έγκυρη διεύθυνση επιστροφής μετά την πληρωμή. Ανοίξτε την εφαρμογή από τη διεύθυνση του γραφείου.")
+    return url
+
+
+def _note_for_trail(request: Request, inv: dict, amount: float) -> None:
+    """Τι ζητήθηκε, για το ελεγκτικό ίχνος (δεν καταγράφεται ποτέ σώμα αιτήματος· εδώ μόνο αριθμός και ποσό)."""
+    from automation import _fmt
+    request.state.audit_details = f"Έναρξη πληρωμής με κάρτα: τιμολόγιο {inv.get('number', '')}, {_fmt(amount)}"
+
+
 @router.post("/checkout")
-async def create_checkout(req: CheckoutRequest, user: dict = Depends(get_current_user)):
-    inv, amount = await _validate_invoice_and_get_amount(req.invoice_id, firm_id_for(user))
-    return await _create_session(inv, amount, req.origin_url)
+async def create_checkout(req: CheckoutRequest, request: Request, user: dict = Depends(get_current_user)):
+    firm_id = firm_id_for(user)
+    origin = await _return_url(req.origin_url, firm_id)
+    inv, amount = await _validate_invoice_and_get_amount(req.invoice_id, firm_id)
+    _note_for_trail(request, inv, amount)
+    return await _create_session(inv, amount, origin)
 
 
 @public_router.post("/api/payments/portal-checkout")
 async def portal_checkout(req: CheckoutRequest, request: Request):
-    """Public endpoint για client portal — απαιτεί έγκυρο portal token."""
+    """Public endpoint για client portal — απαιτεί έγκυρο portal token.
+
+    Η επικύρωση του token είναι η **κοινή** της πύλης (``_validate_token``): όριο ρυθμού ανά token και IP, λήξη με
+    σύγκριση ημερομηνιών, ενημέρωση του ``last_used_at`` και απόδοση της ενέργειας στο ελεγκτικό ίχνος του γραφείου και
+    του πελάτη. Εδώ προστίθεται δικό της, αυστηρότερο όριο, γιατί κάθε επιτυχία δημιουργεί συνεδρία στο Stripe."""
     if not req.client_token:
         raise HTTPException(status_code=401, detail="Απαιτείται token πελάτη")
-    token = await db.client_portal_tokens.find_one({"token": req.client_token})
-    if not token:
-        raise HTTPException(status_code=401, detail="Μη έγκυρο ή ληγμένο token")
-    if token.get("expires_at", "") < datetime.now(timezone.utc).isoformat():
-        raise HTTPException(status_code=401, detail="Το token έχει λήξει")
+    token = await _validate_token(req.client_token, request)
+    await enforce("portal:checkout", key_for_token(req.client_token), PORTAL_CHECKOUT_LIMIT, 60,
+                  "Πολλές προσπάθειες πληρωμής.")
+    origin = await _return_url(req.origin_url, token.get("firm_id") or "", portal_token=req.client_token)
     inv, amount = await _validate_invoice_and_get_amount(req.invoice_id, token.get("firm_id"))
     if inv.get("client_id") != token["client_id"]:
         raise HTTPException(status_code=403, detail="Δεν επιτρέπεται η πληρωμή τιμολογίου άλλου πελάτη")
-    return await _create_session(inv, amount, req.origin_url)
+    _note_for_trail(request, inv, amount)
+    return await _create_session(inv, amount, origin)
 
 
 @public_router.get("/api/payments/status/{session_id}")

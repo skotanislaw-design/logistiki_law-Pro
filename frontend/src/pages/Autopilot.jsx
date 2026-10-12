@@ -315,7 +315,7 @@ export default function Autopilot() {
               ["auto_reminders", "Αυτόματες υπενθυμίσεις ανείσπρακτων"],
               ["auto_mydata_retry", "Επανάληψη διαβίβασης στο myDATA μέχρι να πετύχει"],
               ["mydata_expense_sync", "Λήψη εξόδων από το myDATA (παραστατικά προμηθευτών)"],
-              ["withholding_enabled", "Παρακράτηση φόρου 20% σε τιμολόγια προς επιχειρήσεις"],
+              ["withholding_enabled", "Παρακράτηση φόρου σε τιμολόγια προς επιχειρήσεις (ποσοστό και κατηγορία: Ρυθμίσεις)"],
             ].map(([key, label]) => (
               <div key={key} className="flex items-center justify-between gap-4">
                 <Label htmlFor={key} className="text-sm">{label}</Label>
