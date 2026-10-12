@@ -2,6 +2,7 @@ import tempfile
 import os
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from fastapi.responses import Response
 from bson import ObjectId
@@ -11,7 +12,7 @@ from models import Invoice
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from tax_utils import calculate_invoice_totals, VALID_VAT_RATES
-from mydata_client import INVOICE_TYPE_LABELS, TYPE_SERVICES_B2B, TYPE_RECEIPT_B2C
+from mydata_client import INVOICE_TYPE_LABELS, TYPE_SERVICES_B2B, TYPE_RECEIPT_B2C, TYPE_CREDIT_NOTE, resolve_invoice_type
 from ai_helpers import transcribe_audio, parse_invoice_from_text
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
@@ -34,8 +35,18 @@ SERVER_OWNED_DEFAULTS = {
 
 @router.get("")
 async def list_invoices(user: dict = Depends(get_current_user)):
+    """Τα τιμολόγια του γραφείου, καθένα με το `outstanding`: ό,τι απομένει να εισπραχθεί (μετά την παρακράτηση και
+    όσα εξοφλήθηκαν από πελατολογικό). Υπολογίζεται εδώ και δεν αποθηκεύεται — βλ. invoice_services.invoice_balances."""
+    from invoice_services import invoice_balances
     docs = await db.invoices.find(tenant_query(user)).sort("created_at", -1).to_list(1000)
-    return [Invoice.from_mongo(d) for d in docs]
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
+    balances = await invoice_balances(firm_id_for(user), [d for d in docs if d.get("status") == "issued"], settings)
+    rows = []
+    for d in docs:
+        row = jsonable_encoder(Invoice.from_mongo(d))
+        row["outstanding"] = balances.get(str(d["_id"]), (0.0, 0.0))[1]
+        rows.append(row)
+    return rows
 
 
 @router.get("/numbering-check")
@@ -103,6 +114,22 @@ def _validate_invoice_payload(payload: Invoice) -> None:
             )
 
 
+def _check_withholding_for_type(payload: Invoice, client_doc: dict | None, invoice_type: str | None = None) -> None:
+    """Η ρητή παρακράτηση δεν περνά σε ΑΠΥ λιανικής ούτε σε πιστωτικό (βλ. invoice_services.check_explicit_withholding).
+
+    Το είδος βγαίνει από το ίδιο το πρόχειρο ή, αν δεν έχει ρητό, από τον πελάτη — όπως θα το βρει η έκδοση. Η έκδοση
+    ξαναελέγχει, γιατί ο πελάτης μπορεί να αλλάξει στο μεταξύ.
+    """
+    from invoice_services import check_explicit_withholding, InvoiceWorkflowError
+    if payload.withholding_amount is None:
+        return
+    resolved = invoice_type or resolve_invoice_type(payload.model_dump(), client_doc or {})
+    try:
+        check_explicit_withholding({"withholding_amount": payload.withholding_amount, "subtotal": payload.subtotal}, resolved)
+    except InvoiceWorkflowError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 def _reset_lifecycle_fields(payload: Invoice) -> None:
     """Η κατάσταση έκδοσης και διαβίβασης ανήκει στον server.
 
@@ -139,6 +166,7 @@ async def create_invoice(payload: Invoice, user: dict = Depends(get_current_user
     payload.vat_breakdown = totals["vat_breakdown"]
     if payload.total <= 0:
         raise HTTPException(status_code=400, detail="Το σύνολο του τιμολογίου πρέπει να είναι θετικό.")
+    _check_withholding_for_type(payload, client_doc)
     # Το πρόχειρο δεν έχει αριθμό: ο αριθμός δίνεται στην έκδοση (βλ. invoice_services.issue_draft).
     payload.number = ""
     payload.created_by = user["email"]
@@ -165,6 +193,10 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
         # ειδών δέχεται μόνο ΤΠΥ/ΑΠΥ· αν ο client έστελνε πίσω το έγγραφο όπως το πήρε (με 5.1), θα
         # απορριπτόταν. Το αγνοούμε εδώ και το επαναφέρουμε από τη βάση αμέσως μετά τον έλεγχο.
         payload.invoice_type = ""
+        # Το πιστωτικό δεν φέρει παρακράτηση: ρητή τιμή απορρίπτεται εδώ, με σαφές μήνυμα, πριν τον γενικό έλεγχο ορίων
+        # (που για αρνητική καθαρή αξία θα έδινε ακατανόητο «από 0 έως −1.000 €»).
+        _check_withholding_for_type(payload, None, TYPE_CREDIT_NOTE)
+        payload.withholding_amount = None
     _validate_invoice_payload(payload)
     if is_credit_note:
         payload.invoice_type = existing.get("invoice_type", "")
@@ -198,6 +230,8 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
             raise HTTPException(status_code=400, detail="Το πιστωτικό τιμολόγιο πρέπει να έχει αρνητικό σύνολο.")
     elif payload.total <= 0:
         raise HTTPException(status_code=400, detail="Το σύνολο του τιμολογίου πρέπει να είναι θετικό.")
+    if not is_credit_note:
+        _check_withholding_for_type(payload, client_doc)
     payload.number = existing["number"]
     data = payload.to_mongo()
     data.pop("_id", None)

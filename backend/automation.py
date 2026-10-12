@@ -40,6 +40,7 @@ from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
     email_invoice, send_reminder, transmit_to_mydata, mark_paid, load_client, InvoiceEmailError, firm_query,
     apply_bank_payment, SettlementRefused, close_tx_notifications, to_cents, numbering_report,
+    invoice_balances, open_total,
 )
 import outbox
 
@@ -786,7 +787,10 @@ async def firm_snapshot(firm_id: str, settings: dict, since: datetime | None = N
     invoices = await db.invoices.find(firm_query(firm_id, {"status": {"$in": ["issued", "paid"]}})).to_list(5000)
     expenses = await db.expenses.find(firm_query(firm_id, {"date": {"$gte": month_start}})).to_list(5000)
     month_inv = [i for i in invoices if (i.get("date") or "") >= month_start]
-    unpaid = sorted([i for i in invoices if i.get("status") == "issued"], key=lambda i: i.get("date", ""))
+    issued = [i for i in invoices if i.get("status") == "issued"]
+    # Ανείσπρακτα = ό,τι απομένει να εισπραχθεί (μετά την παρακράτηση και τα εξοφλημένα από πελατολογικό), όχι το μεικτό σύνολο.
+    balances = await invoice_balances(firm_id, issued, settings)
+    unpaid = sorted([{**i, "open_amount": balances[str(i["_id"])][1]} for i in issued], key=lambda i: i.get("date", ""))
     output_vat = round(sum(i.get("vat_amount", 0) for i in month_inv), 2)
     input_vat = round(sum(e.get("vat_amount", 0) for e in expenses), 2)
     since = since or datetime.now(timezone.utc) - timedelta(days=7 if settings.get("digest_frequency") == "weekly" else 1)
@@ -800,11 +804,18 @@ async def firm_snapshot(firm_id: str, settings: dict, since: datetime | None = N
         "income_net": round(sum(i.get("subtotal", 0) for i in month_inv), 2),
         "expense_net": round(sum(e.get("amount", 0) - e.get("vat_amount", 0) for e in expenses), 2),
         "output_vat": output_vat, "input_vat": input_vat, "vat_due": round(output_vat - input_vat, 2),
-        "unpaid": unpaid, "unpaid_total": round(sum(i.get("total", 0) for i in unpaid), 2),
+        "unpaid": unpaid, "unpaid_total": open_total(issued, balances),
         "deadlines": generate_tax_calendar(today, settings.get("vat_period", "monthly")),
         "activity": activity, "open_items": open_items, "mydata_pending": mydata_pending,
         "vat_periods": vat_periods, "public_url": settings.get("public_url") or os.environ.get("PUBLIC_URL", ""),
     }
+
+
+def _owed(invoice: dict):
+    """Το ποσό που εμφανίζεται δίπλα σε ανεξόφλητο τιμολόγιο: ό,τι απομένει να εισπραχθεί (`open_amount` από το
+    `firm_snapshot`)· για στιγμιότυπο παλιότερης μορφής, χωρίς αυτό το πεδίο, το σύνολο του τιμολογίου."""
+    amount = invoice.get("open_amount")
+    return invoice.get("total") if amount is None else amount
 
 
 def build_digest(snapshot: dict, frequency: str = "weekly") -> tuple[str, str, str]:
@@ -831,7 +842,7 @@ def build_digest(snapshot: dict, frequency: str = "weekly") -> tuple[str, str, s
     if s["activity"]:
         lines += [f"ΤΙ ΕΚΑΝΕ ΤΟ AUTOPILOT ({len(s['activity'])})"] + [f"  • {n['title']}" for n in s["activity"][:20]] + [""]
     if s["unpaid"]:
-        lines += ["ΑΝΕΙΣΠΡΑΚΤΑ (παλαιότερα πρώτα)"] + [f"  • {i.get('number')} {i.get('client_name')} {_fmt(i.get('total'))} ({i.get('date', '')[:10]}, υπενθ. {i.get('reminder_count', 0)})" for i in s["unpaid"][:15]] + [""]
+        lines += ["ΑΝΕΙΣΠΡΑΚΤΑ (παλαιότερα πρώτα)"] + [f"  • {i.get('number')} {i.get('client_name')} {_fmt(_owed(i))} ({i.get('date', '')[:10]}, υπενθ. {i.get('reminder_count', 0)})" for i in s["unpaid"][:15]] + [""]
     if s["public_url"]:
         lines += [f"Άνοιγμα Autopilot: {s['public_url']}/autopilot"]
     text = "\n".join(lines)
@@ -860,7 +871,7 @@ def build_digest(snapshot: dict, frequency: str = "weekly") -> tuple[str, str, s
         {section("Προθεσμίες", [f"{d['due_date'][8:10]}/{d['due_date'][5:7]} — {esc(d['title'])}" for d in s['deadlines']])}
         {section("Περίοδοι ΦΠΑ προς υποβολή", [f"{esc(v['period'])}: <strong>{_fmt(v['vat_due'])}</strong> έως {v['due_date'][8:10]}/{v['due_date'][5:7]}" for v in s['vat_periods']])}
         {section(f"Τι έκανε το Autopilot ({len(s['activity'])})", [esc(n['title']) for n in s['activity'][:20]])}
-        {section("Ανείσπρακτα", [f"{esc(i.get('number'))} · {esc(i.get('client_name'))} · <strong>{_fmt(i.get('total'))}</strong> ({i.get('date', '')[:10]}, υπενθ. {i.get('reminder_count', 0)})" for i in s['unpaid'][:15]])}
+        {section("Ανείσπρακτα", [f"{esc(i.get('number'))} · {esc(i.get('client_name'))} · <strong>{_fmt(_owed(i))}</strong> ({i.get('date', '')[:10]}, υπενθ. {i.get('reminder_count', 0)})" for i in s['unpaid'][:15]])}
         {"<p style='margin-top:20px'><a href='" + esc(s['public_url']) + "/autopilot' style='background:#c9a227;color:#0a0f1e;padding:10px 20px;text-decoration:none;font-weight:600;border-radius:6px'>Άνοιγμα Autopilot</a></p>" if s['public_url'] else ''}
       </div>
       <div style="padding:12px 24px;border-top:1px solid #e0ddd3;color:#8a93a8;font-size:11px;">Αυτόματο μήνυμα από το Nomos One Autopilot. Δεν αποτελεί λογιστική συμβουλή.</div>

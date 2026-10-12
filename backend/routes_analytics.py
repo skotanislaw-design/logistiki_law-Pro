@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from db import db
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
+from invoice_services import invoice_balances, open_total
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -22,11 +23,18 @@ async def cash_flow_forecast(user: dict = Depends(get_current_user)):
     """Πρόβλεψη ταμείου 3 μηνών βάσει ανείσπρακτων + επαναλαμβανόμενων εξόδων + φορολογικών προθεσμιών."""
     today = date.today()
     horizon_end = _add_months(today, 3)
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
 
-    # 1) Αναμενόμενες εισπράξεις = ανεξόφλητα τιμολόγια, projected στις 30 μέρες μετά την ημερομηνία τους
+    # 1) Αναμενόμενες εισπράξεις = ό,τι απομένει να εισπραχθεί από τα ανεξόφλητα τιμολόγια (μετά την παρακράτηση και
+    #    τα εξοφλημένα από πελατολογικό), projected στις 30 μέρες μετά την ημερομηνία τους. Το πιστωτικό είναι
+    #    αρνητική είσπραξη (μειώνει την πρόβλεψη)· τιμολόγιο χωρίς υπόλοιπο δεν δίνει γεγονός.
     unpaid = await db.invoices.find(tenant_query(user, {"status": "issued"})).to_list(2000)
+    balances = await invoice_balances(firm_id_for(user), unpaid, settings)
     expected_income = []
     for inv in unpaid:
+        owed = balances[str(inv["_id"])][1]
+        if owed == 0:
+            continue
         try:
             issue = date.fromisoformat((inv.get("date") or "")[:10])
         except Exception:
@@ -39,7 +47,7 @@ async def cash_flow_forecast(user: dict = Depends(get_current_user)):
             expected_income.append({
                 "date": expected_pay.isoformat(),
                 "label": f"Είσπραξη {inv.get('number')} — {inv.get('client_name', '')}",
-                "amount": float(inv.get("total", 0)),
+                "amount": owed,
                 "type": "income",
                 "confidence": "medium",
             })
@@ -72,7 +80,6 @@ async def cash_flow_forecast(user: dict = Depends(get_current_user)):
 
     # 3) Φορολογικές προθεσμίες (VAT/EFKA εντός horizon)
     from tax_utils import next_vat_deadline, next_efka_deadline
-    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     vat_period = settings.get("vat_period", "monthly")
 
     tax_deadlines = []
@@ -159,6 +166,11 @@ async def profitability(user: dict = Depends(get_current_user)):
     client_map = {str(c["_id"]): c for c in clients}
     case_map = {str(c["_id"]): c for c in cases}
 
+    # Εισπραγμένα = πληρωτέο των εξοφλημένων (ό,τι έφτασε στο γραφείο, χωρίς την παρακράτηση που κρατά ο πελάτης)·
+    # ανείσπρακτα = ό,τι απομένει να εισπραχθεί. Και τα δύο στην ίδια βάση, ώστε το ποσοστό είσπραξης να βγάζει νόημα.
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
+    balances = await invoice_balances(firm_id_for(user), invoices, settings, {str(c["_id"]): c for c in clients})
+
     # Ανά πελάτη
     per_client = {}
     for inv in invoices:
@@ -176,15 +188,16 @@ async def profitability(user: dict = Depends(get_current_user)):
         p = per_client[cid]
         p["invoice_count"] += 1
         p["total_revenue"] += float(inv.get("subtotal", 0))
+        payable, owed = balances[str(inv["_id"])]
         if inv.get("status") == "paid":
-            p["paid_revenue"] += float(inv.get("total", 0))
+            p["paid_revenue"] += payable
         else:
-            p["unpaid_revenue"] += float(inv.get("total", 0))
+            p["unpaid_revenue"] += owed
     top_clients = sorted(per_client.values(), key=lambda p: p["total_revenue"], reverse=True)[:10]
     for c in top_clients:
         c["total_revenue"] = round(c["total_revenue"], 2)
         c["paid_revenue"] = round(c["paid_revenue"], 2)
-        c["unpaid_revenue"] = round(c["unpaid_revenue"], 2)
+        c["unpaid_revenue"] = max(round(c["unpaid_revenue"], 2), 0.0)    # πιστωτικό μεγαλύτερο από το χρέος δεν είναι «ανείσπρακτο»
 
     # Ανά τύπο υπόθεσης (case_type αν συνδέεται με invoice μέσω client)
     per_case_type = {}
@@ -208,8 +221,8 @@ async def profitability(user: dict = Depends(get_current_user)):
 
     # Overall metrics
     total_revenue = sum(float(i.get("subtotal", 0)) for i in invoices)
-    paid_revenue = sum(float(i.get("total", 0)) for i in invoices if i.get("status") == "paid")
-    unpaid_revenue = sum(float(i.get("total", 0)) for i in invoices if i.get("status") == "issued")
+    paid_revenue = sum(balances[str(i["_id"])][0] for i in invoices if i.get("status") == "paid")
+    unpaid_revenue = open_total(invoices, balances)
     collection_rate = round(paid_revenue / max(0.01, paid_revenue + unpaid_revenue) * 100, 1)
     avg_invoice = round(total_revenue / max(1, len(invoices)), 2)
 

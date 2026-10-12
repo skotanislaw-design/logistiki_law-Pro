@@ -190,14 +190,10 @@ async def portal_data(token: str, request: Request):
     # Το ποσό που πράγματι οφείλει ο πελάτης: πληρωτέο (μετά την παρακράτηση που κρατά ο ίδιος) μείον ό,τι
     # έχει εξοφληθεί από τον πελατολογικό του λογαριασμό. Είναι το ίδιο ποσό που χρεώνει το checkout του
     # portal· αν η λίστα έδειχνε μόνο το σύνολο, ο πελάτης θα έβλεπε άλλο ποσό από αυτό που πληρώνει.
-    from invoice_services import payable_amount, outstanding_amount
-    amounts = {}
-    for i in invoices:
-        payable, _w = await payable_amount(firm, i, settings, client)
-        due, _w = await outstanding_amount(firm, i, settings, client) if i.get("status") == "issued" else (0.0, 0.0)
-        if i.get("status") == "issued" and float(i.get("total") or 0) < 0:
-            due = payable          # πιστωτικό: αρνητικό ποσό που συμψηφίζεται με το αρχικό, όχι «0» (βλ. unpaid_total)
-        amounts[str(i["_id"])] = (payable, due)
+    # Ο υπολογισμός είναι κοινός με το dashboard, τις αναλύσεις και τη λίστα τιμολογίων (invoice_services.invoice_balances):
+    # το γραφείο και ο πελάτης βλέπουν πάντα τον ίδιο αριθμό. Το πιστωτικό κρατά το αρνητικό ποσό του και συμψηφίζεται.
+    from invoice_services import invoice_balances, open_total
+    amounts = await invoice_balances(firm, invoices, settings, {client_id: client})
 
     payload = {
         "firm": {
@@ -241,7 +237,7 @@ async def portal_data(token: str, request: Request):
             "unpaid_count": sum(1 for i in invoices if i.get("status") == "issued"),
             # Το άθροισμα είναι προσημασμένο: ένα πιστωτικό συμψηφίζει το τιμολόγιο που πιστώνει. Μόνο το σύνολο
             # δεν πέφτει κάτω από το μηδέν (πιστωτικό μεγαλύτερο από τα ανεξόφλητα δεν είναι «οφειλή» του πελάτη).
-            "unpaid_total": max(0.0, round(sum(amounts[str(i["_id"])][1] for i in invoices if i.get("status") == "issued"), 2)),
+            "unpaid_total": open_total(invoices, amounts),
             "paid_count": sum(1 for i in invoices if i.get("status") == "paid"),
             "active_cases": sum(1 for c in cases if c.get("status") == "active"),
         },

@@ -5,8 +5,9 @@ from datetime import date
 from ai_runtime import LlmChat, UserMessage, TextDelta, StreamDone
 from ai_helpers import EMERGENT_LLM_KEY
 from db import db
-from tenant import tenant_query
+from tenant import tenant_query, firm_id_for
 from tax_utils import next_vat_deadline, next_efka_deadline
+from invoice_services import invoice_balances, open_total
 
 
 def _fmt(v):
@@ -28,6 +29,9 @@ async def build_context(user: dict) -> dict:
     month_inv = [i for i in issued if i.get("date", "") >= month_start]
     month_exp = [e for e in expenses if e.get("date", "") >= month_start]
     unpaid = [i for i in invoices if i.get("status") == "issued"]
+    # «Οφειλόμενο» = ό,τι απομένει να εισπραχθεί (μετά την παρακράτηση και τα εξοφλημένα από πελατολογικό): αν ο βοηθός
+    # έβλεπε μόνο το σύνολο, θα απαντούσε «οφείλονται 1.240 €» για ποσό που ο πελάτης χρωστά 640.
+    balances = await invoice_balances(firm_id_for(user), unpaid, settings, {str(c["_id"]): c for c in clients})
 
     output_vat = round(sum(i.get("vat_amount", 0) for i in month_inv), 2)
     input_vat = round(sum(e.get("vat_amount", 0) for e in month_exp), 2)
@@ -54,8 +58,10 @@ async def build_context(user: dict) -> dict:
             {"υπόθεση": h.get("case_title"), "δικαστήριο": h.get("court"), "ημερομηνία": h.get("date"), "αριθμός_πινακίου": h.get("pinakio_number"), "τρέχων_αριθμός": h.get("current_number"), "κατάσταση": h.get("status")}
             for h in hearings[:20]
         ],
+        "ανείσπρακτα_σύνολο": _fmt(open_total(unpaid, balances)),
         "ανεξόφλητα_τιμολόγια": [
-            {"αριθμός": i.get("number"), "πελάτης": i.get("client_name"), "σύνολο": _fmt(i.get("total")), "ημερομηνία": i.get("date")}
+            {"αριθμός": i.get("number"), "πελάτης": i.get("client_name"), "σύνολο": _fmt(i.get("total")),
+             "οφειλόμενο": _fmt(balances[str(i["_id"])][1]), "ημερομηνία": i.get("date")}
             for i in unpaid[:20]
         ],
         "πρόχειρα_τιμολόγια": sum(1 for i in invoices if i.get("status") == "draft"),

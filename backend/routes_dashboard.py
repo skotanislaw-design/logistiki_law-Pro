@@ -5,6 +5,7 @@ from db import db
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from tax_utils import next_vat_deadline, next_efka_deadline
+from invoice_services import invoice_balances, open_total
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -59,8 +60,11 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
     year_invoices = [i for i in invoices if i.get("date", "") >= year_start]
     year_income = round(sum(i.get("subtotal", 0) for i in year_invoices), 2)
     year_expense = round(sum(e.get("amount", 0) - e.get("vat_amount", 0) for e in expenses if e.get("date", "") >= year_start), 2)
+    # Ανείσπρακτα = ό,τι πράγματι απομένει να εισπραχθεί (μετά την παρακράτηση και ό,τι εξοφλήθηκε από πελατολογικό),
+    # όχι το μεικτό σύνολο — ο ίδιος ορισμός με την πύλη του πελάτη (βλ. invoice_services.invoice_balances).
     unpaid = [i for i in invoices if i.get("status") == "issued"]
-    unpaid_total = round(sum(i.get("total", 0) for i in unpaid), 2)
+    balances = await invoice_balances(firm_id_for(user), unpaid, settings or {})
+    unpaid_total = open_total(unpaid, balances)
 
     vat_deadline = next_vat_deadline(today, vat_period)
     efka_deadline = next_efka_deadline(today)

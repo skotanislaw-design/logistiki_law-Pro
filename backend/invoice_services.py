@@ -17,7 +17,7 @@ from db import db
 from mydata_client import (
     mydata_ready, send_invoice, cancel_invoice, MyDataError, mydata_mock_enabled,
     MYDATA_NOT_CONFIGURED_MSG, resolve_invoice_type, withholding_for,
-    TYPE_SERVICES_B2B, TYPE_RECEIPT_B2C, TYPE_CREDIT_NOTE,
+    TYPE_SERVICES_B2B, TYPE_RECEIPT_B2C, TYPE_CREDIT_NOTE, RETAIL_TYPES, CREDIT_TYPES,
 )
 from tax_utils import athens_today
 from email_utils import (
@@ -64,6 +64,110 @@ async def outstanding_amount(firm_id: str, invoice: dict, settings: dict, client
     payable, withheld = await payable_amount(firm_id, invoice, settings, client)
     applied = round(float(invoice.get("trust_applied") or 0), 2)
     return round(max(payable - applied, 0.0), 2), withheld
+
+
+def _eur(value: float) -> str:
+    return f"{value:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def check_explicit_withholding(invoice: dict, invoice_type: str) -> None:
+    """Η ρητή παρακράτηση του τιμολογίου (`withholding_amount`) έχει νόημα μόνο σε ΤΠΥ και μέσα σε όρια.
+
+    Την παρακράτηση φόρου αμοιβών την κρατά ο πελάτης-επιχείρηση. Στην ΑΠΥ λιανικής (ιδιώτης) και στο πιστωτικό δεν
+    εφαρμόζεται — όπως και στον αυτόματο υπολογισμό (`withholding_for`), που τα εξαιρεί. Μια ρητή τιμή υπερισχύει
+    και «παγώνει» στην έκδοση, οπότε χωρίς αυτόν τον έλεγχο μια απόδειξη 500 € προς ιδιώτη με `withholding_amount: 100`
+    εκδιδόταν με «πληρωτέο 520 €» και διαβιβαζόταν στην ΑΑΔΕ με παρακράτηση που δεν υπάρχει. Στο ΤΠΥ η τιμή
+    πρέπει να είναι από 0 έως την καθαρή αξία. Το 0 επιτρέπεται παντού («καμία παρακράτηση»).
+    """
+    amount = invoice.get("withholding_amount")
+    if amount is None or float(amount) == 0:
+        return
+    amount = float(amount)
+    if invoice_type in CREDIT_TYPES:
+        raise InvoiceWorkflowError(
+            f"Το πιστωτικό τιμολόγιο δεν φέρει παρακράτηση ({_eur(amount)}). Η παρακράτηση του αρχικού τιμολογίου "
+            "ρυθμίζεται με τον λογιστή του γραφείου — δεν γράφεται στο πιστωτικό.")
+    if invoice_type in RETAIL_TYPES:
+        raise InvoiceWorkflowError(
+            f"Η παρακράτηση ({_eur(amount)}) δεν εφαρμόζεται σε απόδειξη λιανικής (ΑΠΥ): την κρατά μόνο πελάτης-επιχείρηση. "
+            "Αφαιρέστε την παρακράτηση ή εκδώστε τιμολόγιο παροχής υπηρεσιών (ΤΠΥ) προς πελάτη με ΑΦΜ.")
+    net = float(invoice.get("subtotal") or 0)
+    if amount < 0 or amount > net:
+        raise InvoiceWorkflowError(
+            f"Η παρακράτηση ({_eur(amount)}) πρέπει να είναι από 0 έως την καθαρή αξία ({_eur(net)}).")
+
+
+def _needs_client(invoice: dict, settings: dict) -> bool:
+    """Χρειάζεται ο πελάτης για να βρεθεί η παρακράτηση του τιμολογίου;
+
+    Μόνο όταν η παρακράτηση δεν είναι παγωμένη, είναι ενεργή στις Ρυθμίσεις και το είδος (ΤΠΥ / ΑΠΥ) δεν
+    προκύπτει από το ίδιο το έγγραφο — δηλαδή για τιμολόγια που εκδόθηκαν πριν αποθηκεύονται αυτά τα πεδία.
+    """
+    if invoice.get("withholding_amount") is not None or not settings.get("withholding_enabled", False):
+        return False
+    if (invoice.get("invoice_type") or "").strip():
+        return False
+    return not (invoice.get("credit_note_for") or invoice.get("correlated_mark"))
+
+
+async def invoice_balances(firm_id: str, invoices: list[dict], settings: dict,
+                           known_clients: dict[str, dict] | None = None) -> dict[str, tuple[float, float]]:
+    """{id: (πληρωτέο, οφειλόμενο)} για κάθε παραστατικό της λίστας — **ο μοναδικός ορισμός** του «ανείσπρακτου».
+
+    Το dashboard, η εβδομαδιαία ενημέρωση, οι αναλύσεις, ο Copilot, η λίστα τιμολογίων και η πύλη του πελάτη
+    δείχνουν όλα τον ίδιο αριθμό, γιατί βγαίνει από εδώ:
+
+    * εκδοθέν τιμολόγιο: το πληρωτέο (σύνολο − παρακράτηση) μείον ό,τι εξοφλήθηκε από πελατολογικό, όχι κάτω από 0·
+    * εκδοθέν πιστωτικό (αρνητικό σύνολο): το αρνητικό πληρωτέο του — συμψηφίζεται με τα υπόλοιπα του ίδιου
+      πελάτη (βλ. `open_total`)· το `outstanding_amount` το έκανε «0» και το πιστωτικό χανόταν·
+    * ό,τι δεν είναι εκδοθέν (πρόχειρο, εξοφλημένο, ακυρωμένο): οφειλόμενο 0.
+
+    Χωρίς ένα ερώτημα στη βάση ανά τιμολόγιο: οι πελάτες που χρειάζονται (μόνο για παλιά τιμολόγια χωρίς παγωμένη
+    παρακράτηση) διαβάζονται όλοι μαζί, και το `known_clients` {client_id: έγγραφο} γλιτώνει και αυτό το ερώτημα.
+    """
+    clients: dict[str, dict] = dict(known_clients or {})
+    wanted: list[ObjectId] = []
+    for inv in invoices:
+        cid = str(inv.get("client_id") or "")
+        if cid and cid not in clients and _needs_client(inv, settings):
+            try:
+                oid = ObjectId(cid)
+            except Exception:  # noqa: BLE001 — χαλασμένο client_id: το είδος βγαίνει ως λιανική, όπως στη διαβίβαση
+                clients[cid] = {}
+                continue
+            if oid not in wanted:
+                wanted.append(oid)
+    if wanted:
+        async for c in db.clients.find(firm_query(firm_id, {"_id": {"$in": wanted}})):
+            clients[str(c["_id"])] = c
+
+    balances: dict[str, tuple[float, float]] = {}
+    for inv in invoices:
+        client = clients.get(str(inv.get("client_id") or ""), {})
+        payable, _withheld = await payable_amount(firm_id, inv, settings, client)
+        if inv.get("status") != "issued":
+            owed = 0.0
+        elif float(inv.get("total") or 0) < 0:
+            owed = payable
+        else:
+            owed, _withheld = await outstanding_amount(firm_id, inv, settings, client)
+        balances[str(inv["_id"])] = (payable, owed)
+    return balances
+
+
+def open_total(invoices: list[dict], balances: dict[str, tuple[float, float]]) -> float:
+    """Το ποσό που απομένει να εισπραχθεί από τα εκδοθέντα: άθροισμα ανά πελάτη, με κάτω όριο το μηδέν.
+
+    Το πιστωτικό συμψηφίζεται με τα υπόλοιπα του ΙΔΙΟΥ πελάτη. Αν τον ξεπερνά (πιστωτικό για εξοφλημένο
+    τιμολόγιο), το πλεόνασμα δεν είναι «οφειλή» και δεν πρέπει να μειώνει ό,τι χρωστά άλλος πελάτης.
+    """
+    per_client: dict[str, float] = {}
+    for inv in invoices:
+        if inv.get("status") != "issued":
+            continue
+        key = str(inv.get("client_id") or "")
+        per_client[key] = per_client.get(key, 0.0) + balances[str(inv["_id"])][1]
+    return round(sum(max(round(v, 2), 0.0) for v in per_client.values()), 2)
 
 
 async def effective_invoice(firm_id: str, invoice: dict, settings: dict, client: dict | None = None) -> dict:
@@ -779,6 +883,9 @@ async def issue_draft(firm_id: str, doc: dict, settings: dict) -> dict:
         doc = claimed
         client = await load_client(firm_id, doc)
         invoice_type = resolve_invoice_type(doc, client or {})
+        # Το είδος βγαίνει από τον πελάτη της στιγμής: ένα πρόχειρο φτιαγμένο για εταιρεία με ρητή παρακράτηση μπορεί να
+        # έγινε ΑΠΥ λιανικής. Ελέγχεται πριν δοθεί αριθμός, ώστε η άρνηση να μην αφήνει κενό στη σειρά.
+        check_explicit_withholding(doc, invoice_type)
 
         total = float(doc.get("total") or 0)
         if invoice_type == TYPE_CREDIT_NOTE or doc.get("credit_note_for"):

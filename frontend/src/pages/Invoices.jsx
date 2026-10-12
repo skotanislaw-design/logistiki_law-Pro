@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
-import { invoiceLabel, todayAthens } from "@/lib/utils";
+import { invoiceLabel, todayAthens, unpaidTotal } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -262,7 +262,7 @@ export default function Invoices() {
   };
 
   const unpaidList = invoices.filter((i) => i.status === "issued");
-  const unpaidTotal = unpaidList.reduce((s, i) => s + (i.total || 0), 0);
+  const unpaidSum = unpaidTotal(invoices);
   const overdue30 = unpaidList.filter((i) => {
     if (!i.date) return false;
     const diff = (new Date() - new Date(i.date)) / (1000 * 60 * 60 * 24);
@@ -296,7 +296,7 @@ export default function Invoices() {
             <span className="lux-overline">Ανείσπρακτα</span>
             <BellRinging size={18} className="text-[hsl(var(--gold))]" />
           </div>
-          <div className="mt-2 font-mono text-3xl font-semibold" data-testid="kpi-unpaid-total">{money(unpaidTotal)}</div>
+          <div className="mt-2 font-mono text-3xl font-semibold" data-testid="kpi-unpaid-total">{money(unpaidSum)}</div>
           <div className="mt-1 text-xs text-muted-foreground">
             <span data-testid="kpi-unpaid-count">{unpaidList.length}</span> ανεξόφλητα τιμολόγια
             {overdue30 > 0 && <span className="ml-2 text-[hsl(var(--destructive))]">· {overdue30} με καθυστέρηση 30+ ημερών</span>}
@@ -377,7 +377,12 @@ export default function Invoices() {
                     <span className="text-xs text-muted-foreground">Μη σταλμένο</span>
                   )}
                 </TableCell>
-                <TableCell className="text-right font-mono">{money(inv.total)}</TableCell>
+                <TableCell className="text-right font-mono">
+                  {money(inv.total)}
+                  {inv.status === "issued" && inv.total > 0 && inv.outstanding != null && Math.abs(inv.outstanding - inv.total) >= 0.005 && (
+                    <div className="text-[10px] text-muted-foreground font-sans" data-testid={`due-${inv.id}`}>Οφείλεται: {money(inv.outstanding)}</div>
+                  )}
+                </TableCell>
                 <TableCell className="text-right">
                   <Button variant="ghost" size="icon" onClick={() => setViewing(inv)} data-testid={`view-invoice-${inv.id}`}><Eye size={16} /></Button>
                   <Button variant="ghost" size="icon" onClick={() => downloadPdf(inv)} title="Λήψη PDF" data-testid={`pdf-invoice-${inv.id}`}><FilePdf size={16} /></Button>

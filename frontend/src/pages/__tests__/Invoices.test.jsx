@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Toaster } from "@/components/ui/sonner";
 import Invoices from "@/pages/Invoices";
-import { invoiceLabel, todayAthens } from "@/lib/utils";
+import { invoiceLabel, owedAmount, todayAthens, unpaidTotal } from "@/lib/utils";
 import { server } from "@/test/server";
 
 const API = "http://localhost:8001/api";
@@ -166,5 +166,76 @@ describe("Τιμολόγια — πιστωτικό", () => {
     expect(await screen.findByText(/Δημιουργήθηκε πρόχειρο πιστωτικό/)).toBeInTheDocument();
     expect(posted).toBe(1);
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("ΤΠΥ-2026-0001"));
+  });
+});
+
+describe("Τιμολόγια — ανείσπρακτα", () => {
+  const issued = (id, client, total, outstanding, over = {}) => ({
+    ...base, id, number: `ΤΠΥ-2026-000${id.slice(1)}`, status: "issued", client_id: client, total, outstanding, ...over,
+  });
+
+  function listed(rows) {
+    server.use(
+      http.get(`${API}/invoices`, () => HttpResponse.json(rows)),
+      http.get(`${API}/clients`, () => HttpResponse.json([])),
+    );
+  }
+
+  it("το KPI «Ανείσπρακτα» δείχνει ό,τι πράγματι οφείλεται, όχι το μεικτό σύνολο", async () => {
+    // 1.240 με παρακράτηση 200 και 400 ήδη εξοφλημένα από πελατολογικό → οφείλονται 640
+    listed([issued("i1", "c1", 1240, 640), issued("i2", "c2", 124, 124), { ...base, id: "p1", number: "ΤΠΥ-2026-0003", status: "paid", total: 500, outstanding: 0 }]);
+    render(<><Invoices /><Toaster /></>);
+    expect(await screen.findByTestId("kpi-unpaid-total")).toHaveTextContent(/764,00/);
+    expect(screen.getByTestId("kpi-unpaid-count")).toHaveTextContent("2");
+    expect(screen.getByTestId("kpi-unpaid-total")).not.toHaveTextContent(/1\.364/);
+  });
+
+  it("δείχνει «Οφείλεται» μόνο στη γραμμή όπου το ποσό διαφέρει από το σύνολο", async () => {
+    listed([issued("i1", "c1", 1240, 640), issued("i2", "c2", 124, 124)]);
+    render(<><Invoices /><Toaster /></>);
+    expect(await screen.findByTestId("due-i1")).toHaveTextContent(/Οφείλεται:\s*640,00/);
+    expect(screen.queryByTestId("due-i2")).not.toBeInTheDocument();
+  });
+
+  it("το πιστωτικό συμψηφίζεται με τον ίδιο πελάτη και δεν δείχνει «Οφείλεται»", async () => {
+    listed([issued("i1", "c1", 1240, 1240), issued("i2", "c1", -496, -496, { credit_note_for: "i1" })]);
+    render(<><Invoices /><Toaster /></>);
+    expect(await screen.findByTestId("kpi-unpaid-total")).toHaveTextContent(/744,00/);
+    expect(screen.queryByTestId("due-i2")).not.toBeInTheDocument();
+  });
+
+  it("server παλαιότερης έκδοσης (χωρίς «outstanding»): το σύνολο όπως πριν, χωρίς σφάλμα", async () => {
+    listed([{ ...base, id: "i1", number: "ΤΠΥ-2026-0001", status: "issued", client_id: "c1", total: 124 }]);
+    render(<><Invoices /><Toaster /></>);
+    expect(await screen.findByTestId("kpi-unpaid-total")).toHaveTextContent(/124,00/);
+    expect(screen.queryByTestId("due-i1")).not.toBeInTheDocument();
+  });
+});
+
+describe("unpaidTotal / owedAmount", () => {
+  const row = (client, total, outstanding, status = "issued") => ({ client_id: client, total, outstanding, status });
+
+  it("αθροίζει το οφειλόμενο των εκδοθέντων, όχι το σύνολο", () => {
+    expect(unpaidTotal([row("a", 1240, 640), row("b", 124, 124)])).toBe(764);
+  });
+
+  it("αγνοεί ό,τι δεν είναι εκδοθέν", () => {
+    expect(unpaidTotal([row("a", 100, 100, "paid"), row("a", 100, 100, "draft"), row("a", 100, 100, "cancelled")])).toBe(0);
+  });
+
+  it("το πιστωτικό ενός πελάτη δεν μειώνει το χρέος άλλου και δεν δίνει αρνητικό υπόλοιπο", () => {
+    expect(unpaidTotal([row("a", 1240, 1240), row("b", -248, -248)])).toBe(1240);
+    expect(unpaidTotal([row("b", -248, -248)])).toBe(0);
+    expect(unpaidTotal([row("a", 1240, 1240), row("a", -496, -496)])).toBe(744);
+  });
+
+  it("στρογγυλεύει σε λεπτά χωρίς σφάλματα κινητής υποδιαστολής", () => {
+    expect(unpaidTotal([row("a", 0.1, 0.1), row("a", 0.2, 0.2)])).toBe(0.3);
+  });
+
+  it("το owedAmount πέφτει στο σύνολο όταν λείπει το outstanding, αλλά σέβεται το μηδέν", () => {
+    expect(owedAmount({ total: 124 })).toBe(124);
+    expect(owedAmount({ total: 124, outstanding: 0 })).toBe(0);
+    expect(owedAmount(null)).toBe(0);
   });
 });
