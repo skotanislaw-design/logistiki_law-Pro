@@ -17,7 +17,7 @@
 import calendar
 import math
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
@@ -32,6 +32,26 @@ def athens_today() -> date:
     αρίθμησης θα άλλαζε έτος με καθυστέρηση. Κάθε ημερομηνία παραστατικού βγαίνει από εδώ.
     """
     return datetime.now(ATHENS).date()
+
+
+def athens_date_of(stamp) -> date | None:
+    """Η ημερομηνία, ώρα Ελλάδας, μιας χρονοσφραγίδας ISO — ή ``None`` αν το κείμενο δεν διαβάζεται.
+
+    Οι χρονοσφραγίδες αποθηκεύονται σε UTC (``2026-12-31T22:30:00+00:00``)· είναι η 1η Ιανουαρίου στην Ελλάδα. Το
+    ``stamp[:10]`` ή το ``fromisoformat(stamp).date()`` δίνουν την ημερομηνία UTC, δηλαδή τη χθεσινή για κάθε σφραγίδα
+    που μπήκε μεταξύ 00:00 και 03:00 ώρα Ελλάδας: μια υπενθύμιση θα ξαναστελνόταν μία μέρα νωρίτερα, ένα πρόχειρο θα
+    φαινόταν δημιουργημένο την προηγούμενη. Χωρίς ζώνη ώρας (παλιά δεδομένα) θεωρείται UTC — όχι η ζώνη του
+    μηχανήματος, που αλλάζει από εγκατάσταση σε εγκατάσταση.
+    """
+    if not isinstance(stamp, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(stamp.strip())
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(ATHENS).date()
 
 
 # --------------------------------------------------------------- χρήμα ---

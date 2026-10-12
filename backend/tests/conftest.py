@@ -12,7 +12,60 @@ os.environ.setdefault("AUTOPILOT_SCHEDULER", "0")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import time  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
+
 import pytest  # noqa: E402
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Ζώνη ώρας του μηχανήματος των tests: ΠΑΝΤΑ διαφορετική ημερομηνία από την ελληνική.
+#
+# Ο server της παραγωγής τρέχει σε UTC, ο προγραμματιστής σε ώρα Ελλάδας, το CI πάλι σε UTC. Ο κώδικας πρέπει να βρίσκει
+# τη «σημερινή» ημερομηνία από την ώρα Ελλάδας (`tax_utils.athens_today`) και ΠΟΤΕ από το ρολόι του μηχανήματος. Όσο το
+# μηχάνημα των tests έδινε την ίδια ημερομηνία με την Ελλάδα (σχεδόν πάντα), κάθε ανάγνωση του τοπικού ρολογιού ήταν
+# «σωστή» και το λάθος φαινόταν μόνο 00:00–03:00 ώρα Ελλάδας, όταν δεν τρέχει κανείς tests: έτσι έμειναν 20 σημεία
+# στον γύρο 5. Εδώ το μηχάνημα μπαίνει σε ζώνη που αυτή τη στιγμή έχει ΑΛΛΗ ημερομηνία (UTC+14 ή UTC−11 — η μία από τις
+# δύο διαφέρει πάντα), οπότε οποιαδήποτε εξάρτηση από το τοπικό ρολόι αποτυγχάνει αμέσως, όποια ώρα κι αν τρέξει η suite.
+# Με `NOMOS_TEST_TZ=<ζώνη>` επιλέγεται ρητά άλλη (π.χ. για να αναπαραχθεί μια αποτυχία).
+# ---------------------------------------------------------------------------------------------------------------------
+
+def _hostile_timezone() -> str:
+    explicit = os.environ.get("NOMOS_TEST_TZ")
+    if explicit:
+        return explicit
+    athens = datetime.now(ZoneInfo("Europe/Athens")).date()
+    for candidate in ("Pacific/Kiritimati", "Pacific/Pago_Pago"):
+        if datetime.now(ZoneInfo(candidate)).date() != athens:
+            return candidate
+    return "Pacific/Pago_Pago"
+
+
+if hasattr(time, "tzset"):
+    os.environ["TZ"] = _hostile_timezone()
+    time.tzset()
+
+
+@pytest.fixture()
+def athens_clock(monkeypatch):
+    """Παγώνει το ρολόι του `tax_utils`: 01:30 της 1/1/2027 στην Ελλάδα, 23:30 της 31/12/2026 σε UTC.
+
+    Η ώρα αυτή είναι η δύσκολη: η ημερομηνία UTC είναι χθεσινή και, ταυτόχρονα, αλλάζει ο μήνας, το έτος και η σειρά
+    αρίθμησης. Ό,τι βρίσκει «σήμερα» με `athens_today()` βλέπει 2027-01-01· ό,τι διαβάζει το ρολόι του μηχανήματος ή την
+    ημερομηνία UTC βλέπει κάτι άλλο."""
+    import tax_utils
+
+    frozen = datetime(2027, 1, 1, 1, 30, tzinfo=ZoneInfo("Europe/Athens"))          # = 2026-12-31 23:30 UTC
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen.astimezone(tz) if tz else frozen.astimezone(timezone.utc).replace(tzinfo=None)
+
+    monkeypatch.setattr(tax_utils, "datetime", FrozenDatetime)
+    assert tax_utils.athens_today().isoformat() == "2027-01-01"
+    return frozen
 
 
 @pytest.fixture(autouse=True)

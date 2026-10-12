@@ -236,17 +236,8 @@ def _document_date(issued_at):
     Ο server τρέχει σε UTC — η `date.today()` δίνει την προηγούμενη μέρα μεταξύ 00:00 και 03:00 ώρα Ελλάδας.
     Και ένα εκδοθέν έγγραφο δεν αλλάζει ημερομηνία κάθε φορά που κατεβαίνει ξανά το PDF του.
     """
-    from datetime import datetime, timezone
-    from tax_utils import ATHENS, athens_today
-    if issued_at:
-        try:
-            stamp = datetime.fromisoformat(str(issued_at))
-            if stamp.tzinfo is None:
-                stamp = stamp.replace(tzinfo=timezone.utc)
-            return stamp.astimezone(ATHENS).date()
-        except ValueError:
-            pass
-    return athens_today()
+    from tax_utils import athens_date_of, athens_today
+    return athens_date_of(issued_at) or athens_today()
 
 
 def build_grammatio_pdf(grammatio: dict, settings: dict) -> bytes:

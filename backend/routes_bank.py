@@ -6,7 +6,7 @@ import csv
 import io
 import math
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from bson import ObjectId
@@ -15,6 +15,7 @@ from db import db
 from models import BankTransaction
 from auth import get_current_user, require_admin
 from pydantic import BaseModel
+from tax_utils import athens_today
 from tenant import tenant_query, firm_id_for
 from invoice_services import (
     apply_bank_payment, close_tx_notifications, deposit_cents, firm_query, load_client, outstanding_amount, to_cents,
@@ -219,8 +220,8 @@ def match_details(tx: dict, invoices: list[dict]) -> dict:
 
         # Ημερομηνία (±60 ημέρες)
         try:
-            inv_date = datetime.fromisoformat(inv.get("date", "")[:10]).date()
-            tx_date = datetime.fromisoformat(tx["date"]).date()
+            inv_date = date.fromisoformat((inv.get("date") or "")[:10])
+            tx_date = date.fromisoformat(str(tx["date"])[:10])
             days_diff = abs((tx_date - inv_date).days)
             if days_diff <= 7:
                 score += 30
@@ -560,7 +561,6 @@ async def openbanking_link(payload: LinkRequest, user: dict = Depends(require_ad
 @router.post("/openbanking/complete")
 async def openbanking_complete(user: dict = Depends(require_admin)):
     """Μετά την έγκριση: καταγράφει τους λογαριασμούς που παραχώρησε ο χρήστης."""
-    from datetime import date as _d, timedelta as _td
     from openbanking import get_requisition, account_details, OpenBankingError
     settings = await db.settings.find_one(tenant_query(user)) or {}
     requisition_id = settings.get("gocardless_requisition_id")
@@ -584,7 +584,7 @@ async def openbanking_complete(user: dict = Depends(require_admin)):
     await db.settings.update_one(tenant_query(user), {"$set": {
         "gocardless_account_ids": accounts,
         "openbanking_enabled": True,
-        "gocardless_access_valid_until": (_d.today() + _td(days=90)).isoformat(),
+        "gocardless_access_valid_until": (athens_today() + timedelta(days=90)).isoformat(),
     }})
     return {"accounts": described, "message": f"Συνδέθηκαν {len(accounts)} λογαριασμοί. "
                                               "Οι κινήσεις θα κατεβαίνουν αυτόματα."}

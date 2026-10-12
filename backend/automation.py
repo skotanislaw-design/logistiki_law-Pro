@@ -34,7 +34,7 @@ from pymongo.errors import DuplicateKeyError
 from db import db, fetch_all
 from crypto import decrypt
 from models import Notification, AutomationRun, VatPeriod, Expense
-from tax_utils import athens_today, generate_tax_calendar, vat_deadline_for_period_end
+from tax_utils import athens_date_of, athens_today, generate_tax_calendar, vat_deadline_for_period_end
 from email_utils import smtp_ready, send_email_with_pdf
 from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
@@ -285,9 +285,8 @@ def reminder_due(invoice: dict, settings: dict, today: _date | None = None) -> b
     last = invoice.get("reminder_sent_at")
     if not last:
         return age >= int(settings.get("reminder_after_days", 30))
-    try:
-        last_d = datetime.fromisoformat(last).date()
-    except ValueError:
+    last_d = athens_date_of(last)           # η σφραγίδα είναι σε UTC· «πότε στάλθηκε» κρίνεται με ημερομηνία Ελλάδας
+    if last_d is None:
         return True
     return (today - last_d).days >= int(settings.get("reminder_interval_days", 15))
 
@@ -352,18 +351,13 @@ def digest_due(settings: dict, last_sent_iso: str | None, now_utc: datetime | No
     now_local = (now_utc or datetime.now(timezone.utc)).astimezone(ATHENS)
     if now_local.hour < int(settings.get("digest_hour", 7)):
         return False
-    last_local = None
-    if last_sent_iso:
-        try:
-            last_local = datetime.fromisoformat(last_sent_iso).astimezone(ATHENS)
-        except ValueError:
-            last_local = None
+    last_day = athens_date_of(last_sent_iso)
     if freq == "daily":
-        return last_local is None or last_local.date() < now_local.date()
+        return last_day is None or last_day < now_local.date()
     # weekly: Mondays, once
     if now_local.weekday() != 0:
         return False
-    return last_local is None or (now_local.date() - last_local.date()).days >= 6
+    return last_day is None or (now_local.date() - last_day).days >= 6
 
 
 # ----------------------------------------------------------------- jobs -----
@@ -546,6 +540,12 @@ async def job_deadlines(firm_id: str, settings: dict) -> dict:
     return {"raised": raised}
 
 
+def _created_on(doc: dict) -> str:
+    """Η ημερομηνία δημιουργίας (ώρα Ελλάδας, ΗΗ/ΜΜ/ΕΕΕΕ) για χρήση σε κείμενο ειδοποίησης."""
+    day = athens_date_of(doc.get("created_at"))
+    return day.strftime("%d/%m/%Y") if day else "—"
+
+
 async def job_stale_drafts(firm_id: str, settings: dict) -> dict:
     days = int(settings.get("stale_draft_days", 7) or 0)
     if days <= 0:
@@ -555,7 +555,7 @@ async def job_stale_drafts(firm_id: str, settings: dict) -> dict:
     async for inv in db.invoices.find(firm_query(firm_id, {"status": "draft", "created_at": {"$lt": cutoff}})):
         created = await notify(firm_id, "stale_draft", "info",
                                f"Πρόχειρο τιμολόγιο{(' ' + inv['number']) if inv.get('number') else ''} περιμένει έκδοση",
-                               f"{inv.get('client_name')} — {_fmt(inv.get('total'))}, δημιουργήθηκε {inv.get('created_at', '')[:10]}",
+                               f"{inv.get('client_name')} — {_fmt(inv.get('total'))}, δημιουργήθηκε {_created_on(inv)}",
                                entity="invoice", entity_id=inv["_id"], requires_action=True,
                                dedupe_key=f"stale_draft:{inv['_id']}")
         flagged += 1 if created else 0

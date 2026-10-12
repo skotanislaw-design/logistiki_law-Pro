@@ -6,21 +6,21 @@
 παραστατικά (`athens_today`) αλλά έμεινε σε 20 άλλα σημεία.
 
 Δύο κατηγορίες ελέγχων: (1) στατικός φρουρός — κανένα module δεν καλεί `date.today()` / `datetime.now()` χωρίς ζώνη /
-`utcnow()`· (2) συμπεριφορά — με παγωμένο ρολόι (23:30 UTC της 31/12 = 01:30 της 1/1 στην Ελλάδα) κάθε σημείο που
-άλλαξε βλέπει την ελληνική ημερομηνία.
+`utcnow()` και δεν παρουσιάζει ως ελληνική την ημερομηνία UTC μιας σφραγίδας (`datetime.now(utc).date()`,
+`created_at[:10]`, `fromisoformat(σφραγίδα).date()`)· (2) συμπεριφορά — με παγωμένο ρολόι (23:30 UTC της 31/12 = 01:30
+της 1/1 στην Ελλάδα) κάθε σημείο που άλλαξε βλέπει την ελληνική ημερομηνία. Οι έλεγχοι του δεύτερου γύρου
+(`test_unit_athens_clock_r5b.py`) καλύπτουν όσα σημεία δεν είχαν έλεγχο συμπεριφοράς.
 """
 import ast
 import asyncio
 import pathlib
-from datetime import date, datetime, timezone
-from zoneinfo import ZoneInfo
+import re
+from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
-ATHENS = ZoneInfo("Europe/Athens")
-FROZEN = datetime(2027, 1, 1, 1, 30, tzinfo=ATHENS)          # = 2026-12-31 23:30 UTC
 
 
 def _run(coro):
@@ -29,60 +29,113 @@ def _run(coro):
 
 # ==================================================================== στατικός φρουρός ====
 
+_STAMP_VALUE = re.compile(r"(_at\b|_now\(\)|\.isoformat\(\)|stamp)", re.I)
+
+
+def _mentions_utc(node) -> bool:
+    return "utc" in ast.unparse(node).lower()
+
+
 def _clock_reads(tree):
-    """(γραμμή, περιγραφή) για κάθε ανάγνωση της τοπικής ώρας του μηχανήματος. Το AST αγνοεί σχόλια και docstrings."""
+    """(γραμμή, περιγραφή) για κάθε ανάγνωση της ώρας του μηχανήματος και κάθε ημερομηνία UTC που θα εμφανιζόταν ως ελληνική.
+
+    Το AST αγνοεί σχόλια και docstrings και δεν εξαρτάται από το όνομα με το οποίο εισάγεται το `date` (`date as _d`)."""
     for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript):
+            part = node.slice
+            if (isinstance(part, ast.Slice) and part.lower is None and isinstance(part.upper, ast.Constant)
+                    and part.upper.value == 10 and _STAMP_VALUE.search(ast.unparse(node.value))):
+                yield node.lineno, f"{ast.unparse(node.value)}[:10] — η ημερομηνία UTC μιας σφραγίδας"
+            continue
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
             continue
         attr, owner = node.func.attr, node.func.value
-        owner_name = owner.id if isinstance(owner, ast.Name) else owner.attr if isinstance(owner, ast.Attribute) else ""
-        if attr == "today" and owner_name in {"date", "_date", "datetime", "dt"}:
-            yield node.lineno, f"{owner_name}.today()"
+        who = ast.unparse(owner)
+        if attr == "today":
+            yield node.lineno, f"{who}.today()"
         elif attr == "utcnow":
-            yield node.lineno, f"{owner_name}.utcnow()"
-        elif attr == "now" and owner_name in {"datetime", "dt"} and not node.args and not node.keywords:
-            yield node.lineno, f"{owner_name}.now() χωρίς ζώνη ώρας"
+            yield node.lineno, f"{who}.utcnow()"
+        elif attr == "now":
+            zone = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == "tz"), None)
+            if zone is None or (isinstance(zone, ast.Constant) and zone.value is None):
+                yield node.lineno, f"{who}.now() χωρίς ζώνη ώρας"
+        elif attr == "fromtimestamp":
+            if len(node.args) < 2 and not any(k.arg == "tz" for k in node.keywords):
+                yield node.lineno, f"{who}.fromtimestamp() χωρίς ζώνη ώρας"
+        elif who == "time" and attr in {"localtime", "ctime", "asctime", "mktime"}:
+            yield node.lineno, f"time.{attr}()"
+        elif attr == "date" and isinstance(owner, ast.Call) and isinstance(owner.func, ast.Attribute):
+            inner = owner.func.attr
+            if inner == "now" and any(_mentions_utc(a) for a in [*owner.args, *(k.value for k in owner.keywords)]):
+                yield node.lineno, f"{ast.unparse(owner)}.date() — η ημερομηνία UTC"
+            elif inner == "fromisoformat":
+                yield node.lineno, "fromisoformat(...).date() — χωρίς μετατροπή σε ώρα Ελλάδας (για ημερομηνίες: date.fromisoformat)"
 
 
-def _backend_sources():
-    for path in sorted(BACKEND.rglob("*.py")):
-        rel = path.relative_to(BACKEND)
-        if rel.parts[0] in {"tests", "__pycache__"}:
+def _sources(root: pathlib.Path, *, skip_dirs=(), only=None, skip_prefix=()):
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root)
+        if rel.parts[0] in {"__pycache__", *skip_dirs} or path.name.startswith(tuple(skip_prefix)):
+            continue
+        if only and not only(path):
             continue
         yield rel, ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
 def test_no_module_reads_the_machine_clock_for_today():
-    offenders = [f"{rel}:{line} {what}" for rel, tree in _backend_sources() for line, what in _clock_reads(tree)]
+    offenders = [f"{rel}:{line} {what}" for rel, tree in _sources(BACKEND, skip_dirs={"tests"}) for line, what in _clock_reads(tree)]
     assert not offenders, (
-        "Η «σημερινή» ημερομηνία πρέπει να βγαίνει από tax_utils.athens_today() (ο server τρέχει σε UTC):\n  "
-        + "\n  ".join(offenders))
+        "Η «σημερινή» ημερομηνία πρέπει να βγαίνει από tax_utils.athens_today() και η ημερομηνία μιας σφραγίδας από "
+        "tax_utils.athens_date_of() (ο server τρέχει σε UTC):\n  " + "\n  ".join(offenders))
 
 
-def test_the_guard_itself_detects_the_patterns_it_forbids():
-    code = ("import datetime as dt\nfrom datetime import date, datetime\n"
-            "a = date.today()\nb = datetime.now()\nc = datetime.utcnow()\nd = dt.date.today()\n"
-            "e = datetime.now(tz)\nf = datetime.now(timezone.utc)\n")
-    found = [what for _line, what in _clock_reads(ast.parse(code))]
-    assert found == ["date.today()", "datetime.now() χωρίς ζώνη ώρας", "datetime.utcnow()", "date.today()"]
+def test_no_unit_test_reads_the_machine_clock_either():
+    """Ένα test που διαβάζει το τοπικό ρολόι αποτυγχάνει τυχαία στο CI (UTC) τις ώρες 00:00–03:00 ώρα Ελλάδας. Εξαιρούνται
+    τα tests αυτής της ομάδας: αποδεικνύουν ότι το μηχάνημα είναι σε άλλη ημερομηνία από την ελληνική."""
+    tests = BACKEND / "tests"
+    offenders = [f"tests/{rel}:{line} {what}"
+                 for rel, tree in _sources(tests, only=lambda p: p.name.startswith("test_unit_") or p.name == "conftest.py",
+                                           skip_prefix=("test_unit_athens_clock",))
+                 for line, what in _clock_reads(tree)]
+    assert not offenders, "Χρησιμοποιήστε tax_utils.athens_today():\n  " + "\n  ".join(offenders)
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("date.today()", ["date.today()"]),
+    ("_d.today()", ["_d.today()"]),                                              # με ψευδώνυμο: `date as _d`
+    ("dt.date.today()", ["dt.date.today()"]),
+    ("datetime.now()", ["datetime.now() χωρίς ζώνη ώρας"]),
+    ("datetime.now(None)", ["datetime.now() χωρίς ζώνη ώρας"]),
+    ("datetime.now(tz=None)", ["datetime.now() χωρίς ζώνη ώρας"]),
+    ("datetime.utcnow()", ["datetime.utcnow()"]),
+    ("datetime.fromtimestamp(ts)", ["datetime.fromtimestamp() χωρίς ζώνη ώρας"]),
+    ("date.fromtimestamp(ts)", ["date.fromtimestamp() χωρίς ζώνη ώρας"]),
+    ("time.localtime()", ["time.localtime()"]),
+    ("time.mktime(t)", ["time.mktime()"]),
+    ("datetime.now(timezone.utc).date()", ["datetime.now(timezone.utc).date() — η ημερομηνία UTC"]),
+    ("datetime.now(tz=UTC).date()", ["datetime.now(tz=UTC).date() — η ημερομηνία UTC"]),
+    ("datetime.fromisoformat(stamp).date()",
+     ["fromisoformat(...).date() — χωρίς μετατροπή σε ώρα Ελλάδας (για ημερομηνίες: date.fromisoformat)"]),
+    ("inv.get('created_at', '')[:10]", ["inv.get('created_at', '')[:10] — η ημερομηνία UTC μιας σφραγίδας"]),
+    ("_now()[:10]", ["_now()[:10] — η ημερομηνία UTC μιας σφραγίδας"]),
+    ("when.isoformat()[:10]", ["when.isoformat()[:10] — η ημερομηνία UTC μιας σφραγίδας"]),
+])
+def test_the_guard_detects_the_patterns_it_forbids(code, expected):
+    assert [what for _line, what in _clock_reads(ast.parse(code))] == expected
+
+
+@pytest.mark.parametrize("code", [
+    "datetime.now(ATHENS).date()", "datetime.now(ZoneInfo('Europe/Athens')).date()", "datetime.now(timezone.utc)",
+    "datetime.now(tz)", "datetime.now(tz=ATHENS)", "datetime.fromtimestamp(ts, timezone.utc)",
+    "datetime.fromtimestamp(ts, tz=ATHENS)", "date.fromisoformat(value[:10])", "datetime.strptime(text, '%Y-%m-%d').date()",
+    "stamp.astimezone(ATHENS).date()", "invoice.get('date', '')[:10]", "items[:10]", "athens_today()", "time.time()",
+    "time.perf_counter()", "number[:10]",
+])
+def test_the_guard_leaves_correct_code_alone(code):
+    assert list(_clock_reads(ast.parse(code))) == []
 
 
 # ==================================================================== συμπεριφορά ====
-
-@pytest.fixture()
-def athens_clock(monkeypatch):
-    """Παγώνει το ρολόι του tax_utils: 01:30 της 1/1/2027 στην Ελλάδα, 23:30 της 31/12/2026 σε UTC."""
-    import tax_utils
-
-    class FrozenDatetime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return FROZEN.astimezone(tz) if tz else FROZEN.astimezone(timezone.utc).replace(tzinfo=None)
-
-    monkeypatch.setattr(tax_utils, "datetime", FrozenDatetime)
-    assert tax_utils.athens_today() == date(2027, 1, 1)
-    return FROZEN
-
 
 def test_days_since_invoice_counts_from_the_greek_date(athens_clock):
     import invoice_services

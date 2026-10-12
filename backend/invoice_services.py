@@ -566,11 +566,12 @@ async def send_reminder(firm_id: str, invoice: dict, settings: dict, client: dic
         )
     except Exception as e:
         raise InvoiceEmailError(f"Αποτυχία αποστολής υπενθύμισης: {e}")
+    sent_at = _now()
     await db.invoices.update_one(
         firm_query(firm_id, {"_id": invoice["_id"]}),
-        {"$set": {"reminder_sent_at": _now(), "email_sent_to": client["email"]}, "$inc": {"reminder_count": 1}},
+        {"$set": {"reminder_sent_at": sent_at, "email_sent_to": client["email"]}, "$inc": {"reminder_count": 1}},
     )
-    return {"reminder_sent_at": _now(), "payment_link": payment_link}
+    return {"reminder_sent_at": sent_at, "payment_link": payment_link}
 
 
 async def mark_paid(firm_id: str, invoice_id, paid_via: str = "manual", *, ref: str | None = None) -> bool:

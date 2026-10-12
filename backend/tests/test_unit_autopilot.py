@@ -10,6 +10,7 @@ from automation import (
     notify, resolve_notification, run_firm, acquire_lock, release_lock, MYDATA_MAX_ATTEMPTS,
 )
 from db import db
+from tax_utils import athens_today
 
 FIRM = "firm-test"
 BASE_SETTINGS = {
@@ -130,7 +131,7 @@ async def test_full_cycle_sends_emails_reminders_and_reconciles(monkeypatch):
     import pdf_utils
     monkeypatch.setattr(pdf_utils, "build_invoice_pdf", lambda *a, **k: b"%PDF-fake")
 
-    today = date.today()
+    today = athens_today()
     old = (today - timedelta(days=45)).isoformat()
     issued_unsent = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0001", "client_id": client_id, "client_name": "Παπαδόπουλος",
                                                   "status": "issued", "total": 124.0, "subtotal": 100, "vat_amount": 24, "date": today.isoformat(),
@@ -199,7 +200,7 @@ async def test_reminder_is_sent_when_due_and_counted(monkeypatch):
     monkeypatch.setattr(invoice_services, "build_payment_link", lambda *a, **k: _async_value("https://pay.example/x"))
     import pdf_utils
     monkeypatch.setattr(pdf_utils, "build_invoice_pdf", lambda *a, **k: b"%PDF-fake")
-    old = (date.today() - timedelta(days=40)).isoformat()
+    old = (athens_today() - timedelta(days=40)).isoformat()
     inv = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0009", "client_id": client_id, "client_name": "Παπαδόπουλος",
                                         "status": "issued", "total": 100.0, "date": old, "reminder_count": 0, "line_items": []})
     queued = (await run_firm(FIRM, ["reminders"]))[0]

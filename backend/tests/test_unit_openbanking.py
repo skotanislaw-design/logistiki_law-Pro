@@ -8,6 +8,7 @@ import openbanking
 from automation import run_firm
 from db import db
 from openbanking import normalize_transaction, requisition_expiring, openbanking_ready
+from tax_utils import athens_today
 
 FIRM = "firm-ob"
 SETTINGS = {"firm_id": FIRM, "company_name": "Γραφείο", "autopilot_enabled": True,
@@ -40,7 +41,7 @@ def test_normalize_falls_back_when_fields_are_missing():
     assert tx["external_id"]              # συνθετικό id για dedup όταν λείπει transactionId
 
     empty = normalize_transaction({})
-    assert empty["date"] == date.today().isoformat() and empty["amount"] == 0.0
+    assert empty["date"] == athens_today().isoformat() and empty["amount"] == 0.0
     assert empty["description"] == "Τραπεζική κίνηση"
 
 
@@ -66,15 +67,15 @@ async def test_sync_creates_matches_and_dedupes(monkeypatch):
     client = await db.clients.insert_one({"firm_id": FIRM, "name": "Παπαδόπουλος", "email": "c@example.gr"})
     inv = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0001", "client_id": str(client.inserted_id),
                                         "client_name": "Παπαδόπουλος", "status": "issued", "total": 620.0,
-                                        "date": date.today().isoformat(), "line_items": []})
+                                        "date": athens_today().isoformat(), "line_items": []})
     calls = []
 
     async def fake_fetch(settings, account_id, date_from=None):
         calls.append((account_id, date_from))
         return [
-            {"date": date.today().isoformat(), "amount": 620.0,
+            {"date": athens_today().isoformat(), "amount": 620.0,
              "description": "ΠΑΠΑΔΟΠΟΥΛΟΣ ΤΠΥ-2026-0001", "reference": "", "external_id": "TX-1"},
-            {"date": date.today().isoformat(), "amount": -80.0,
+            {"date": athens_today().isoformat(), "amount": -80.0,
              "description": "ΔΕΗ", "reference": "", "external_id": "TX-2"},
         ]
 
@@ -97,7 +98,7 @@ async def test_sync_creates_matches_and_dedupes(monkeypatch):
     # δεύτερος κύκλος: τίποτα διπλό, και ζητά κινήσεις με επικάλυψη ημερών
     r2 = (await run_firm(FIRM, ["bank_sync"]))[0]
     assert r2["stats"] == {"created": 0, "already_known": 2, "auto_matched": 0}
-    assert len(calls) == 2 and calls[1][1] <= date.today().isoformat()
+    assert len(calls) == 2 and calls[1][1] <= athens_today().isoformat()
 
 
 @pytest.mark.asyncio
@@ -113,7 +114,7 @@ async def test_sync_skips_and_warns_without_link():
 
 @pytest.mark.asyncio
 async def test_sync_warns_before_consent_expires(monkeypatch):
-    soon = (date.today() + timedelta(days=3)).isoformat()
+    soon = (athens_today() + timedelta(days=3)).isoformat()
     await db.settings.insert_one({**SETTINGS, "gocardless_access_valid_until": soon})
 
     async def fake_fetch(settings, account_id, date_from=None):
