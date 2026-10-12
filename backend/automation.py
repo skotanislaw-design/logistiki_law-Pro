@@ -39,7 +39,7 @@ from email_utils import smtp_ready, send_email_with_pdf
 from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
     email_invoice, send_reminder, transmit_to_mydata, mark_paid, load_client, InvoiceEmailError, firm_query,
-    apply_bank_payment, SettlementRefused, close_tx_notifications, to_cents,
+    apply_bank_payment, SettlementRefused, close_tx_notifications, to_cents, numbering_report,
 )
 import outbox
 
@@ -49,7 +49,7 @@ ATHENS = ZoneInfo("Europe/Athens")
 JOBS = [
     "send_issued_invoices", "reminders", "mydata_retry", "mydata_expenses", "reconcile",
     "deadlines", "stale_drafts", "vat_periods", "inbox_receipts", "digest",
-    "bank_sync", "outbox", "backup_check",
+    "bank_sync", "outbox", "backup_check", "numbering_check", "card_payments",
 ]
 JOB_LABELS = {
     "send_issued_invoices": "Αποστολή εκδοθέντων τιμολογίων",
@@ -65,6 +65,8 @@ JOB_LABELS = {
     "bank_sync": "Λήψη τραπεζικών κινήσεων (open banking)",
     "outbox": "Ουρά αποστολών (outbox)",
     "backup_check": "Έλεγχος αντιγράφων ασφαλείας",
+    "numbering_check": "Έλεγχος αρίθμησης τιμολογίων",
+    "card_payments": "Ολοκλήρωση πληρωμών κάρτας",
 }
 MYDATA_MAX_ATTEMPTS = 6
 
@@ -1022,6 +1024,127 @@ async def job_backup_check(firm_id: str, settings: dict) -> dict:
     return result
 
 
+# ----------------------------------------------------------- αρίθμηση -------
+
+def _numbering_digest(items) -> str:
+    import hashlib
+    return hashlib.sha1("|".join(str(i) for i in items).encode("utf-8")).hexdigest()[:10]
+
+
+def _dmy(iso: str) -> str:
+    try:
+        return _date.fromisoformat(iso[:10]).strftime("%d/%m/%Y")
+    except ValueError:
+        return iso
+
+
+def numbering_findings(report: dict) -> dict:
+    """{dedupe_key: (επίπεδο, τίτλος, μήνυμα)} για ό,τι δείχνει ο έλεγχος αρίθμησης.
+
+    Το κλειδί περιέχει σύνοψη των στοιχείων του προβλήματος: ίδιο πρόβλημα → ίδιο κλειδί → καμία νέα κάρτα·
+    αλλαγή στα στοιχεία (νέο κενό, νέο διπλότυπο) → νέο κλειδί → νέα κάρτα.
+    """
+    found: dict = {}
+    if not report["unique_index"]:
+        found["numbering:index"] = (
+            "warning", "Η βάση δεν εμποδίζει διπλούς αριθμούς τιμολογίων",
+            "Δεν υπάρχει το unique index των αριθμών παραστατικών (uniq_firm_invoice_number). Συνήθως δημιουργείται "
+            "στην εκκίνηση· αν υπάρχουν ήδη διπλοί αριθμοί, ή η MongoDB είναι παλαιότερη της 6.0, δεν μπορεί να "
+            "δημιουργηθεί. Η έκδοση ελέγχει τους αριθμούς και από τον κώδικα, χωρίς το index όμως λείπει η δεύτερη "
+            "γραμμή άμυνας. Ελέγξτε τα logs της εκκίνησης.")
+    for s in report["series"]:
+        name = s["series"]
+        if s["duplicates"]:
+            numbers = sorted(d["number"] for d in s["duplicates"])
+            found[f"numbering:dup:{name}:{_numbering_digest(numbers)}"] = (
+                "critical", f"Διπλός αριθμός παραστατικού στη σειρά {name}",
+                f"Οι αριθμοί {', '.join(numbers)} υπάρχουν σε περισσότερα από ένα παραστατικά. Δύο παραστατικά με τον "
+                "ίδιο αριθμό δεν επιτρέπεται να υπάρχουν στην ίδια σειρά· ελέγξτε τα με τον λογιστή πριν από κάθε "
+                "υποβολή ή δήλωση.")
+        if s["gaps_total"]:
+            shown = ", ".join(f"{n:04d}" for n in s["gaps"][:10])
+            more = " και άλλοι" if s["gaps_total"] > 10 else ""
+            found[f"numbering:gaps:{name}:{_numbering_digest(s['gaps'] + [s['gaps_total']])}"] = (
+                "warning", f"Κενό στην αρίθμηση της σειράς {name}",
+                f"Λείπουν οι αριθμοί {shown}{more} (σύνολο {s['gaps_total']}). Αν παραστατικό διαγράφηκε ή η έκδοσή "
+                "του δεν ολοκληρώθηκε, η σειρά δεν είναι συνεχής· ο λογιστής αποφασίζει πώς θα καλυφθεί το κενό.")
+        if s["date_order"]:
+            lines = "; ".join(f"{o['number']} ({_dmy(o['date'])}) μετά το {o['previous_number']} ({_dmy(o['previous_date'])})"
+                              for o in s["date_order"][:5])
+            found[f"numbering:order:{name}:{_numbering_digest([o['number'] for o in s['date_order']])}"] = (
+                "warning", f"Αρίθμηση εκτός χρονολογικής σειράς στη σειρά {name}",
+                f"Η ημερομηνία δεν ακολουθεί τον αριθμό: {lines}. Η αρίθμηση πρέπει να είναι και συνεχής και χρονολογική.")
+        counter = s["counter"]
+        if counter["state"] == "behind":
+            found[f"numbering:counter:{name}:{counter['seq']}:{s['last']}"] = (
+                "warning", f"Ο μετρητής της σειράς {name} είναι πίσω από τον τελευταίο αριθμό",
+                f"Ο μετρητής δείχνει {counter['seq']} ενώ ο τελευταίος αριθμός που υπάρχει είναι {s['last']} (συνήθως "
+                "μετά από επαναφορά αντιγράφου). Η επόμενη έκδοση τον διορθώνει μόνη της· ελέγξτε παράλληλα ότι δεν "
+                "υπάρχουν διπλοί αριθμοί.")
+    if report["unparseable"]:
+        numbers = [u["number"] for u in report["unparseable"]]
+        found[f"numbering:format:{_numbering_digest(sorted(numbers))}"] = (
+            "warning", "Παραστατικά με αριθμό εκτός της μορφής της σειράς",
+            f"Οι αριθμοί {', '.join(numbers[:10])} δεν έχουν τη μορφή ΠΡΟΘΕΜΑ-ΕΤΟΣ-ΑΥΞΩΝ και δεν ελέγχονται ως προς "
+            "τη συνέχεια της σειράς. Ελέγξτε αν προέρχονται από εισαγωγή ή παλαιότερο σύστημα.")
+    if report["problems"]["unnumbered"]:
+        found[f"numbering:unnumbered:{report['problems']['unnumbered']}"] = (
+            "critical", "Εκδοθέντα παραστατικά χωρίς αριθμό",
+            f"{report['problems']['unnumbered']} εκδοθέντα/εξοφλημένα/ακυρωμένα παραστατικά δεν έχουν αριθμό. "
+            "Ένα εκδοθέν παραστατικό πρέπει να φέρει αριθμό σειράς· ελέγξτε τα με τον λογιστή.")
+    return found
+
+
+async def job_numbering_check(firm_id: str, settings: dict) -> dict:
+    """Ελέγχει τη σειρά των εκδοθέντων και ανοίγει κάρτα **μόνο όταν αλλάξει κάτι**.
+
+    Η έκδοση ελέγχει τη σειρά τη στιγμή που εκδίδει. Ένα κενό ή ένα διπλότυπο που προκύπτει αργότερα (επαναφορά
+    αντιγράφου, χειροκίνητη επέμβαση στη βάση, παλιά έκδοση της εφαρμογής) θα έμενε αθέατο μέχρι τον έλεγχο της
+    εφορίας. Οι κάρτες κλείνουν μόνες τους όταν το πρόβλημα διορθωθεί.
+    """
+    report = await numbering_report(firm_id)
+    wanted = numbering_findings(report)
+    resolved = 0
+    async for card in db.notifications.find(firm_query(firm_id, {
+            "type": "numbering", "dedupe_key": {"$regex": "^numbering:"}, "resolved_at": None})):
+        if card.get("dedupe_key") not in wanted:
+            await db.notifications.update_one(
+                {"_id": card["_id"]},
+                {"$set": {"resolved_at": _now(), "resolved_by": "autopilot", "resolution": "auto", "read": True}})
+            resolved += 1
+    raised = 0
+    for key, (level, title, message) in wanted.items():
+        created = await notify(firm_id, "numbering", level, title, message, entity="invoice_series",
+                               entity_id=key.split(":")[2] if key.count(":") >= 2 else "", requires_action=True,
+                               dedupe_key=key)
+        raised += 1 if created else 0
+    return {"ok": not wanted, "unique_index": report["unique_index"], "problems": report["problems"],
+            "series": len(report["series"]), "raised": raised, "resolved": resolved}
+
+
+# --------------------------------------------------------- πληρωμές κάρτας ----
+
+CARD_APPLY_GRACE_MINUTES = 5       # η ζωντανή κλήση (webhook) ίσως δουλεύει ακόμη· δεν της παίρνουμε τη δουλειά
+
+
+async def job_card_payments(firm_id: str, settings: dict) -> dict:
+    """Ολοκληρώνει πληρωμές κάρτας που καταγράφηκαν ως εισπραγμένες αλλά δεν εφαρμόστηκαν στο τιμολόγιο.
+
+    Συμβαίνει όταν η διεργασία πέφτει ανάμεσα στην καταγραφή και την εφαρμογή. Το Stripe ξαναστέλνει το webhook,
+    αλλά όχι για πάντα — και η σελίδα επιτυχίας του πελάτη δεν είναι εγγύηση. Η εφαρμογή είναι ατομική και
+    επαναλήψιμη (βλ. routes_payments.apply_pending_card_payment): ό,τι ολοκληρώθηκε ήδη δεν ξαναγίνεται.
+    """
+    from routes_payments import apply_pending_card_payment
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=CARD_APPLY_GRACE_MINUTES)).isoformat()
+    pending = applied = 0
+    async for tx in db.payment_transactions.find(
+            firm_query(firm_id, {"apply_pending": True, "paid_at": {"$lt": cutoff}})):
+        pending += 1
+        if await apply_pending_card_payment(tx["session_id"]):
+            applied += 1
+    return {"pending": pending, "applied": applied}
+
+
 # ---------------------------------------------------------------- cycle -----
 
 JOB_FUNCS = {
@@ -1038,6 +1161,8 @@ JOB_FUNCS = {
     "bank_sync": job_bank_sync,
     "outbox": job_outbox,
     "backup_check": job_backup_check,
+    "numbering_check": job_numbering_check,
+    "card_payments": job_card_payments,
 }
 
 

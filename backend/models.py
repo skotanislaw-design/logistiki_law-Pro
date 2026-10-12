@@ -401,6 +401,9 @@ class PaymentTransaction(BaseDocument):
     status: Literal["initiated", "completed", "failed", "expired", "refunded"] = "initiated"
     payment_status: Literal["pending", "paid", "failed", "expired", "refunded"] = "pending"
     stripe_payment_intent_id: Optional[str] = None
+    paid_at: Optional[str] = None              # πότε καταγράφηκε η είσπραξη
+    applied_at: Optional[str] = None           # πότε εφαρμόστηκε στο τιμολόγιο (ή ειδοποιήθηκε άνθρωπος)
+    apply_result: Optional[str] = None         # settled / overpaid / underpaid / not_open / failed / given_up
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 

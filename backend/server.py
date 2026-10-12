@@ -45,6 +45,7 @@ from routes_automation import router as automation_router
 from routes_audit import router as audit_router
 from ai_runtime import AIUnavailable
 from invoice_services import flag_unchecked_bank_suggestions  # noqa: F401 — επίσης: τρέχει στην εκκίνηση
+from invoice_services import ensure_invoice_number_index, INVOICE_NUMBER_INDEX  # noqa: F401 — επίσης: τρέχει στην εκκίνηση
 
 app = FastAPI(title="Logistiki Pro API")
 api_router = APIRouter(prefix="/api")
@@ -308,6 +309,7 @@ async def startup_event():
     # Ένα παραστατικό ΑΑΔΕ γίνεται έξοδο μία φορά, ακόμη κι αν το RequestDocs το επιστρέψει ξανά.
     await ensure_expense_mark_index()
     await ensure_trust_account_index()
+    await ensure_invoice_number_index()
     await flag_unchecked_bank_suggestions()
     await db.outbox.create_index([("status", 1), ("next_attempt_at", 1)])
     await db.outbox.create_index([("firm_id", 1), ("dedupe_key", 1)])

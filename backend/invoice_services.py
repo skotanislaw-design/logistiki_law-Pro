@@ -5,11 +5,13 @@ so the same code path runs whether a human clicked a button or the scheduler
 decided it was time.
 """
 import os
+import re
 import asyncio
 import logging
 from datetime import datetime, timezone, date as _date
 
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 
 from db import db
 from mydata_client import (
@@ -109,10 +111,15 @@ def _counter_id(firm_id: str, prefix: str, year: int) -> str:
     return f"invoice-{firm_id}-{year}" if prefix == DEFAULT_SERIES_PREFIX else f"invoice-{prefix}-{firm_id}-{year}"
 
 
-async def next_invoice_number(firm_id: str, prefix: str = DEFAULT_SERIES_PREFIX, year: int | None = None) -> str:
+async def next_invoice_number(firm_id: str, prefix: str = DEFAULT_SERIES_PREFIX, year: int | None = None, *,
+                              date_iso: str | None = None, floor: int = 0) -> str:
+    """Επόμενος αριθμός της σειράς. Με `date_iso` ελέγχεται ατομικά ότι η ημερομηνία δεν είναι προγενέστερη
+    της τελευταίας που δόθηκε στη σειρά (`SeriesDateOutOfOrder`)· με `floor` ο αριθμός είναι πάντα μεγαλύτερος
+    από τον μεγαλύτερο υπάρχοντα. Βλ. numbering.next_in_series."""
     from numbering import next_in_series
     year = year or athens_today().year
-    return await next_in_series(db.invoices, _counter_id(firm_id, prefix, year), firm_id, prefix, year)
+    return await next_in_series(db.invoices, _counter_id(firm_id, prefix, year), firm_id, prefix, year,
+                                date_iso=date_iso, floor=floor)
 
 
 async def release_invoice_number(firm_id: str, number: str) -> None:
@@ -123,6 +130,142 @@ async def release_invoice_number(firm_id: str, number: str) -> None:
                                      {"$inc": {"seq": -1}})
     except Exception:  # noqa: BLE001 — best effort, ένα κενό είναι προτιμότερο από μια εξαίρεση
         logger.warning("Δεν επιστράφηκε ο αριθμός %s", number)
+
+
+INVOICE_NUMBER_INDEX = "uniq_firm_invoice_number"
+NUMBERED_STATUSES = ["issued", "paid", "cancelled"]
+
+
+async def ensure_invoice_number_index(collection=None) -> None:
+    """Δύο παραστατικά του ίδιου γραφείου δεν μπορούν να έχουν τον ίδιο αριθμό — ούτε αν κάποιος κώδικας ή
+    κάποια επέμβαση στη βάση το επιχειρήσει.
+
+    Ο κώδικας της έκδοσης δίνει αριθμούς από ατομικό μετρητή, αλλά ο μετρητής δεν είναι η αλήθεια: μπορεί
+    να γυρίσει πίσω με επαναφορά αντιγράφου, να αλλαχτεί χειροκίνητα ή να χαθεί. Το index είναι η δεύτερη
+    γραμμή άμυνας: η βάση αρνείται τον διπλό αριθμό και η έκδοση προχωρά στον επόμενο ελεύθερο.
+
+    Καλύπτει μόνο εκδοθέντα, εξοφλημένα και ακυρωμένα με μη κενό αριθμό: τα πρόχειρα δεν είναι φορολογικά
+    παραστατικά (έχουν κενό αριθμό, ή παλιό αριθμό από παλαιότερη έκδοση της εφαρμογής). Το φίλτρο με `$in`
+    απαιτεί MongoDB 6.0 ή νεότερη (η εγκατάσταση χρησιμοποιεί την 7).
+
+    Δεν ρίχνει την εκκίνηση: αν υπάρχουν ήδη διπλοί αριθμοί η δημιουργία αποτυγχάνει, καταγράφεται σφάλμα, και
+    ο έλεγχος αρίθμησης (`GET /api/invoices/numbering-check`, εργασία Autopilot `numbering_check`) δείχνει
+    ποιοι είναι. Το `collection` δίνεται μόνο στα τεστ.
+    """
+    invoices = collection if collection is not None else db.invoices
+    try:
+        await invoices.create_index(
+            [("firm_id", 1), ("number", 1)],
+            name=INVOICE_NUMBER_INDEX,
+            unique=True,
+            partialFilterExpression={"status": {"$in": NUMBERED_STATUSES}, "number": {"$gt": ""}},
+        )
+    except Exception as e:  # noqa: BLE001 — η εκκίνηση της εφαρμογής δεν πρέπει να εξαρτάται από αυτό
+        logger.error("invoices: αποτυχία δημιουργίας του unique index (firm_id, number) — πιθανόν υπάρχουν ήδη "
+                     "διπλοί αριθμοί ή η MongoDB είναι παλαιότερη της 6.0· τρέξτε τον έλεγχο "
+                     "GET /api/invoices/numbering-check: %s", e)
+
+
+GAP_LIST_LIMIT = 50          # πόσα κενά αναγράφονται· το σύνολο μετριέται πάντα ολόκληρο
+_NUMBER_PATTERN = re.compile(r"^(?P<prefix>[^-\s]+)-(?P<year>\d{4})-(?P<seq>\d+)$")
+
+
+def _parse_number(number: str):
+    """('ΤΠΥ', 2026, 7) από το «ΤΠΥ-2026-0007»· None αν ο αριθμός δεν έχει τη μορφή ΠΡΟΘΕΜΑ-ΕΤΟΣ-ΑΥΞΩΝ."""
+    m = _NUMBER_PATTERN.match(number or "")
+    return (m.group("prefix"), int(m.group("year")), int(m.group("seq"))) if m else None
+
+
+async def numbering_report(firm_id: str, year: int | None = None) -> dict:
+    """Ελέγχει τη σειρά των εκδοθέντων παραστατικών του γραφείου: κενά, διπλότυπα, ημερομηνίες εκτός σειράς,
+    μετρητή εκτός συγχρονισμού, αριθμούς εκτός μορφής.
+
+    Η έκδοση ελέγχει τη σειρά μία φορά, τη στιγμή που εκδίδει. Εδώ ελέγχεται το αποτέλεσμα όπως είναι
+    σήμερα στη βάση — αυτό που θα δει ο ελεγκτής. Μετράνε μόνο εκδοθέντα, εξοφλημένα και ακυρωμένα: ένα
+    ακυρωμένο παραστατικό κρατά τον αριθμό του, άρα δεν αφήνει κενό. Τα πρόχειρα δεν ανήκουν στη σειρά.
+
+    Δεν διορθώνει τίποτα: ό,τι αφορά φορολογικά παραστατικά το αποφασίζει ο λογιστής.
+    """
+    query = firm_query(firm_id, {"status": {"$in": NUMBERED_STATUSES}, "number": {"$gt": ""}})
+    groups: dict[tuple[str, int], list] = {}
+    unparseable = []
+    async for d in db.invoices.find(query, {"number": 1, "date": 1}):
+        parsed = _parse_number(d["number"])
+        if parsed is None:
+            unparseable.append({"number": d["number"], "id": str(d["_id"])})
+            continue
+        prefix, y, seq = parsed
+        if year is not None and y != year:
+            continue
+        groups.setdefault((prefix, y), []).append((seq, d["number"], (d.get("date") or "")[:10], str(d["_id"])))
+
+    series = []
+    for (prefix, y), items in sorted(groups.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+        items.sort(key=lambda t: (t[0], t[1], t[3]))
+        seqs = sorted({t[0] for t in items})
+        first, last = seqs[0], seqs[-1]
+
+        present = set(seqs)
+        gaps = [n for n in range(first, last + 1) if n not in present]
+
+        by_number: dict[str, list] = {}
+        for seq, number, _date_iso, doc_id in items:
+            by_number.setdefault(number, []).append(doc_id)
+        duplicates = [{"number": n, "count": len(ids), "ids": ids} for n, ids in by_number.items() if len(ids) > 1]
+
+        date_order = []
+        ordered = [t for t in items if t[2]]
+        for before, after in zip(ordered, ordered[1:]):
+            if after[2] < before[2]:
+                date_order.append({"number": after[1], "date": after[2],
+                                   "previous_number": before[1], "previous_date": before[2]})
+
+        counter_doc = await db.counters.find_one({"_id": _counter_id(firm_id, prefix, y)})
+        seq_now = counter_doc.get("seq") if counter_doc else None
+        if seq_now is None:
+            counter = {"seq": None, "state": "missing", "ahead_by": 0}
+        elif seq_now < last:
+            counter = {"seq": seq_now, "state": "behind", "ahead_by": 0}
+        elif seq_now > last:
+            counter = {"seq": seq_now, "state": "ahead", "ahead_by": seq_now - last}
+            gaps += list(range(last + 1, seq_now + 1))     # αριθμοί που δόθηκαν και δεν χρησιμοποιήθηκαν ποτέ
+        else:
+            counter = {"seq": seq_now, "state": "ok", "ahead_by": 0}
+
+        series.append({
+            "series": f"{prefix}-{y}", "prefix": prefix, "year": y,
+            "count": len(items), "first": first, "last": last,
+            "gaps": gaps[:GAP_LIST_LIMIT], "gaps_total": len(gaps),
+            "duplicates": duplicates, "date_order": date_order, "counter": counter,
+            "ok": not (gaps or duplicates or date_order or counter["state"] == "behind"),
+        })
+
+    unnumbered = await db.invoices.count_documents(firm_query(firm_id, {
+        "status": {"$in": NUMBERED_STATUSES},
+        "$or": [{"number": {"$exists": False}}, {"number": None}, {"number": ""}]}))
+    numbered_drafts = await db.invoices.count_documents(firm_query(firm_id, {"status": "draft", "number": {"$gt": ""}}))
+    try:
+        unique_index = INVOICE_NUMBER_INDEX in await db.invoices.index_information()
+    except Exception:  # noqa: BLE001 — ο έλεγχος σειράς δεν πρέπει να αποτυγχάνει επειδή δεν διαβάστηκαν οι δείκτες
+        unique_index = False
+
+    problems = {
+        "gaps": sum(s["gaps_total"] for s in series),
+        "duplicates": sum(len(s["duplicates"]) for s in series),
+        "date_order": sum(len(s["date_order"]) for s in series),
+        "counter_behind": sum(1 for s in series if s["counter"]["state"] == "behind"),
+        "unparseable": len(unparseable),
+        "unnumbered": unnumbered,
+    }
+    return {
+        "ok": not any(problems.values()),
+        "checked": sum(s["count"] for s in series) + len(unparseable),
+        "unique_index": unique_index,
+        "series": series,
+        "unparseable": unparseable,
+        "numbered_drafts": numbered_drafts,
+        "problems": problems,
+    }
 
 
 # ---------------------------------------------------------------- myDATA ----
@@ -295,12 +438,19 @@ async def send_reminder(firm_id: str, invoice: dict, settings: dict, client: dic
     return {"reminder_sent_at": _now(), "payment_link": payment_link}
 
 
-async def mark_paid(firm_id: str, invoice_id, paid_via: str = "manual") -> bool:
-    """Idempotent: returns True only if the invoice transitioned issued → paid."""
+async def mark_paid(firm_id: str, invoice_id, paid_via: str = "manual", *, ref: str | None = None) -> bool:
+    """Idempotent: returns True only if the invoice transitioned issued → paid.
+
+    `ref`: αναγνωριστικό της πληρωμής που έκλεισε το τιμολόγιο (π.χ. η συνεδρία Stripe), γραμμένο στην ίδια
+    ατομική εγγραφή. Επιτρέπει να αναγνωριστεί αργότερα ότι ένα τιμολόγιο εξοφλήθηκε ΑΠΟ ΑΥΤΗ την πληρωμή.
+    """
     oid = invoice_id if isinstance(invoice_id, ObjectId) else ObjectId(invoice_id)
+    changes = {"status": "paid", "paid_at": _now(), "paid_via": paid_via}
+    if ref:
+        changes["paid_ref"] = ref
     result = await db.invoices.update_one(
         firm_query(firm_id, {"_id": oid, "status": "issued"}),
-        {"$set": {"status": "paid", "paid_at": _now(), "paid_via": paid_via}},
+        {"$set": changes},
     )
     return result.modified_count > 0
 
@@ -510,7 +660,59 @@ async def _previous_in_series(firm_id: str, prefix: str, year: int):
     return best
 
 
+def _check_series_date(inv_date: _date, today: _date, previous) -> None:
+    """Η ημερομηνία δεν μπορεί να είναι προγενέστερη του τελευταίου εκδοθέντος της σειράς.
+
+    `previous` = αποτέλεσμα της `_previous_in_series`. Μια μελλοντική ημερομηνία σε παλιό παραστατικό δεν
+    πρέπει να μπλοκάρει για πάντα τη σειρά, γι' αυτό συγκρίνουμε με το `min(ημερομηνία, σήμερα)`.
+    """
+    if not previous:
+        return
+    try:
+        prev_date = _date.fromisoformat(previous[1])
+    except ValueError:
+        return
+    if inv_date < min(prev_date, today):
+        raise InvoiceWorkflowError(
+            f"Η ημερομηνία {inv_date:%d/%m/%Y} είναι προγενέστερη του τελευταίου εκδοθέντος της σειράς "
+            f"({previous[2]} — {prev_date:%d/%m/%Y}). Η αρίθμηση πρέπει να ακολουθεί τη χρονολογική "
+            f"σειρά· αλλάξτε την ημερομηνία του πρόχειρου σε {min(prev_date, today):%d/%m/%Y} ή αργότερα."
+        )
+
+
+async def _allocate_number(firm_id: str, series: tuple[str, int], inv_date: _date, today: _date, previous) -> str:
+    """Παραχωρεί αριθμό της σειράς **και ελέγχει την ημερομηνία στην ίδια ατομική εγγραφή** του μετρητή.
+
+    Ο έλεγχος με την `_previous_in_series` γίνεται πριν από την παραχώρηση· ανάμεσα στους δύο μπορεί άλλο
+    αίτημα να πάρει αριθμό με μεταγενέστερη ημερομηνία. Ο μετρητής θυμάται την τελευταία ημερομηνία και αρνείται.
+    Η άρνηση όμως μπορεί να οφείλεται και σε ημερομηνία που άφησε μια αποτυχημένη έκδοση: τότε ξαναδιαβάζουμε τη
+    σειρά, και αν κανένα υπαρκτό παραστατικό δεν μπλοκάρει, διορθώνουμε τον μετρητή και ξαναδοκιμάζουμε μία φορά.
+    """
+    from numbering import SeriesDateOutOfOrder, reset_series_date
+    prefix, year = series
+    floor = previous[0] if previous else 0
+    for attempt in (1, 2):
+        try:
+            return await next_invoice_number(firm_id, prefix, year, date_iso=inv_date.isoformat(), floor=floor)
+        except SeriesDateOutOfOrder as refused:
+            fresh = await _previous_in_series(firm_id, prefix, year)
+            _check_series_date(inv_date, today, fresh)        # υπάρχει όντως παραστατικό που μπλοκάρει → σφάλμα προς τον χρήστη
+            if attempt == 2:
+                raise InvoiceWorkflowError(
+                    "Η σειρά παραστατικών ενημερώθηκε ταυτόχρονα από άλλη έκδοση. Δοκιμάστε ξανά σε λίγο.")
+            actual = None
+            if fresh:
+                try:
+                    actual = min(_date.fromisoformat(fresh[1]), today).isoformat()
+                except ValueError:
+                    actual = None
+            await reset_series_date(_counter_id(firm_id, prefix, year), expected=refused.last_date, to=actual)
+            floor = max(floor, fresh[0] if fresh else 0)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 ISSUE_CLAIM_TTL_SECONDS = 120   # μετά από crash ένα «κλείδωμα έκδοσης» λήγει μόνο του
+NUMBER_ATTEMPTS = 3              # φορές που ξαναδοκιμάζεται η έκδοση όταν η βάση αρνείται έναν αριθμό
 
 
 def not_being_issued() -> dict:
@@ -543,6 +745,13 @@ async def issue_draft(firm_id: str, doc: dict, settings: dict) -> dict:
 
     Ελέγχει επίσης την ημερομηνία: όχι μελλοντική, και όχι προγενέστερη του τελευταίου
     εκδοθέντος της ίδιας σειράς — αλλιώς η αρίθμηση παύει να είναι χρονολογική.
+
+    **Δύο ατομικοί έλεγχοι στην αρίθμηση.** Ο έλεγχος «όχι πριν τον προηγούμενο αριθμό» γίνεται ΚΑΙ μέσα στην ίδια
+    εγγραφή που δίνει τον αριθμό (ο μετρητής θυμάται την τελευταία ημερομηνία της σειράς): δύο πρόχειρα με
+    διαφορετική ημερομηνία που εκδίδονται ταυτόχρονα δεν μπορούν πια να περάσουν και τα δύο. Και η τελική εγγραφή
+    προστατεύεται από το μοναδικό ευρετήριο `(firm_id, number)`: αν ο αριθμός υπάρχει ήδη σε άλλο παραστατικό
+    (επαναφορά αντιγράφου, χειροκίνητη διόρθωση), η έκδοση παίρνει νέο αριθμό (έως `NUMBER_ATTEMPTS` φορές).
+    Ο αριθμός που «κάηκε» δεν επιστρέφεται ποτέ: ένα κενό είναι προτιμότερο από διπλότυπο.
 
     **Σειρά ενεργειών.** Πρώτα «κλειδώνεται» ατομικά το πρόχειρο, και μόνο ο νικητής παίρνει αριθμό.
     Αν ο αριθμός δινόταν πριν από το κλείδωμα, δύο ταυτόχρονα αιτήματα (διπλό κλικ) θα έπαιρναν
@@ -604,33 +813,41 @@ async def issue_draft(firm_id: str, doc: dict, settings: dict) -> dict:
 
         # Πρόχειρο από παλαιότερη έκδοση της εφαρμογής: κρατά τον αριθμό που ήδη έχει.
         number = (doc.get("number") or "").strip()
-        series = _series_of(number) if number else (series_prefix(invoice_type), inv_date.year)
-        if series:
-            previous = await _previous_in_series(firm_id, *series)
-            if previous:
-                try:
-                    prev_date = _date.fromisoformat(previous[1])
-                except ValueError:
-                    prev_date = None
-                # Μια μελλοντική ημερομηνία σε παλιό παραστατικό δεν πρέπει να μπλοκάρει για πάντα τη σειρά.
-                if prev_date and inv_date < min(prev_date, today):
+        given = bool(number)
+        series = _series_of(number) if given else (series_prefix(invoice_type), inv_date.year)
+        previous = await _previous_in_series(firm_id, *series) if series else None
+        _check_series_date(inv_date, today, previous)
+
+        issued = None
+        for _attempt in range(NUMBER_ATTEMPTS):
+            if not given:
+                number = allocated = await _allocate_number(firm_id, series, inv_date, today, previous)
+            withheld = withholding_for(doc, settings, invoice_type, float(doc.get("subtotal") or 0))
+            try:
+                issued = await db.invoices.find_one_and_update(
+                    firm_query(firm_id, {"_id": doc["_id"], "status": "draft", "issue_claim": token}),
+                    {"$set": {"status": "issued", "issued_at": _now(), "number": number,
+                              "invoice_type": invoice_type, "withholding_amount": withheld},
+                     "$unset": {"issue_claim": "", "issue_claim_at": ""}},
+                    return_document=ReturnDocument.AFTER,
+                )
+                break
+            except DuplicateKeyError:
+                # Η βάση αρνείται τον αριθμό: τον έχει ήδη άλλο παραστατικό της σειράς.
+                if given:
                     raise InvoiceWorkflowError(
-                        f"Η ημερομηνία {inv_date:%d/%m/%Y} είναι προγενέστερη του τελευταίου εκδοθέντος της σειράς "
-                        f"({previous[2]} — {prev_date:%d/%m/%Y}). Η αρίθμηση πρέπει να ακολουθεί τη χρονολογική "
-                        f"σειρά· αλλάξτε την ημερομηνία του πρόχειρου σε {min(prev_date, today):%d/%m/%Y} ή αργότερα."
-                    )
-
-        if not number:
-            number = allocated = await next_invoice_number(firm_id, series[0], series[1])
-
-        withheld = withholding_for(doc, settings, invoice_type, float(doc.get("subtotal") or 0))
-        issued = await db.invoices.find_one_and_update(
-            firm_query(firm_id, {"_id": doc["_id"], "status": "draft", "issue_claim": token}),
-            {"$set": {"status": "issued", "issued_at": _now(), "number": number,
-                      "invoice_type": invoice_type, "withholding_amount": withheld},
-             "$unset": {"issue_claim": "", "issue_claim_at": ""}},
-            return_document=ReturnDocument.AFTER,
-        )
+                        f"Ο αριθμός {number} υπάρχει ήδη σε άλλο παραστατικό της σειράς· το πρόχειρο δεν εκδόθηκε. "
+                        "Ανοίξτε τον έλεγχο αρίθμησης (GET /api/invoices/numbering-check) και αποφασίστε με τον λογιστή.")
+                # Ο μετρητής είχε μείνει πίσω. Ο αριθμός δεν επιστρέφεται σε αυτόν — θα τον έδινε ξανά — και η
+                # σειρά διαβάζεται ξανά ώστε ο επόμενος αριθμός να πάει πάνω από όλους τους υπάρχοντες.
+                allocated = ""
+                previous = await _previous_in_series(firm_id, *series)
+                _check_series_date(inv_date, today, previous)
+        else:
+            raise InvoiceWorkflowError(
+                f"Δεν βρέθηκε ελεύθερος αριθμός στη σειρά {series[0]}-{series[1]} μετά από {NUMBER_ATTEMPTS} "
+                "προσπάθειες· ο αριθμός υπάρχει ήδη σε άλλο παραστατικό. Τρέξτε τον έλεγχο αρίθμησης "
+                "(GET /api/invoices/numbering-check) και ενημερώστε τον διαχειριστή.")
         if issued is None:   # το κλείδωμα χάθηκε (έληξε και το πήρε άλλο αίτημα, ή διαγράφηκε το πρόχειρο)
             raise InvoiceWorkflowError("Το τιμολόγιο έχει ήδη εκδοθεί ή δεν υπάρχει πια.")
         return issued

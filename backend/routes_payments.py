@@ -1,11 +1,14 @@
 """Stripe Payments — Checkout Session για online εξόφληση τιμολογίων."""
 import os
+import asyncio
 import logging
+import uuid
 import stripe
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from bson import ObjectId
+from pymongo import ReturnDocument
 from db import db
 from models import PaymentTransaction
 from auth import get_current_user
@@ -150,6 +153,10 @@ async def get_payment_status(session_id: str):
                 record = await db.payment_transactions.find_one({"session_id": session_id})
         except stripe.error.StripeError:
             pass
+    elif record.get("payment_status") == "paid" and record.get("apply_pending"):
+        # Η είσπραξη έχει καταγραφεί αλλά η εφαρμογή στο τιμολόγιο έμεινε στη μέση (π.χ. κατάρρευση): τελείωσέ την.
+        await apply_pending_card_payment(session_id)
+        record = await db.payment_transactions.find_one({"session_id": session_id}) or record
     return {
         "session_id": record["session_id"],
         "status": record["status"],
@@ -159,26 +166,103 @@ async def get_payment_status(session_id: str):
     }
 
 
+APPLY_CLAIM_TTL_SECONDS = 120     # μετά από κατάρρευση, το «κλείδωμα εφαρμογής» λήγει μόνο του
+APPLY_MAX_ATTEMPTS = 5            # πόσες φορές επιχειρείται η εφαρμογή πριν ειδοποιηθεί άνθρωπος
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 async def _mark_paid(session_id: str, payment_intent_id: str = None):
-    """Idempotent — καλείται από webhook & polling fallback."""
+    """Idempotent — καλείται από webhook, polling fallback και Autopilot.
+
+    Δύο βήματα, καθένα ασφαλές να επαναληφθεί:
+
+    1. **Καταγραφή** της είσπραξης: η συναλλαγή γίνεται «paid» και σημαίνεται `apply_pending` στην ίδια ατομική
+       εγγραφή. Ο δείκτης σβήνει μόνο όταν ολοκληρωθεί η εφαρμογή.
+    2. **Εφαρμογή** στο τιμολόγιο (`apply_pending_card_payment`).
+
+    Παλιότερα η εφαρμογή έτρεχε μόνο στην κλήση που έκανε τη μετάβαση σε «paid». Αν η διεργασία έπεφτε ανάμεσα
+    στα δύο βήματα, κάθε επόμενη κλήση έβλεπε τη συναλλαγή ήδη «paid» και δεν έκανε τίποτα: χρήματα
+    εισπραγμένα, τιμολόγιο ανοιχτό, καμία ειδοποίηση.
+    """
     # Το session_id είναι μοναδικό ανά συναλλαγή· το firm_id προκύπτει από την ίδια εγγραφή,
     # οπότε δεν προσθέτει φιλτράρισμα — μόνο ένα περιττό round-trip.
-    result = await db.payment_transactions.update_one(
+    now = _now()
+    await db.payment_transactions.update_one(
         {"session_id": session_id, "payment_status": {"$ne": "paid"}},
         {"$set": {
             "status": "completed",
             "payment_status": "paid",
             "stripe_payment_intent_id": payment_intent_id,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "paid_at": now,
+            "apply_pending": True,
+            "updated_at": now,
         }},
     )
-    if result.modified_count > 0:
-        tx = await db.payment_transactions.find_one({"session_id": session_id})
-        if tx and tx.get("invoice_id"):
-            await _apply_card_payment(tx)
+    await apply_pending_card_payment(session_id)
 
 
-async def _apply_card_payment(tx: dict) -> None:
+async def _release_apply_claim(session_id: str, token: str) -> None:
+    try:
+        await db.payment_transactions.update_one(
+            {"session_id": session_id, "apply_claim": token},
+            {"$unset": {"apply_claim": "", "apply_claim_at": ""}})
+    except Exception:  # noqa: BLE001 — λήγει μόνο του μετά το TTL
+        logger.warning("Δεν αποδεσμεύτηκε το κλείδωμα εφαρμογής πληρωμής κάρτας (συνεδρία %s)", session_id)
+
+
+async def apply_pending_card_payment(session_id: str) -> bool:
+    """Εφαρμόζει στο τιμολόγιο μια πληρωμή κάρτας που έχει καταγραφεί αλλά δεν έχει εφαρμοστεί ακόμη.
+
+    Ασφαλής όσες φορές κι αν κληθεί (webhook που ξαναστέλνεται, polling, Autopilot): την εφαρμογή την κάνει
+    μόνο όποιος κερδίσει ένα ατομικό κλείδωμα· αν κάποιος τη διεκδικεί ήδη, οι υπόλοιποι φεύγουν. Αν το κλείδωμα
+    μείνει από διεργασία που έπεσε, λήγει μετά από `APPLY_CLAIM_TTL_SECONDS` και την παίρνει ο επόμενος. Σε
+    αποτυχία που δεν είναι απλό σφάλμα (ακύρωση αιτήματος, τερματισμός), το κλείδωμα λύνεται αμέσως και η
+    εκκρεμότητα μένει. Επιστρέφει True αν αυτή η κλήση ολοκλήρωσε την εφαρμογή.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=APPLY_CLAIM_TTL_SECONDS)).isoformat()
+    token = uuid.uuid4().hex
+    tx = await db.payment_transactions.find_one_and_update(
+        {"session_id": session_id, "apply_pending": True,
+         "$or": [{"apply_claim_at": {"$exists": False}}, {"apply_claim_at": None}, {"apply_claim_at": {"$lt": cutoff}}]},
+        {"$set": {"apply_claim": token, "apply_claim_at": _now()}, "$inc": {"apply_attempts": 1}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if tx is None:
+        return False
+    try:
+        if int(tx.get("apply_attempts") or 1) > APPLY_MAX_ATTEMPTS:
+            result = await _give_up_applying(tx)
+        else:
+            result = await _apply_card_payment(tx)
+    except BaseException:
+        await asyncio.shield(_release_apply_claim(session_id, token))
+        raise
+    await db.payment_transactions.update_one(
+        {"session_id": session_id, "apply_claim": token},
+        {"$set": {"apply_pending": False, "applied_at": _now(), "apply_result": result},
+         "$unset": {"apply_claim": "", "apply_claim_at": ""}})
+    return True
+
+
+async def _give_up_applying(tx: dict) -> str:
+    """Η πληρωμή δεν κατάφερε να εφαρμοστεί σε πολλές προσπάθειες: δεν ξαναδοκιμάζεται, ειδοποιείται άνθρωπος."""
+    from automation import notify, _fmt
+    firm_id = tx.get("firm_id", "legacy-default-firm")
+    paid = round(float(tx.get("amount") or 0), 2)
+    await notify(
+        firm_id, "card_payment_unapplied", "critical", f"Πληρωμή κάρτας {_fmt(paid)} που δεν εφαρμόστηκε",
+        f"Η πληρωμή (συνεδρία {tx.get('session_id')}) εισπράχθηκε αλλά η εφαρμογή της στο τιμολόγιο δεν "
+        f"ολοκληρώθηκε μετά από {APPLY_MAX_ATTEMPTS} προσπάθειες. Ελέγξτε το τιμολόγιο και συμφωνήστε την "
+        "πληρωμή χειροκίνητα.",
+        entity="invoice", entity_id=tx.get("invoice_id") or "", requires_action=True,
+        dedupe_key=f"card_payment_unapplied:{tx.get('session_id')}")
+    return "given_up"
+
+
+async def _apply_card_payment(tx: dict) -> str:
     """Εξοφλεί το τιμολόγιο της πληρωμής — μόνο αν είναι ακόμη ανοιχτό και το ποσό ταιριάζει.
 
     Η πληρωμή έχει ήδη γίνει όταν φτάνουμε εδώ· το ζήτημα είναι να μην «χαθούν» τα χρήματα
@@ -192,6 +276,11 @@ async def _apply_card_payment(tx: dict) -> None:
       εν μέρει αφού άνοιξε η συνεδρία) — το τιμολόγιο εξοφλείται και το επιπλέον ποσό
       πρέπει να επιστραφεί·
     * οποιοδήποτε σφάλμα κατά την εφαρμογή — δεν καταπίνεται.
+
+    Η συνάρτηση είναι **επαναλήψιμη**: μια προηγούμενη προσπάθεια μπορεί να έκλεισε ήδη το τιμολόγιο και να
+    έπεσε πριν γράψει το αποτέλεσμα. Αυτό αναγνωρίζεται από το `paid_ref` του τιμολογίου (η συνεδρία που το
+    εξόφλησε) και δεν θεωρείται πρόβλημα· ένα τιμολόγιο που εξοφλήθηκε από ΑΛΛΗ συνεδρία (διπλοπληρωμή)
+    εξακολουθεί να αναφέρεται. Επιστρέφει το αποτέλεσμα: settled / overpaid / underpaid / not_open / failed.
     """
     from invoice_services import mark_paid, outstanding_amount, to_cents
     from automation import notify, _fmt
@@ -210,43 +299,49 @@ async def _apply_card_payment(tx: dict) -> None:
     try:
         invoice = await db.invoices.find_one({"_id": ObjectId(invoice_id), "firm_id": firm_id}) or {}
         number = invoice.get("number") or "τιμολόγιο"
-        if invoice.get("status") != "issued":
+        settled_here = (invoice.get("status") == "paid" and invoice.get("paid_via") == "stripe"
+                        and invoice.get("paid_ref") == session_id)
+        if invoice.get("status") != "issued" and not settled_here:
             await alert(
                 "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} για τιμολόγιο που δεν ήταν ανοιχτό",
                 f"Το {number} είχε κατάσταση «{invoice.get('status') or 'άγνωστη'}» όταν ολοκληρώθηκε η πληρωμή "
                 f"(συνεδρία {session_id}). Τα χρήματα έχουν εισπραχθεί: ελέγξτε αν χρειάζεται επιστροφή ή σύνδεση "
                 "με άλλο παραστατικό.")
-            return
+            return "not_open"
         settings = await db.settings.find_one({"firm_id": firm_id}) or {}
         due, _withheld = await outstanding_amount(firm_id, invoice, settings)
         difference = round(paid - due, 2)
-        if to_cents(paid) < to_cents(due):
-            await alert(
-                "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} μικρότερη από το οφειλόμενο",
-                f"Το {number} οφείλει {_fmt(due)}, ο πελάτης πλήρωσε {_fmt(paid)} (συνεδρία {session_id}). "
-                "Το τιμολόγιο ΔΕΝ εξοφλήθηκε και μένει ανοιχτό για το υπόλοιπο· συμφωνήστε την πληρωμή χειροκίνητα "
-                "όταν διευθετηθεί.")
-            return
-        if not await mark_paid(firm_id, invoice["_id"], paid_via="stripe"):
-            fresh = await db.invoices.find_one({"_id": invoice["_id"], "firm_id": firm_id}) or {}
-            await alert(
-                "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} για τιμολόγιο που δεν ήταν ανοιχτό",
-                f"Το {number} είχε κατάσταση «{fresh.get('status') or 'άγνωστη'}» όταν ολοκληρώθηκε η πληρωμή "
-                f"(συνεδρία {session_id}). Τα χρήματα έχουν εισπραχθεί: ελέγξτε αν χρειάζεται επιστροφή ή σύνδεση "
-                "με άλλο παραστατικό.")
-            return
+        if not settled_here:
+            if to_cents(paid) < to_cents(due):
+                await alert(
+                    "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} μικρότερη από το οφειλόμενο",
+                    f"Το {number} οφείλει {_fmt(due)}, ο πελάτης πλήρωσε {_fmt(paid)} (συνεδρία {session_id}). "
+                    "Το τιμολόγιο ΔΕΝ εξοφλήθηκε και μένει ανοιχτό για το υπόλοιπο· συμφωνήστε την πληρωμή χειροκίνητα "
+                    "όταν διευθετηθεί.")
+                return "underpaid"
+            if not await mark_paid(firm_id, invoice["_id"], paid_via="stripe", ref=session_id):
+                fresh = await db.invoices.find_one({"_id": invoice["_id"], "firm_id": firm_id}) or {}
+                await alert(
+                    "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} για τιμολόγιο που δεν ήταν ανοιχτό",
+                    f"Το {number} είχε κατάσταση «{fresh.get('status') or 'άγνωστη'}» όταν ολοκληρώθηκε η πληρωμή "
+                    f"(συνεδρία {session_id}). Τα χρήματα έχουν εισπραχθεί: ελέγξτε αν χρειάζεται επιστροφή ή σύνδεση "
+                    "με άλλο παραστατικό.")
+                return "not_open"
         if to_cents(paid) > to_cents(due):
             await alert(
                 "card_payment_overpaid", f"Πληρωμή κάρτας {_fmt(paid)} μεγαλύτερη από το οφειλόμενο",
                 f"Το {number} εξοφλήθηκε, αλλά το οφειλόμενο ήταν {_fmt(due)} και εισπράχθηκαν {_fmt(paid)} "
                 f"(συνεδρία {session_id}). Επιστρέψτε στον πελάτη τη διαφορά {_fmt(difference)} ή πιστώστε τον "
                 "πελατολογικό του λογαριασμό.")
+            return "overpaid"
+        return "settled"
     except Exception as e:  # noqa: BLE001 — η πληρωμή έχει γίνει: το σφάλμα πρέπει να φανεί, όχι να χαθεί
         logger.exception("Αποτυχία εφαρμογής πληρωμής κάρτας (συνεδρία %s)", session_id)
         await alert(
             "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} που δεν εφαρμόστηκε",
             f"Η πληρωμή (συνεδρία {session_id}) εισπράχθηκε αλλά η εφαρμογή απέτυχε: {e}. "
             "Ελέγξτε το τιμολόγιο και συμφωνήστε την πληρωμή χειροκίνητα.")
+        return "failed"
 
 
 @public_router.post("/api/stripe/webhook")

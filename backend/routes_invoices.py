@@ -38,6 +38,16 @@ async def list_invoices(user: dict = Depends(get_current_user)):
     return [Invoice.from_mongo(d) for d in docs]
 
 
+@router.get("/numbering-check")
+async def numbering_check(year: Optional[int] = None, user: dict = Depends(get_current_user)):
+    """Έλεγχος της σειράς των εκδοθέντων: κενά, διπλότυποι αριθμοί, ημερομηνίες εκτός σειράς, μετρητής.
+
+    Δηλώνεται πριν από το `/{invoice_id}`, αλλιώς το «numbering-check» θα διαβαζόταν ως id τιμολογίου.
+    """
+    from invoice_services import numbering_report
+    return await numbering_report(firm_id_for(user), year)
+
+
 @router.get("/{invoice_id}")
 async def get_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
     try:

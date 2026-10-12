@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from audit import audit_read
 from fastapi.responses import Response
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 from db import db
 from http_utils import content_disposition
 from auth import get_current_user, require_admin
@@ -121,10 +122,17 @@ async def import_backup(file: UploadFile = File(...), user: dict = Depends(requi
                 # Never let a restored file re-assign documents to another firm.
                 doc["firm_id"] = firm_id_for(user)
             _id = doc.get("_id")
-            if _id is not None:
-                await db[coll].replace_one({"_id": _id}, doc, upsert=True)
-            else:
-                await db[coll].insert_one(doc)
+            try:
+                if _id is not None:
+                    await db[coll].replace_one({"_id": _id}, doc, upsert=True)
+                else:
+                    await db[coll].insert_one(doc)
+            except DuplicateKeyError:
+                # Μοναδικό κλειδί (π.χ. αριθμός τιμολογίου που έχει ήδη άλλο παραστατικό): η επαναφορά δεν
+                # σταματά στη μέση — το έγγραφο παραλείπεται και αναφέρεται, ώστε να το δει ο λογιστής.
+                errors.append(f"{coll}: το έγγραφο {doc.get('number') or doc.get('mydata_mark') or _id} συγκρούεται "
+                              "με υπάρχον έγγραφο (μοναδικό κλειδί) και δεν επαναφέρθηκε")
+                continue
             n += 1
         restored[coll] = n
 
