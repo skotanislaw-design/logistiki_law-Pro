@@ -267,7 +267,9 @@ async def ensure_invoice_number_index(collection=None) -> None:
 
 
 GAP_LIST_LIMIT = 50          # πόσα κενά αναγράφονται· το σύνολο μετριέται πάντα ολόκληρο
-_NUMBER_PATTERN = re.compile(r"^(?P<prefix>[^-\s]+)-(?P<year>\d{4})-(?P<seq>\d+)$")
+# Έως 9 ψηφία: ένας αριθμός με περισσότερα (εισαγωγή, επαναφορά, χειροκίνητη επέμβαση) δεν είναι αύξων αριθμός σειράς·
+# αναφέρεται ως «εκτός μορφής» αντί να παράγει εκατομμύρια «κενά» (ή να ξεπεράσει το όριο μετατροπής του int).
+_NUMBER_PATTERN = re.compile(r"^(?P<prefix>[^-\s]+)-(?P<year>[0-9]{4})-(?P<seq>[0-9]{1,9})$")
 
 
 def _parse_number(number: str):
@@ -286,6 +288,7 @@ async def numbering_report(firm_id: str, year: int | None = None) -> dict:
 
     Δεν διορθώνει τίποτα: ό,τι αφορά φορολογικά παραστατικά το αποφασίζει ο λογιστής.
     """
+    from numbering import as_int
     query = firm_query(firm_id, {"status": {"$in": NUMBERED_STATUSES}, "number": {"$gt": ""}})
     groups: dict[tuple[str, int], list] = {}
     unparseable = []
@@ -305,13 +308,26 @@ async def numbering_report(firm_id: str, year: int | None = None) -> dict:
         seqs = sorted({t[0] for t in items})
         first, last = seqs[0], seqs[-1]
 
-        present = set(seqs)
-        gaps = [n for n in range(first, last + 1) if n not in present]
+        # Τα κενά μετριούνται από τα διαστήματα ανάμεσα σε διαδοχικούς υπάρχοντες αριθμούς· ο κατάλογος κρατά μόνο τα
+        # πρώτα GAP_LIST_LIMIT. Ένας αριθμός με πολλά ψηφία (εισαγωγή, επαναφορά, χειροκίνητη επέμβαση) δεν πρέπει
+        # να χτίζει λίστα εκατομμυρίων στον βρόχο συμβάντων.
+        gaps: list[int] = []
+        gaps_total = 0
+        for before_seq, after_seq in zip(seqs, seqs[1:]):
+            missing = after_seq - before_seq - 1
+            if missing > 0:
+                gaps_total += missing
+                room = GAP_LIST_LIMIT - len(gaps)
+                if room > 0:
+                    gaps.extend(range(before_seq + 1, before_seq + 1 + min(missing, room)))
 
-        by_number: dict[str, list] = {}
+        # Ο ίδιος αύξων αριθμός με διαφορετική γραφή (0007 / 007) είναι ο ίδιος αριθμός: το μοναδικό ευρετήριο
+        # συγκρίνει κείμενα και θα δεχόταν και τα δύο.
+        by_seq: dict[int, list] = {}
         for seq, number, _date_iso, doc_id in items:
-            by_number.setdefault(number, []).append(doc_id)
-        duplicates = [{"number": n, "count": len(ids), "ids": ids} for n, ids in by_number.items() if len(ids) > 1]
+            by_seq.setdefault(seq, []).append((number, doc_id))
+        duplicates = [{"number": sorted({n for n, _ in docs})[0], "count": len(docs), "ids": [i for _, i in docs]}
+                      for docs in by_seq.values() if len(docs) > 1]
 
         date_order = []
         ordered = [t for t in items if t[2]]
@@ -321,23 +337,27 @@ async def numbering_report(firm_id: str, year: int | None = None) -> dict:
                                    "previous_number": before[1], "previous_date": before[2]})
 
         counter_doc = await db.counters.find_one({"_id": _counter_id(firm_id, prefix, y)})
-        seq_now = counter_doc.get("seq") if counter_doc else None
+        raw_seq = counter_doc.get("seq") if counter_doc else None
+        seq_now = as_int(raw_seq) if raw_seq is not None else None        # ο μετρητής δεν πρέπει να ρίχνει την αναφορά
         if seq_now is None:
             counter = {"seq": None, "state": "missing", "ahead_by": 0}
         elif seq_now < last:
             counter = {"seq": seq_now, "state": "behind", "ahead_by": 0}
         elif seq_now > last:
             counter = {"seq": seq_now, "state": "ahead", "ahead_by": seq_now - last}
-            gaps += list(range(last + 1, seq_now + 1))     # αριθμοί που δόθηκαν και δεν χρησιμοποιήθηκαν ποτέ
+            gaps_total += seq_now - last                    # αριθμοί που δόθηκαν και δεν χρησιμοποιήθηκαν ποτέ
+            room = GAP_LIST_LIMIT - len(gaps)
+            if room > 0:
+                gaps.extend(range(last + 1, last + 1 + min(seq_now - last, room)))
         else:
             counter = {"seq": seq_now, "state": "ok", "ahead_by": 0}
 
         series.append({
             "series": f"{prefix}-{y}", "prefix": prefix, "year": y,
             "count": len(items), "first": first, "last": last,
-            "gaps": gaps[:GAP_LIST_LIMIT], "gaps_total": len(gaps),
+            "gaps": gaps, "gaps_total": gaps_total,
             "duplicates": duplicates, "date_order": date_order, "counter": counter,
-            "ok": not (gaps or duplicates or date_order or counter["state"] == "behind"),
+            "ok": not (gaps_total or duplicates or date_order or counter["state"] == "behind"),
         })
 
     unnumbered = await db.invoices.count_documents(firm_query(firm_id, {
@@ -780,34 +800,61 @@ def _check_series_date(inv_date: _date, today: _date, previous) -> None:
         )
 
 
+def _allocation_is_stale(allocated_at: str | None) -> bool:
+    """Η τελευταία παραχώρηση αριθμού είναι παλαιότερη από το κλείδωμα έκδοσης (ή άγνωστη, από παλιό μετρητή):
+    όποια έκδοση την έκανε, δεν είναι πια σε εξέλιξη."""
+    if not allocated_at:
+        return True
+    try:
+        then = datetime.fromisoformat(allocated_at)
+    except (TypeError, ValueError):
+        return True
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - then).total_seconds() > ISSUE_CLAIM_TTL_SECONDS
+
+
+SERIES_BUSY_MESSAGE = "Η σειρά παραστατικών ενημερώθηκε ταυτόχρονα από άλλη έκδοση. Δοκιμάστε ξανά σε λίγο."
+
+
 async def _allocate_number(firm_id: str, series: tuple[str, int], inv_date: _date, today: _date, previous) -> str:
     """Παραχωρεί αριθμό της σειράς **και ελέγχει την ημερομηνία στην ίδια ατομική εγγραφή** του μετρητή.
 
     Ο έλεγχος με την `_previous_in_series` γίνεται πριν από την παραχώρηση· ανάμεσα στους δύο μπορεί άλλο
     αίτημα να πάρει αριθμό με μεταγενέστερη ημερομηνία. Ο μετρητής θυμάται την τελευταία ημερομηνία και αρνείται.
-    Η άρνηση όμως μπορεί να οφείλεται και σε ημερομηνία που άφησε μια αποτυχημένη έκδοση: τότε ξαναδιαβάζουμε τη
-    σειρά, και αν κανένα υπαρκτό παραστατικό δεν μπλοκάρει, διορθώνουμε τον μετρητή και ξαναδοκιμάζουμε μία φορά.
+
+    Η άρνηση όμως μπορεί να οφείλεται (α) σε αριθμό που δόθηκε σε άλλη έκδοση και **δεν έχει γραφτεί ακόμη** στο
+    παραστατικό του — τότε η ημερομηνία του ΔΕΝ είναι ορφανή και δεν πρέπει να διορθωθεί· ή (β) σε ημερομηνία που
+    άφησε μια αποτυχημένη έκδοση. Η διάκριση γίνεται από το αν ο μετρητής είναι πάνω από τον μεγαλύτερο αριθμό που
+    έχει γραφτεί, και από το πόσο παλιά είναι η παραχώρηση (το κλείδωμα έκδοσης λήγει σε `ISSUE_CLAIM_TTL_SECONDS`):
+    μόνο όταν δεν εκκρεμεί αριθμός, ή ο εκκρεμής είναι παλιότερος από το κλείδωμα, διορθώνουμε τη «τελευταία
+    ημερομηνία» (υπό όρο: ο μετρητής να μην έχει αλλάξει) και ξαναδοκιμάζουμε μία φορά.
     """
-    from numbering import SeriesDateOutOfOrder, reset_series_date
+    from numbering import SeriesBusy, SeriesDateOutOfOrder, reset_series_date
     prefix, year = series
     floor = previous[0] if previous else 0
     for attempt in (1, 2):
         try:
             return await next_invoice_number(firm_id, prefix, year, date_iso=inv_date.isoformat(), floor=floor)
+        except SeriesBusy:
+            raise InvoiceWorkflowError(SERIES_BUSY_MESSAGE)
         except SeriesDateOutOfOrder as refused:
             fresh = await _previous_in_series(firm_id, prefix, year)
             _check_series_date(inv_date, today, fresh)        # υπάρχει όντως παραστατικό που μπλοκάρει → σφάλμα προς τον χρήστη
             if attempt == 2:
-                raise InvoiceWorkflowError(
-                    "Η σειρά παραστατικών ενημερώθηκε ταυτόχρονα από άλλη έκδοση. Δοκιμάστε ξανά σε λίγο.")
+                raise InvoiceWorkflowError(SERIES_BUSY_MESSAGE)
+            persisted = fresh[0] if fresh else 0
+            if refused.seq is not None and refused.seq > persisted and not _allocation_is_stale(refused.allocated_at):
+                raise InvoiceWorkflowError(SERIES_BUSY_MESSAGE)
             actual = None
             if fresh:
                 try:
                     actual = min(_date.fromisoformat(fresh[1]), today).isoformat()
                 except ValueError:
                     actual = None
-            await reset_series_date(_counter_id(firm_id, prefix, year), expected=refused.last_date, to=actual)
-            floor = max(floor, fresh[0] if fresh else 0)
+            await reset_series_date(_counter_id(firm_id, prefix, year), expected=refused.last_date, to=actual,
+                                    seq=refused.seq)
+            floor = max(floor, persisted)
     raise AssertionError("unreachable")  # pragma: no cover
 
 

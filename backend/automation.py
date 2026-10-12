@@ -1124,7 +1124,15 @@ async def job_numbering_check(firm_id: str, settings: dict) -> dict:
                 {"$set": {"resolved_at": _now(), "resolved_by": "autopilot", "resolution": "auto", "read": True}})
             resolved += 1
     raised = 0
+    # Ό,τι ένας άνθρωπος έχει ήδη κλείσει δεν ξανανοίγει: το κλειδί περιέχει σύνοψη των στοιχείων, άρα ένα ΝΕΟ πρόβλημα
+    # έχει νέο κλειδί και νέα κάρτα. Ένα κενό σε εκδοθείσα σειρά δεν διορθώνεται ποτέ από μόνο του — χωρίς αυτό η κάρτα
+    # θα επέστρεφε κάθε κύκλο (AUTOPILOT_INTERVAL_MINUTES) αφού την έκλεισε ο λογιστής.
+    acknowledged = {c["dedupe_key"] async for c in db.notifications.find(firm_query(firm_id, {
+        "type": "numbering", "dedupe_key": {"$in": list(wanted)}, "resolved_at": {"$ne": None},
+        "resolved_by": {"$nin": ["autopilot", None]}}))}
     for key, (level, title, message) in wanted.items():
+        if key in acknowledged:
+            continue
         created = await notify(firm_id, "numbering", level, title, message, entity="invoice_series",
                                entity_id=key.split(":")[2] if key.count(":") >= 2 else "", requires_action=True,
                                dedupe_key=key)

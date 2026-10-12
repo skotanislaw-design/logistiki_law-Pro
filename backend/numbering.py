@@ -5,30 +5,74 @@
 τρία γραμμάτια (0001–0003) και διαγραφή του δεύτερου, το επόμενο έπαιρνε το 0003, δηλαδή
 δύο έγγραφα με τον ίδιο αριθμό — και η αναζήτηση «ανά αριθμό» έβρισκε το λάθος.
 
-Ο μετρητής (`counters`) αυξάνεται ατομικά και δεν γυρίζει ποτέ πίσω, ό,τι κι αν διαγραφεί.
+Ο μετρητής (`counters`) δεν γυρίζει ποτέ πίσω, ό,τι κι αν διαγραφεί.
 
-Για τα φορολογικά παραστατικά ο μετρητής κάνει δύο ακόμη πράγματα, και τα δύο **μέσα στην ίδια ατομική
-εγγραφή** με την παραχώρηση του αριθμού:
+**Μία μόνο εγγραφή αποφασίζει τα πάντα.** Κάθε παραχώρηση αριθμού είναι ένα *compare-and-set* πάνω στο έγγραφο του
+μετρητή: διαβάζεται η κατάσταση (`seq`, `last_date`), υπολογίζεται ο επόμενος αριθμός, και γράφεται με φίλτρο που
+απαιτεί η κατάσταση να είναι ακόμη αυτή που διαβάστηκε. Αν άλλο αίτημα πρόλαβε, η εγγραφή δεν ταιριάζει, δεν
+καταναλώνεται κανένας αριθμός και η διαδικασία ξαναρχίζει από την ανάγνωση. Έτσι —και μόνο έτσι— μπορούν να ισχύουν
+μαζί, χωρίς παράθυρο ανάμεσα σε δύο εγγραφές:
 
-* θυμάται την **τελευταία ημερομηνία** που δόθηκε στη σειρά (`last_date`) και αρνείται (με
-  `SeriesDateOutOfOrder`) αριθμό σε ημερομηνία προγενέστερη. Ο έλεγχος «όχι πριν από τον προηγούμενο
-  αριθμό» ενός πρώτου ελέγχου που γίνεται πριν την παραχώρηση δεν αρκεί: δύο πρόχειρα με διαφορετική
-  ημερομηνία που εκδίδονται ταυτόχρονα περνούν και τα δύο τον έλεγχο·
-* δεν μένει ποτέ πίσω από υπάρχοντες αριθμούς (`floor`): μετά από επαναφορά αντιγράφου ή χειροκίνητη
-  διόρθωση ο μετρητής μπορεί να δείχνει μικρότερο αριθμό από τον τελευταίο που υπάρχει.
+* δεν υπάρχουν δύο ίδιοι αριθμοί·
+* ένας μεταγενέστερος αριθμός δεν παίρνει ποτέ προγενέστερη ημερομηνία (`last_date`)· αν η ημερομηνία είναι
+  παλαιότερη από την τελευταία που δόθηκε, ο μετρητής αρνείται (`SeriesDateOutOfOrder`) χωρίς να αλλάξει·
+* ο μετρητής δεν μένει ποτέ πίσω από υπάρχοντες αριθμούς (`floor`): μετά από επαναφορά αντιγράφου ή χειροκίνητη
+  διόρθωση μπορεί να δείχνει μικρότερο αριθμό από τον τελευταίο που υπάρχει· η μετακίνηση πάνω από το `floor`
+  γίνεται στην ΙΔΙΑ εγγραφή με την παραχώρηση·
+* η πρώτη χρήση ενός μετρητή (δημιουργία του εγγράφου) ξεκινά πάνω από όσους αριθμούς υπάρχουν ήδη στη συλλογή
+  (έγγραφα από την εποχή του «πλήθος + 1»).
+
+Οι προηγούμενες εκδοχές έκαναν τα τρία τελευταία με ξεχωριστές εγγραφές (ένα `$inc` και, αν χρειαζόταν, ένα δεύτερο
+`$set`)· ανάμεσά τους μπορούσε να παρεμβληθεί άλλο αίτημα και να βγουν αριθμοί εκτός χρονολογικής σειράς ή να
+«χαθεί» ο αριθμός 0001 χωρίς ίχνος.
 """
-from pymongo import ReturnDocument
+from datetime import datetime, timezone
+
 from pymongo.errors import DuplicateKeyError
 
 from db import db
+
+CAS_ATTEMPTS = 50      # κάθε αποτυχία σημαίνει ότι άλλο αίτημα πήρε αριθμό — η πρόοδος είναι εγγυημένη
 
 
 class SeriesDateOutOfOrder(Exception):
     """Η ημερομηνία του παραστατικού είναι προγενέστερη της τελευταίας που δόθηκε στη σειρά."""
 
-    def __init__(self, last_date: str | None):
+    def __init__(self, last_date: str | None, seq: int | None = None, allocated_at: str | None = None):
         super().__init__(f"Η σειρά έχει ήδη δώσει αριθμό με ημερομηνία {last_date}")
         self.last_date = last_date
+        self.seq = seq                      # ο μετρητής τη στιγμή της άρνησης
+        self.allocated_at = allocated_at    # πότε δόθηκε ο τελευταίος αριθμός
+
+
+class SeriesBusy(Exception):
+    """Ο μετρητής ήταν συνεχώς απασχολημένος από άλλα αιτήματα· δεν δόθηκε αριθμός (και δεν χάθηκε κανένας)."""
+
+
+def format_number(prefix: str, year: int, seq: int) -> str:
+    return f"{prefix}-{year}-{seq:04d}"
+
+
+def as_int(value) -> int:
+    """Ο αριθμός του μετρητή ως ακέραιος. Ό,τι δεν είναι αριθμός (χειροκίνητη επέμβαση) μετράει ως 0· ο έλεγχος
+    ύπαρξης αριθμών (`floor`, μοναδικό ευρετήριο) προστατεύει τη σειρά και η επόμενη εγγραφή τον διορθώνει."""
+    if isinstance(value, bool):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+async def _scan_existing_max(collection, firm_id: str, prefix: str, year: int) -> int:
+    """Ο μεγαλύτερος αριθμός της σειράς που υπάρχει ήδη στη συλλογή (για την πρώτη χρήση του μετρητή)."""
+    existing_max = 0
+    async for d in collection.find({"firm_id": firm_id, "number": {"$regex": f"^{prefix}-{year}-"}}, {"number": 1}):
+        try:
+            existing_max = max(existing_max, int(d["number"].rsplit("-", 1)[-1]))
+        except (ValueError, KeyError, TypeError):
+            pass
+    return existing_max
 
 
 async def next_in_series(collection, counter_id: str, firm_id: str, prefix: str, year: int, *,
@@ -42,55 +86,48 @@ async def next_in_series(collection, counter_id: str, firm_id: str, prefix: str,
     `floor`: ο μεγαλύτερος αριθμός που ξέρει ο καλών ότι υπάρχει ήδη στη σειρά. Ο επόμενος αριθμός είναι
     πάντα μεγαλύτερος από αυτόν.
     """
-    flt: dict = {"_id": counter_id}
-    update: dict = {"$inc": {"seq": 1}}
-    if date_iso:
-        # Ο μετρητής από παλιά έκδοση δεν έχει ημερομηνία: δέχεται την πρώτη.
-        flt["$or"] = [{"last_date": {"$exists": False}}, {"last_date": None}, {"last_date": {"$lte": date_iso}}]
-        update["$set"] = {"last_date": date_iso}
-    try:
-        counter = await db.counters.find_one_and_update(flt, update, upsert=True, return_document=ReturnDocument.AFTER)
-    except DuplicateKeyError:
-        # Ο μετρητής υπάρχει αλλά το φίλτρο ημερομηνίας δεν ταίριαξε· το upsert προσπάθησε να ξαναφτιάξει το ίδιο _id.
-        current = await db.counters.find_one({"_id": counter_id}, {"last_date": 1})
-        raise SeriesDateOutOfOrder((current or {}).get("last_date"))
-    seq = counter["seq"]
-    # Πρώτη χρήση του μετρητή: υπάρχοντα έγγραφα (από την εποχή του «πλήθος + 1») μπορεί να
-    # έχουν ήδη αριθμούς — συνέχισε πάνω από το μεγαλύτερο, ώστε να μην υπάρξει σύγκρουση.
-    if seq == 1:
-        existing_max = 0
-        async for d in collection.find({"firm_id": firm_id, "number": {"$regex": f"^{prefix}-{year}-"}}, {"number": 1}):
+    for _ in range(CAS_ATTEMPTS):
+        current = await db.counters.find_one({"_id": counter_id})
+        now = datetime.now(timezone.utc).isoformat()
+
+        if current is None:
+            # Πρώτη χρήση: υπάρχοντα έγγραφα (από την εποχή του «πλήθος + 1») μπορεί να έχουν ήδη αριθμούς.
+            target = max(floor, await _scan_existing_max(collection, firm_id, prefix, year)) + 1
+            created = {"_id": counter_id, "seq": target, "last_alloc_at": now}
+            if date_iso:
+                created["last_date"] = date_iso
             try:
-                existing_max = max(existing_max, int(d["number"].rsplit("-", 1)[-1]))
-            except (ValueError, KeyError):
-                pass
-        if existing_max >= seq:
-            counter = await db.counters.find_one_and_update(
-                {"_id": counter_id}, {"$set": {"seq": existing_max + 1}}, return_document=ReturnDocument.AFTER,
-            )
-            seq = counter["seq"]
-    # Ο μετρητής έμεινε πίσω από υπάρχοντες αριθμούς. Η μετακίνηση είναι υπό όρο (`seq <= floor`): αν άλλο
-    # αίτημα τον πρόλαβε, δεν γράφουμε ξανά την ίδια τιμή — παίρνουμε νέο αριθμό. Αλλιώς δύο αιτήματα θα
-    # έπαιρναν τον ίδιο αριθμό.
-    while floor and seq <= floor:
-        moved = await db.counters.find_one_and_update(
-            {"_id": counter_id, "seq": {"$lte": floor}}, {"$set": {"seq": floor + 1}},
-            return_document=ReturnDocument.AFTER,
-        )
-        if moved is None:
-            moved = await db.counters.find_one_and_update(
-                {"_id": counter_id}, {"$inc": {"seq": 1}}, return_document=ReturnDocument.AFTER,
-            )
-        seq = moved["seq"]
-    return f"{prefix}-{year}-{seq:04d}"
+                await db.counters.insert_one(created)
+            except DuplicateKeyError:
+                continue                        # τον δημιούργησε άλλο αίτημα: διάβασέ τον και συνέχισε από εκεί
+            return format_number(prefix, year, target)
+
+        last_date = current.get("last_date")
+        if date_iso and isinstance(last_date, str) and last_date > date_iso:
+            raise SeriesDateOutOfOrder(last_date, as_int(current.get("seq")), current.get("last_alloc_at"))
+
+        target = max(as_int(current.get("seq")), floor) + 1
+        change: dict = {"seq": target, "last_alloc_at": now}
+        if date_iso:
+            change["last_date"] = date_iso
+        # Compare-and-set: ισχύει μόνο αν ούτε ο αριθμός ούτε η ημερομηνία άλλαξαν από τότε που διαβάστηκαν.
+        # (`None` ταιριάζει και με απόντα πεδίο: μετρητές από παλιότερες εκδόσεις δεν έχουν `last_date`.)
+        won = await db.counters.update_one(
+            {"_id": counter_id, "seq": current.get("seq"), "last_date": last_date}, {"$set": change})
+        if won.matched_count:
+            return format_number(prefix, year, target)
+    raise SeriesBusy(f"Δεν δόθηκε αριθμός στη σειρά {prefix}-{year}: ο μετρητής ήταν συνεχώς απασχολημένος")
 
 
-async def reset_series_date(counter_id: str, *, expected: str | None, to: str | None) -> bool:
+async def reset_series_date(counter_id: str, *, expected: str | None, to: str | None, seq: int | None = None) -> bool:
     """Διορθώνει την «τελευταία ημερομηνία» του μετρητή όταν δεν αντιστοιχεί σε κανένα υπαρκτό παραστατικό.
 
-    Γίνεται μόνο αν ο μετρητής έχει ακόμη την τιμή `expected` (δεν πρόλαβε άλλο αίτημα να την αλλάξει).
+    Γίνεται μόνο αν ο μετρητής έχει ακόμη την τιμή `expected` (δεν πρόλαβε άλλο αίτημα να την αλλάξει) και, αν δοθεί
+    `seq`, μόνο αν δεν έχει δοθεί κανένας αριθμός από τότε που διαβάστηκε ο μετρητής.
     """
-    flt = {"_id": counter_id, "last_date": expected}
+    flt: dict = {"_id": counter_id, "last_date": expected}
+    if seq is not None:
+        flt["seq"] = seq
     if to is None:
         result = await db.counters.update_one(flt, {"$unset": {"last_date": ""}})
     else:
