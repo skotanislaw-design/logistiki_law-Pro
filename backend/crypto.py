@@ -168,6 +168,26 @@ def decrypt_settings_secrets(doc: dict | None) -> dict | None:
     return out
 
 
+def undecryptable_secrets(doc: dict | None) -> list[str]:
+    """Τα μυστικά πεδία ενός εγγράφου ρυθμίσεων που είναι κρυπτογραφημένα αλλά ΔΕΝ διαβάζονται με το τρέχον κλειδί.
+
+    Συμβαίνει όταν ένα αντίγραφο ασφαλείας επαναφέρεται σε εγκατάσταση με άλλο `SECRETS_KEY` (ή άλλο `JWT_SECRET`,
+    αν δεν έχει οριστεί `SECRETS_KEY`): τα δεδομένα επανέρχονται, οι κωδικοί SMTP/ΑΑΔΕ όχι.
+    """
+    unreadable = []
+    for field in SECRET_SETTINGS_FIELDS:
+        value = (doc or {}).get(field)
+        if not is_encrypted(value):
+            continue
+        try:
+            readable = bool(decrypt(value))
+        except Exception:  # noqa: BLE001 — χωρίς διαθέσιμο κλειδί δεν διαβάζεται τίποτα
+            readable = False
+        if not readable:
+            unreadable.append(field)
+    return unreadable
+
+
 def mask_settings_secrets(doc: dict | None) -> dict | None:
     """Αντίγραφο για τον client: τα μυστικά δεν φεύγουν ποτέ από τον server.
 

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
+from pymongo.errors import DuplicateKeyError
 from db import db
 from models import Settings
 from auth import get_current_user, require_admin
@@ -9,14 +10,26 @@ from crypto import encrypt_settings_secrets, mask_settings_secrets, merge_masked
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 
+async def _settings_doc(user: dict) -> dict:
+    """Το έγγραφο ρυθμίσεων του γραφείου· δημιουργείται την πρώτη φορά.
+
+    Ένα έγγραφο ανά γραφείο, και το εγγυάται μοναδικό ευρετήριο στο `firm_id` (βλ. `ensure_settings_index`): δύο
+    ταυτόχρονα πρώτα αιτήματα δεν φτιάχνουν δύο έγγραφα — το δεύτερο παίρνει αυτό που δημιούργησε το πρώτο. (Με
+    δύο έγγραφα η εφαρμογή διάβαζε το ένα και έγραφε στο άλλο, και μια επαναφορά αντιγράφου δεν φαινόταν ποτέ.)
+    """
+    doc = await db.settings.find_one(tenant_query(user, {}))
+    if doc:
+        return doc
+    try:
+        await db.settings.insert_one(Settings(firm_id=firm_id_for(user)).to_mongo())
+    except DuplicateKeyError:
+        pass                                 # το δημιούργησε άλλο αίτημα την ίδια στιγμή
+    return await db.settings.find_one(tenant_query(user, {}))
+
+
 @router.get("")
 async def get_settings(user: dict = Depends(get_current_user)):
-    doc = await db.settings.find_one(tenant_query(user, {}))
-    if not doc:
-        default = Settings(firm_id=firm_id_for(user))
-        result = await db.settings.insert_one(default.to_mongo())
-        doc = await db.settings.find_one(tenant_query(user, {"_id": result.inserted_id}))
-    return Settings.from_mongo(mask_settings_secrets(doc))
+    return Settings.from_mongo(mask_settings_secrets(await _settings_doc(user)))
 
 
 def _validate_firm_afm(afm) -> None:
@@ -79,19 +92,14 @@ async def update_settings(payload: Settings, user: dict = Depends(require_admin)
     from datetime import datetime, timezone
     _validate_firm_afm(payload.afm)
     _validate_withholding(payload.withholding_category, payload.withholding_rate, payload.withholding_min_net)
-    doc = await db.settings.find_one(tenant_query(user, {}))
+    doc = await _settings_doc(user)
     data = payload.model_dump(exclude={"id", "firm_id"})
     # Ο client δεν λαμβάνει ποτέ τα μυστικά, άρα στέλνει πίσω μάσκα: κράτα τα αποθηκευμένα.
     data = encrypt_settings_secrets(merge_masked_secrets(data, doc))
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
     data["mydata_connected"] = bool(payload.aade_user_id and data.get("aade_subscription_key"))
-    if doc:
-        await db.settings.update_one(tenant_query(user, {"_id": doc["_id"]}), {"$set": data})
-        doc = await db.settings.find_one(tenant_query(user, {"_id": doc["_id"]}))
-    else:
-        data["firm_id"] = firm_id_for(user)
-        result = await db.settings.insert_one(data)
-        doc = await db.settings.find_one(tenant_query(user, {"_id": result.inserted_id}))
+    await db.settings.update_one(tenant_query(user, {"_id": doc["_id"]}), {"$set": data})
+    doc = await db.settings.find_one(tenant_query(user, {"_id": doc["_id"]}))
     return Settings.from_mongo(mask_settings_secrets(doc))
 
 
@@ -106,10 +114,7 @@ async def patch_settings(payload: dict, user: dict = Depends(require_admin)):
     if "afm" in data:
         _validate_firm_afm(data["afm"])
     _validate_withholding(data.get("withholding_category"), data.get("withholding_rate"), data.get("withholding_min_net"))
-    current = await db.settings.find_one(tenant_query(user, {}))
-    if not current:
-        current = Settings(firm_id=firm_id_for(user)).to_mongo()
-        await db.settings.insert_one(current)
+    current = await _settings_doc(user)
     merged = {**current, **merge_masked_secrets(data, current)}
     merged.pop("_id", None)
     try:
@@ -121,8 +126,8 @@ async def patch_settings(payload: dict, user: dict = Depends(require_admin)):
     data = encrypt_settings_secrets(validated.model_dump(exclude={"id", "firm_id"}))
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
     data["mydata_connected"] = bool(validated.aade_user_id and data.get("aade_subscription_key"))
-    await db.settings.update_one(tenant_query(user, {}), {"$set": data})
-    doc = await db.settings.find_one(tenant_query(user, {}))
+    await db.settings.update_one(tenant_query(user, {"_id": current["_id"]}), {"$set": data})
+    doc = await db.settings.find_one(tenant_query(user, {"_id": current["_id"]}))
     return Settings.from_mongo(mask_settings_secrets(doc))
 
 

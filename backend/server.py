@@ -263,6 +263,36 @@ async def ensure_trust_account_index() -> None:
                      "ελέγξτε για διπλούς λογαριασμούς του ίδιου πελάτη: %s", e)
 
 
+SETTINGS_INDEX = "uniq_firm_settings"
+
+
+async def ensure_settings_index(collection=None) -> None:
+    """Ένα έγγραφο ρυθμίσεων ανά γραφείο.
+
+    Η εφαρμογή διαβάζει τις ρυθμίσεις με `find_one({"firm_id": …})`, δηλαδή το πρώτο έγγραφο που θα βρει. Δύο
+    έγγραφα για το ίδιο γραφείο (δύο ταυτόχρονα πρώτα αιτήματα, ή μια επαναφορά που έγραψε δίπλα στο προεπιλεγμένο)
+    σημαίνουν ότι ό,τι αποθηκεύεται δεν φαίνεται ποτέ. Το μοναδικό ευρετήριο το αποκλείει.
+
+    Το απλό ευρετήριο `firm_id_1` αντικαθίσταται (η MongoDB δεν δέχεται δύο ευρετήρια με το ίδιο κλειδί και άλλες
+    επιλογές). Αν υπάρχουν ήδη διπλά έγγραφα η δημιουργία αποτυγχάνει: καταγράφεται σφάλμα, το απλό ευρετήριο
+    ξαναδημιουργείται και χρειάζεται χειροκίνητη συγχώνευση (ή μια επαναφορά αντιγράφου, που τα συγχωνεύει).
+    Το `collection` δίνεται μόνο στα τεστ.
+    """
+    settings = collection if collection is not None else db.settings
+    try:
+        for name, info in (await settings.index_information()).items():
+            if list(info.get("key", [])) == [("firm_id", 1)] and not info.get("unique"):
+                await settings.drop_index(name)
+        await settings.create_index("firm_id", name=SETTINGS_INDEX, unique=True)
+    except Exception as e:  # noqa: BLE001 — η εκκίνηση της εφαρμογής δεν πρέπει να εξαρτάται από αυτό
+        logger.error("settings: αποτυχία δημιουργίας του unique index (firm_id) — ελέγξτε για διπλά έγγραφα "
+                     "ρυθμίσεων του ίδιου γραφείου: %s", e)
+        try:
+            await settings.create_index("firm_id")
+        except Exception:  # noqa: BLE001
+            pass
+
+
 @app.on_event("startup")
 async def startup_event():
     # Existing deployments were single-tenant. Keep their records together
@@ -287,7 +317,7 @@ async def startup_event():
     await db.invoices.create_index("firm_id")
     for collection in (
         db.expenses, db.payroll_employees, db.payroll_runs, db.cases,
-        db.grammatia, db.paravola, db.hearings, db.settings,
+        db.grammatia, db.paravola, db.hearings,
         db.trust_accounts, db.trust_transactions, db.kyc, db.signatures,
         db.payment_transactions, db.client_portal_tokens,
         db.case_tracker_events, db.bank_transactions, db.portal_messages,
@@ -315,6 +345,7 @@ async def startup_event():
     # Ένα παραστατικό ΑΑΔΕ γίνεται έξοδο μία φορά, ακόμη κι αν το RequestDocs το επιστρέψει ξανά.
     await ensure_expense_mark_index()
     await ensure_trust_account_index()
+    await ensure_settings_index()
     await ensure_invoice_number_index()
     await flag_unchecked_bank_suggestions()
     await db.outbox.create_index([("status", 1), ("next_attempt_at", 1)])

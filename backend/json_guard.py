@@ -50,6 +50,21 @@ def has_non_finite_number(body: bytes) -> bool:
     return False
 
 
+def contains_non_finite(value) -> bool:
+    """Περιέχει μια ήδη αναλυμένη τιμή (έγγραφο, λίστα, αριθμός) `NaN` ή άπειρο σε οποιοδήποτε βάθος;
+
+    Για ό,τι δεν περνά από σώμα αιτήματος — π.χ. τα έγγραφα ενός αρχείου αντιγράφου ασφαλείας: η `json.loads` δέχεται
+    `NaN` και `Infinity`, και ένα τέτοιο σύνολο τιμολογίου θα χαλούσε κάθε αναφορά του γραφείου.
+    """
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(contains_non_finite(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(contains_non_finite(v) for v in value)
+    return False
+
+
 def _is_json(scope) -> bool:
     """Θα το διαβάσει η FastAPI ως JSON; Ναι όταν ο τύπος είναι `application/json` / `*+json` ή λείπει εντελώς."""
     content_type = ""
