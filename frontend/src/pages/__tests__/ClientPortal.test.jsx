@@ -58,3 +58,35 @@ describe("Πύλη πελάτη", () => {
     expect(screen.getByText("Ο σύνδεσμος έχει λήξει")).toBeInTheDocument();
   });
 });
+
+describe("Πύλη πελάτη — ποσό που οφείλεται", () => {
+  // Το σύνολο 1.240 € δεν είναι αυτό που χρωστά ο πελάτης: με παρακράτηση πληρώνει 1.040 €,
+  // και αν 400 € έχουν ήδη εξοφληθεί από τον πελατολογικό λογαριασμό του, μένουν 640 €.
+  const withDue = {
+    ...PAYLOAD,
+    invoices: [
+      { id: "1", number: "ΤΠΥ-2026-0001", date: "2026-09-10", total: 1240, payable: 1040, outstanding: 640, status: "issued" },
+      { id: "2", number: "ΤΠΥ-2026-0002", date: "2026-09-11", total: 124, payable: 124, outstanding: 124, status: "issued" },
+      { id: "3", number: "ΤΠΥ-2026-0003", date: "2026-09-12", total: 500, payable: 500, outstanding: 0, status: "paid" },
+    ],
+    totals: { unpaid_count: 2, unpaid_total: 764, paid_count: 1, active_cases: 0 },
+  };
+
+  it("δείχνει «Οφείλεται» μόνο όπου το ποσό διαφέρει από το σύνολο και το τιμολόγιο είναι ανεξόφλητο", async () => {
+    server.use(http.get(`${API}/portal/${TOKEN}`, () => HttpResponse.json(withDue)));
+    renderPortal();
+
+    const due = await screen.findByTestId("portal-due-1");
+    expect(due).toHaveTextContent(/Οφείλεται: 640,00\s€/);
+    expect(screen.queryByTestId("portal-due-2")).not.toBeInTheDocument();     // οφείλεται όσο το σύνολο
+    expect(screen.queryByTestId("portal-due-3")).not.toBeInTheDocument();     // εξοφλημένο
+  });
+
+  it("δεν σπάει όταν ο server (παλιά έκδοση) δεν στέλνει «outstanding»", async () => {
+    const legacy = { ...withDue, invoices: [{ id: "1", number: "ΤΠΥ-2026-0001", date: "2026-09-10", total: 1240, status: "issued" }] };
+    server.use(http.get(`${API}/portal/${TOKEN}`, () => HttpResponse.json(legacy)));
+    renderPortal();
+    expect(await screen.findByText("ΤΠΥ-2026-0001")).toBeInTheDocument();
+    expect(screen.queryByTestId("portal-due-1")).not.toBeInTheDocument();
+  });
+});

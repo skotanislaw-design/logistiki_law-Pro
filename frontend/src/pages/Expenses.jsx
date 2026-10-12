@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ImagePreviewDialog } from "@/components/ImagePreviewDialog";
 import { Plus, Camera, Sparkle, Eye, PencilSimple, Trash, ImageSquare } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { todayAthens } from "@/lib/utils";
 
 const VAT_RATES = [24, 13, 6, 0];
 const CATEGORIES = [
@@ -19,7 +20,7 @@ const CATEGORIES = [
 ];
 
 function emptyForm() {
-  return { vendor: "", date: new Date().toISOString().slice(0, 10), amount: 0, vat_amount: 0, vat_rate: 24, category: "Λοιπά", description: "", source: "manual", receipt_image_url: null };
+  return { vendor: "", date: todayAthens(), amount: 0, vat_amount: 0, vat_rate: 24, category: "Λοιπά", description: "", source: "manual", receipt_image_url: null };
 }
 
 function receiptSrc(path) {
@@ -51,7 +52,7 @@ export default function Expenses() {
         const { data } = await axios.post(`${API}/expenses/ocr-parse`, { image_base64: base64 });
         const p = data.parsed;
         setForm({
-          vendor: p.vendor || "", date: p.date || new Date().toISOString().slice(0, 10),
+          vendor: p.vendor || "", date: p.date || todayAthens(),
           amount: p.amount || 0, vat_amount: p.vat_amount || 0, vat_rate: p.vat_rate || 24,
           category: CATEGORIES.includes(p.category) ? p.category : "Λοιπά",
           description: p.description || "", source: "photo_ocr", receipt_image_url: data.receipt_image_url,

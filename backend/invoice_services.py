@@ -5,6 +5,7 @@ so the same code path runs whether a human clicked a button or the scheduler
 decided it was time.
 """
 import os
+import asyncio
 import logging
 from datetime import datetime, timezone, date as _date
 
@@ -191,16 +192,20 @@ async def email_invoice(firm_id: str, invoice: dict, settings: dict, client: dic
 
 
 async def build_payment_link(invoice: dict, settings: dict) -> str:
-    """Create a Stripe Checkout link for the invoice, or '' when Stripe is not configured."""
+    """Create a Stripe Checkout link for the invoice, or '' when Stripe is not configured.
+
+    Χρεώνει το **οφειλόμενο** — πληρωτέο (μετά την παρακράτηση) μείον ό,τι έχει ήδη εξοφληθεί από
+    πελατολογικό λογαριασμό — δηλαδή το ίδιο ποσό που αναγράφει το email υπενθύμισης και που
+    χρεώνει το checkout της πύλης. Ένα μικρότερο ποσό στο email και ένα μεγαλύτερο στην κάρτα
+    σημαίνει ότι ο πελάτης πληρώνει δύο φορές το ίδιο.
+    """
     try:
         import stripe as _stripe
         api_key = os.environ.get("STRIPE_SECRET_KEY") or ""
         if not api_key or api_key.endswith("_emergent"):
             return ""
         _stripe.api_key = api_key
-        total = float(invoice.get("total", 0))
-        if settings.get("withholding_enabled", False) or invoice.get("withholding_amount") is not None:
-            total, _ = await payable_amount(invoice.get("firm_id", ""), invoice, settings)
+        total, _withheld = await outstanding_amount(invoice.get("firm_id", ""), invoice, settings)
         if total <= 0:
             return ""
         origin = settings.get("public_url") or os.environ.get("PUBLIC_URL") or os.environ.get("PREVIEW_ENDPOINT", "") or "https://example.com"
@@ -295,7 +300,14 @@ async def mark_paid(firm_id: str, invoice_id, paid_via: str = "manual") -> bool:
 
 # ------------------------------------------------ εξόφληση από τράπεζα ----
 
-AMOUNT_TOLERANCE = 0.01   # διαφορά μικρότερη από 1 λεπτό θεωρείται ίδιο ποσό
+# Τα ποσά συγκρίνονται σε ακέραια λεπτά (βλ. to_cents): «ίδιο ποσό» σημαίνει ίδιο μέχρι το λεπτό.
+
+
+def to_cents(value) -> int:
+    """Ποσό σε ακέραια λεπτά. Οι συγκρίσεις ποσών γίνονται σε λεπτά, όχι σε float: 100,01 − 100,00 δίνει
+    0,009999999999990905, δηλαδή «μικρότερο από 1 λεπτό» ενώ είναι ακριβώς ένα λεπτό διαφορά."""
+    from decimal import Decimal, ROUND_HALF_UP
+    return int((Decimal(str(value if value is not None else 0)) * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
 def _eur(v) -> str:
@@ -309,6 +321,20 @@ class SettlementRefused(Exception):
         super().__init__(message)
         self.reason = reason
         self.message = message
+
+
+async def close_tx_notifications(firm_id: str, tx_id, resolution: str, by: str = "system") -> int:
+    """Κλείνει τις ανοιχτές ειδοποιήσεις (reconcile_review / reconcile_conflict) μιας τραπεζικής κίνησης.
+
+    Καλείται όταν η κατάσταση της κίνησης αλλάζει με άλλον τρόπο (αγνόηση, χειροκίνητη συμφωνία,
+    αποδέσμευση από το Autopilot): αλλιώς η παλιά κάρτα έμενε ανοιχτή και το «Ναι, εξοφλήθηκε» πάνω της
+    δεν είχε πια νόημα.
+    """
+    result = await db.notifications.update_many(
+        firm_query(firm_id, {"entity": "bank_tx", "entity_id": str(tx_id), "resolved_at": None,
+                             "type": {"$in": ["reconcile_review", "reconcile_conflict"]}}),
+        {"$set": {"resolved_at": _now(), "resolved_by": by, "resolution": resolution, "read": True}})
+    return result.modified_count
 
 
 async def _claimed_by_other_deposit(firm_id: str, invoice_id: str, tx_id) -> bool:
@@ -371,7 +397,7 @@ async def apply_bank_payment(firm_id: str, tx: dict, invoice_id, *, settings: di
 
     due, _withheld = await outstanding_amount(firm_id, invoice, settings)
     difference = round(amount - due, 2)
-    exact = abs(difference) < AMOUNT_TOLERANCE
+    exact = to_cents(amount) == to_cents(due)
     if not exact and not accept_difference:
         return refuse(
             "amount_mismatch",
@@ -440,6 +466,26 @@ async def _previous_in_series(firm_id: str, prefix: str, year: int):
     return best
 
 
+ISSUE_CLAIM_TTL_SECONDS = 120   # μετά από crash ένα «κλείδωμα έκδοσης» λήγει μόνο του
+
+
+def not_being_issued() -> dict:
+    """Φίλτρο: το πρόχειρο δεν εκδίδεται αυτή τη στιγμή (δεν υπάρχει ζωντανό κλείδωμα έκδοσης)."""
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ISSUE_CLAIM_TTL_SECONDS)).isoformat()
+    return {"$or": [{"issue_claim_at": {"$exists": False}}, {"issue_claim_at": None},
+                    {"issue_claim_at": {"$lt": cutoff}}]}
+
+
+async def _release_issue_claim(firm_id: str, invoice_id, token: str) -> None:
+    try:
+        await db.invoices.update_one(
+            firm_query(firm_id, {"_id": invoice_id, "status": "draft", "issue_claim": token}),
+            {"$unset": {"issue_claim": "", "issue_claim_at": ""}})
+    except Exception:  # noqa: BLE001 — λήγει μόνο του μετά το TTL
+        logger.warning("Δεν αποδεσμεύτηκε το κλείδωμα έκδοσης του %s", invoice_id)
+
+
 async def issue_draft(firm_id: str, doc: dict, settings: dict) -> dict:
     """Μετατρέπει ένα πρόχειρο σε εκδοθέν παραστατικό και επιστρέφει το ενημερωμένο έγγραφο.
 
@@ -453,74 +499,140 @@ async def issue_draft(firm_id: str, doc: dict, settings: dict) -> dict:
 
     Ελέγχει επίσης την ημερομηνία: όχι μελλοντική, και όχι προγενέστερη του τελευταίου
     εκδοθέντος της ίδιας σειράς — αλλιώς η αρίθμηση παύει να είναι χρονολογική.
+
+    **Σειρά ενεργειών.** Πρώτα «κλειδώνεται» ατομικά το πρόχειρο, και μόνο ο νικητής παίρνει αριθμό.
+    Αν ο αριθμός δινόταν πριν από το κλείδωμα, δύο ταυτόχρονα αιτήματα (διπλό κλικ) θα έπαιρναν
+    δύο διαδοχικούς αριθμούς και ο χαμένος θα άφηνε κενό στη σειρά — που δεν μπορεί να
+    επιστραφεί αν στο μεταξύ εκδόθηκε άλλο παραστατικό. Ό,τι ελέγχεται και υπολογίζεται
+    (είδος, παρακράτηση, ημερομηνία, ποσό) προέρχεται από το κλειδωμένο έγγραφο, όχι από παλιά ανάγνωση.
     """
+    import uuid
     from pymongo import ReturnDocument
 
     if doc.get("status") != "draft":
         raise InvoiceWorkflowError("Μόνο πρόχειρα τιμολόγια μπορούν να εκδοθούν.")
-    client = await load_client(firm_id, doc)
-    invoice_type = resolve_invoice_type(doc, client or {})
 
-    try:
-        inv_date = _date.fromisoformat((doc.get("date") or "")[:10])
-    except ValueError:
-        raise InvoiceWorkflowError("Μη έγκυρη ημερομηνία παραστατικού — διορθώστε την πριν την έκδοση.")
-    today = athens_today()
-    if inv_date > today:
-        raise InvoiceWorkflowError(
-            f"Η ημερομηνία του παραστατικού ({inv_date:%d/%m/%Y}) είναι μελλοντική. Το παραστατικό φέρει "
-            "την ημερομηνία έκδοσής του· διορθώστε την ή εκδώστε το όταν έρθει η ημέρα."
-        )
-
-    # Πρόχειρο από παλαιότερη έκδοση της εφαρμογής: κρατά τον αριθμό που ήδη έχει.
-    number = (doc.get("number") or "").strip()
-    series = _series_of(number) if number else (series_prefix(invoice_type), inv_date.year)
-    if series:
-        previous = await _previous_in_series(firm_id, *series)
-        if previous:
-            try:
-                prev_date = _date.fromisoformat(previous[1])
-            except ValueError:
-                prev_date = None
-            # Μια μελλοντική ημερομηνία σε παλιό παραστατικό δεν πρέπει να μπλοκάρει για πάντα τη σειρά.
-            if prev_date and inv_date < min(prev_date, today):
-                raise InvoiceWorkflowError(
-                    f"Η ημερομηνία {inv_date:%d/%m/%Y} είναι προγενέστερη του τελευταίου εκδοθέντος της σειράς "
-                    f"({previous[2]} — {prev_date:%d/%m/%Y}). Η αρίθμηση πρέπει να ακολουθεί τη χρονολογική "
-                    f"σειρά· αλλάξτε την ημερομηνία του πρόχειρου σε {min(prev_date, today):%d/%m/%Y} ή αργότερα."
-                )
-
-    allocated = False
-    if not number:
-        number = await next_invoice_number(firm_id, series[0], series[1])
-        allocated = True
-
-    withheld = withholding_for(doc, settings, invoice_type, float(doc.get("subtotal") or 0))
+    token = uuid.uuid4().hex
     claimed = await db.invoices.find_one_and_update(
-        firm_query(firm_id, {"_id": doc["_id"], "status": "draft"}),
-        {"$set": {"status": "issued", "issued_at": _now(), "number": number,
-                  "invoice_type": invoice_type, "withholding_amount": withheld}},
+        firm_query(firm_id, {"_id": doc["_id"], "status": "draft", **not_being_issued()}),
+        {"$set": {"issue_claim": token, "issue_claim_at": _now()}},
         return_document=ReturnDocument.AFTER,
     )
-    if claimed is None:          # άλλο αίτημα πρόλαβε την έκδοση (π.χ. διπλό κλικ)
-        if allocated:
-            await release_invoice_number(firm_id, number)
-        raise InvoiceWorkflowError("Το τιμολόγιο έχει ήδη εκδοθεί.")
-    return claimed
+    if claimed is None:      # εκδόθηκε ήδη, διαγράφηκε, ή το εκδίδει αυτή τη στιγμή άλλο αίτημα (π.χ. διπλό κλικ)
+        raise InvoiceWorkflowError("Το τιμολόγιο έχει ήδη εκδοθεί ή εκδίδεται αυτή τη στιγμή.")
+
+    allocated = ""
+    try:
+        doc = claimed
+        client = await load_client(firm_id, doc)
+        invoice_type = resolve_invoice_type(doc, client or {})
+
+        total = float(doc.get("total") or 0)
+        if invoice_type == TYPE_CREDIT_NOTE or doc.get("credit_note_for"):
+            if total >= 0:
+                raise InvoiceWorkflowError("Το πιστωτικό τιμολόγιο πρέπει να έχει αρνητικό σύνολο.")
+        elif total <= 0:
+            raise InvoiceWorkflowError("Το σύνολο του τιμολογίου πρέπει να είναι θετικό για να εκδοθεί.")
+
+        try:
+            inv_date = _date.fromisoformat((doc.get("date") or "")[:10])
+        except ValueError:
+            raise InvoiceWorkflowError("Μη έγκυρη ημερομηνία παραστατικού — διορθώστε την πριν την έκδοση.")
+        today = athens_today()
+        if inv_date > today:
+            raise InvoiceWorkflowError(
+                f"Η ημερομηνία του παραστατικού ({inv_date:%d/%m/%Y}) είναι μελλοντική. Το παραστατικό φέρει "
+                "την ημερομηνία έκδοσής του· διορθώστε την ή εκδώστε το όταν έρθει η ημέρα."
+            )
+
+        # Πρόχειρο από παλαιότερη έκδοση της εφαρμογής: κρατά τον αριθμό που ήδη έχει.
+        number = (doc.get("number") or "").strip()
+        series = _series_of(number) if number else (series_prefix(invoice_type), inv_date.year)
+        if series:
+            previous = await _previous_in_series(firm_id, *series)
+            if previous:
+                try:
+                    prev_date = _date.fromisoformat(previous[1])
+                except ValueError:
+                    prev_date = None
+                # Μια μελλοντική ημερομηνία σε παλιό παραστατικό δεν πρέπει να μπλοκάρει για πάντα τη σειρά.
+                if prev_date and inv_date < min(prev_date, today):
+                    raise InvoiceWorkflowError(
+                        f"Η ημερομηνία {inv_date:%d/%m/%Y} είναι προγενέστερη του τελευταίου εκδοθέντος της σειράς "
+                        f"({previous[2]} — {prev_date:%d/%m/%Y}). Η αρίθμηση πρέπει να ακολουθεί τη χρονολογική "
+                        f"σειρά· αλλάξτε την ημερομηνία του πρόχειρου σε {min(prev_date, today):%d/%m/%Y} ή αργότερα."
+                    )
+
+        if not number:
+            number = allocated = await next_invoice_number(firm_id, series[0], series[1])
+
+        withheld = withholding_for(doc, settings, invoice_type, float(doc.get("subtotal") or 0))
+        issued = await db.invoices.find_one_and_update(
+            firm_query(firm_id, {"_id": doc["_id"], "status": "draft", "issue_claim": token}),
+            {"$set": {"status": "issued", "issued_at": _now(), "number": number,
+                      "invoice_type": invoice_type, "withholding_amount": withheld},
+             "$unset": {"issue_claim": "", "issue_claim_at": ""}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if issued is None:   # το κλείδωμα χάθηκε (έληξε και το πήρε άλλο αίτημα, ή διαγράφηκε το πρόχειρο)
+            raise InvoiceWorkflowError("Το τιμολόγιο έχει ήδη εκδοθεί ή δεν υπάρχει πια.")
+        return issued
+    except BaseException:
+        # Και σε ακύρωση του αιτήματος (CancelledError): η αποδέσμευση ολοκληρώνεται ούτως ή άλλως.
+        async def cleanup():
+            await _release_issue_claim(firm_id, doc["_id"], token)
+            if allocated:
+                await release_invoice_number(firm_id, allocated)
+        await asyncio.shield(cleanup())
+        raise
+
+
+async def _warn_trust_money(firm_id: str, invoice: dict, what: str) -> None:
+    """Ειδοποίηση όταν ακυρώνεται/πιστώνεται τιμολόγιο που έχει εξοφληθεί (και) από πελατολογικό λογαριασμό.
+
+    Η εφαρμογή δεν επιστρέφει μόνη της χρήματα πελάτη στον λογαριασμό του: ποιο ποσό δικαιούται
+    ο πελάτης (όλο, μέρος, τίποτα — π.χ. μερικό πιστωτικό) είναι απόφαση του γραφείου. Δεν πρέπει
+    όμως να περάσει απαρατήρητο, γιατί τα χρήματα του πελάτη έχουν ήδη αφαιρεθεί από το υπόλοιπό του.
+    """
+    applied = round(float(invoice.get("trust_applied") or 0), 2)
+    if applied <= 0:
+        return
+    from automation import notify
+    number = invoice.get("number") or "τιμολόγιο"
+    try:
+        await notify(
+            firm_id, "trust_money_stranded", "critical",
+            f"{what} το {number} που είχε εξοφληθεί με {_eur(applied)} από πελατολογικό λογαριασμό",
+            f"Ο πελάτης «{invoice.get('client_name') or ''}» είχε καλύψει {_eur(applied)} του {number} από τα χρήματα που "
+            "κρατά το γραφείο γι' αυτόν. Το ποσό ΔΕΝ επιστρέφεται αυτόματα στον πελατολογικό λογαριασμό: αποφασίστε αν "
+            "δικαιούται επιστροφή και καταχωρίστε την (κατάθεση στον λογαριασμό του ή επιστροφή στον πελάτη).",
+            entity="invoice", entity_id=str(invoice["_id"]), requires_action=True,
+            dedupe_key=f"trust_money_stranded:{invoice['_id']}")
+    except Exception:  # noqa: BLE001 — η ειδοποίηση δεν πρέπει να μπλοκάρει την ακύρωση/το πιστωτικό
+        logger.exception("Δεν καταχωρήθηκε ειδοποίηση πελατολογικού για το %s", invoice.get("number"))
 
 
 async def cancel_in_mydata(firm_id: str, invoice: dict, settings: dict) -> dict:
     """Ακυρώνει το παραστατικό στην ΑΑΔΕ και σημειώνει το τιμολόγιο ως ακυρωμένο.
 
-    Η ακύρωση επιτρέπεται μόνο για διαβιβασμένα (synced) και μη εξοφλημένα
-    παραστατικά· για εξοφλημένα ο σωστός δρόμος είναι πιστωτικό τιμολόγιο.
+    Η ακύρωση επιτρέπεται μόνο για εκδοθέντα (και, αν έχουν διαβιβαστεί, διαβιβασμένα) και μη
+    εξοφλημένα παραστατικά· για εξοφλημένα ο σωστός δρόμος είναι πιστωτικό τιμολόγιο. Το πρόχειρο
+    δεν ακυρώνεται (δεν είναι παραστατικό — διαγράφεται) και όταν υπάρχει πιστωτικό για το
+    τιμολόγιο η διόρθωση γίνεται από αυτό, όχι με δεύτερη αναίρεση.
     """
+    if invoice.get("status") == "draft":
+        raise InvoiceWorkflowError("Το πρόχειρο δεν ακυρώνεται· διαγράψτε το.")
     if invoice.get("status") == "paid":
         raise InvoiceWorkflowError(
             "Το τιμολόγιο είναι εξοφλημένο — δεν ακυρώνεται. Εκδώστε πιστωτικό τιμολόγιο."
         )
     if invoice.get("status") == "cancelled":
         raise InvoiceWorkflowError("Το τιμολόγιο είναι ήδη ακυρωμένο.")
+    if invoice.get("credit_note_id"):
+        raise InvoiceWorkflowError(
+            "Για το τιμολόγιο υπάρχει πιστωτικό· η διόρθωση γίνεται από το πιστωτικό. "
+            "Αν δεν χρειάζεται πια, διαγράψτε το πρόχειρο πιστωτικό πρώτα."
+        )
 
     update = {"status": "cancelled", "cancelled_at": _now()}
     if invoice.get("mydata_status") == "synced" and invoice.get("mydata_mark"):
@@ -536,6 +648,7 @@ async def cancel_in_mydata(firm_id: str, invoice: dict, settings: dict) -> dict:
             "mydata_cancelled_at": _now(),
         })
     await db.invoices.update_one(firm_query(firm_id, {"_id": invoice["_id"]}), {"$set": update})
+    await _warn_trust_money(firm_id, invoice, "Ακυρώθηκε")
     return update
 
 
@@ -612,4 +725,5 @@ async def build_credit_note(firm_id: str, invoice: dict, user_email: str,
         firm_query(firm_id, {"_id": invoice["_id"]}),
         {"$set": {"credit_note_id": str(result.inserted_id)}},
     )
+    await _warn_trust_money(firm_id, invoice, "Εκδίδεται πιστωτικό για")
     return await db.invoices.find_one(firm_query(firm_id, {"_id": result.inserted_id}))

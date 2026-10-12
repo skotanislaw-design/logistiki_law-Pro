@@ -16,6 +16,25 @@ router = APIRouter(prefix="/expenses", tags=["expenses"])
 DUPLICATE_MARK_MSG = "Υπάρχει ήδη έξοδο με αυτό το MARK της ΑΑΔΕ· το ίδιο παραστατικό δεν καταχωρείται δύο φορές."
 
 
+async def _refuse_duplicate_mark(user: dict, mark, exclude_id: str | None = None) -> None:
+    """Το ίδιο MARK δεν καταχωρείται δύο φορές στο ίδιο γραφείο.
+
+    Ο έλεγχος γίνεται εδώ και όχι μόνο από το unique index της βάσης: αν το index δεν μπορέσει να
+    δημιουργηθεί (π.χ. υπάρχοντα διπλά στα δεδομένα) η εφαρμογή ξεκινά ούτως ή άλλως, και η
+    μοναδικότητα πρέπει να ισχύει. Το index μένει ως δεύτερη γραμμή άμυνας για ταυτόχρονα αιτήματα.
+    """
+    if not mark:
+        return
+    query = {"mydata_mark": mark}
+    if exclude_id:
+        try:
+            query["_id"] = {"$ne": ObjectId(exclude_id)}
+        except Exception:  # noqa: BLE001 — το άκυρο id απορρίπτεται παρακάτω ως «δεν βρέθηκε»
+            pass
+    if await db.expenses.find_one(tenant_query(user, query)):
+        raise HTTPException(status_code=409, detail=DUPLICATE_MARK_MSG)
+
+
 @router.get("")
 async def list_expenses(user: dict = Depends(get_current_user)):
     docs = await db.expenses.find(tenant_query(user)).sort("created_at", -1).to_list(1000)
@@ -27,6 +46,7 @@ async def create_expense(payload: Expense, user: dict = Depends(get_current_user
     payload.id = None
     payload.firm_id = firm_id_for(user)
     payload.created_by = user["email"]
+    await _refuse_duplicate_mark(user, payload.mydata_mark)
     try:
         result = await db.expenses.insert_one(payload.to_mongo())
     except DuplicateKeyError:
@@ -41,6 +61,7 @@ async def update_expense(expense_id: str, payload: Expense, user: dict = Depends
     data = payload.to_mongo()
     data.pop("_id", None)
     data.pop("firm_id", None)
+    await _refuse_duplicate_mark(user, payload.mydata_mark, exclude_id=expense_id)
     try:
         result = await db.expenses.update_one(tenant_query(user, {"_id": ObjectId(expense_id)}), {"$set": data})
     except DuplicateKeyError:

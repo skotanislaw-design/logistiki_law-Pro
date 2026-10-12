@@ -9,6 +9,7 @@ import { TrendUp, TrendDown, Receipt, Clock, CloudArrowUp, Info, Robot } from "@
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
+import { invoiceLabel } from "@/lib/utils";
 
 function StatCard({ label, value, icon: Icon, testid, tone = "default", hint }) {
   const toneClass = {
@@ -157,7 +158,7 @@ export default function Dashboard() {
             {data.recent_invoices.map((inv) => (
               <div key={inv.id} className="flex items-center justify-between py-2.5 text-sm">
                 <div>
-                  <p className="font-medium">{inv.number}</p>
+                  <p className="font-medium">{invoiceLabel(inv)}</p>
                   <p className="text-muted-foreground text-xs">{inv.client_name}</p>
                 </div>
                 <span className="font-mono">{money(inv.total)}</span>

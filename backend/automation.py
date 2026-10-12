@@ -39,7 +39,7 @@ from email_utils import smtp_ready, send_email_with_pdf
 from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
     email_invoice, send_reminder, transmit_to_mydata, mark_paid, load_client, InvoiceEmailError, firm_query,
-    apply_bank_payment, SettlementRefused,
+    apply_bank_payment, SettlementRefused, close_tx_notifications, to_cents,
 )
 import outbox
 
@@ -155,10 +155,29 @@ async def resolve_notification(firm_id: str, notification_id: str, user_email: s
         if tx and tx.get("match_status") in ("auto_confirmed", "manual_matched"):
             outcome = "already_settled"          # στο μεταξύ συμφωνήθηκε αλλιώς· η ειδοποίηση είναι παλιά
         elif tx:
-            if decision == "confirm" and tx.get("matched_invoice_id"):
+            if decision == "confirm" and not tx.get("matched_invoice_id"):
+                # Η κίνηση δεν έχει πια προτεινόμενο τιμολόγιο (αποδεσμεύτηκε, αγνοήθηκε): η κάρτα είναι παλιά
+                # και το «Ναι, εξοφλήθηκε» δεν θα έκανε τίποτα — δεν το παρουσιάζουμε ως επιβεβαίωση.
+                outcome = "stale"
+            elif decision == "confirm":
                 # Το «Ναι, εξοφλήθηκε» είναι ρητή απόφαση ανθρώπου: δέχεται και διαφορά ποσού (που
-                # αναγράφεται στην ειδοποίηση). Δεν δέχεται τιμολόγιο που δεν είναι πια ανοιχτό.
+                # αναγράφεται στην ειδοποίηση). Δεν δέχεται τιμολόγιο που δεν είναι πια ανοιχτό, ούτε
+                # οφειλόμενο διαφορετικό από αυτό που είδε ο άνθρωπος (π.χ. εξόφληση από πελατολογικό
+                # αφού δημιουργήθηκε η κάρτα) — η απόφασή του αφορούσε άλλο ποσό.
                 settings = await db.settings.find_one(firm_query(firm_id)) or {}
+                check = await apply_bank_payment(
+                    firm_id, tx, tx["matched_invoice_id"], settings=settings, paid_via="bank_manual",
+                    status_on_success="manual_matched", accept_difference=True, dry_run=True)
+                if check["status"] == "refused":
+                    raise SettlementRefused(check["reason"], check["message"])
+                seen_due = tx.get("review_due")
+                if seen_due is not None and to_cents(check["due"]) != to_cents(seen_due):
+                    raise SettlementRefused(
+                        "due_changed",
+                        f"Το οφειλόμενο του τιμολογίου άλλαξε από {_fmt(seen_due)} σε {_fmt(check['due'])} από τότε που "
+                        "δημιουργήθηκε η ειδοποίηση — δεν εξοφλήθηκε τίποτα. Ελέγξτε την κατάθεση: μπορεί να πρόκειται "
+                        "για διπλοπληρωμή ή για πληρωμή άλλου τιμολογίου. Επιλέξτε «Όχι, άλλο τιμολόγιο» ή «Αγνόησε την "
+                        "κίνηση» και αποφασίστε με τον λογιστή τι θα γίνει με το ποσό.")
                 result = await apply_bank_payment(
                     firm_id, tx, tx["matched_invoice_id"], settings=settings, paid_via="bank_manual",
                     status_on_success="manual_matched", accept_difference=True)
@@ -454,6 +473,8 @@ async def job_reconcile(firm_id: str, settings: dict) -> dict:
             await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {
                 "match_status": "unmatched", "matched_invoice_id": None, "matched_invoice_number": None,
                 "match_confidence": 0, "match_ambiguous": False}})
+            # Η προηγούμενη κάρτα ελέγχου (αν υπήρχε) αφορούσε σύνδεση που δεν υπάρχει πια.
+            await close_tx_notifications(firm_id, tx["_id"], "superseded", "autopilot")
             review += 1
             await notify(firm_id, "reconcile_conflict", "warning",
                          f"Η κατάθεση {_fmt(tx.get('amount'))} δεν συνδέθηκε με το {tx.get('matched_invoice_number')}",
@@ -471,7 +492,8 @@ async def job_reconcile(firm_id: str, settings: dict) -> dict:
             else:
                 why = f"Η βεβαιότητα ({tx.get('match_confidence')}%) είναι κάτω από το όριο αυτόματης εξόφλησης ({threshold}%)."
             review += 1
-            await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"review_notified": True}})
+            await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {
+                "review_notified": True, "review_due": result.get("due")}})
             await notify(firm_id, "reconcile_review", "warning",
                          f"Ταιριάζει η κατάθεση {_fmt(tx.get('amount'))} με το {tx.get('matched_invoice_number')};",
                          f"{tx.get('date')} — «{(tx.get('description') or '')[:80]}» (βεβαιότητα {tx.get('match_confidence')}%). {why}",
@@ -846,7 +868,7 @@ async def job_bank_sync(firm_id: str, settings: dict) -> dict:
     from openbanking import (
         openbanking_ready, fetch_transactions, requisition_expiring, OpenBankingError,
     )
-    from routes_bank import match_details, build_match_pool
+    from routes_bank import match_details, build_match_pool, reserves_invoice
     from models import BankTransaction
 
     if not settings.get("openbanking_enabled") or not openbanking_ready(settings):
@@ -905,7 +927,8 @@ async def job_bank_sync(firm_id: str, settings: dict) -> dict:
             created += 1
             if match is not None:
                 matched += 1
-                pool = [i for i in pool if i is not match]      # δεσμεύεται από αυτή την κίνηση
+                if reserves_invoice(found["confidence"], found["ambiguous"]):
+                    pool = [i for i in pool if i is not match]      # ισχυρή πρόταση: δεσμεύεται από αυτή την κίνηση
 
     await db.settings.update_one(firm_query(firm_id), {"$set": {"bank_sync_last_date": _date.today().isoformat()}})
     if created:

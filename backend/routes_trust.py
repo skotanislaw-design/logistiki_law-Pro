@@ -11,9 +11,12 @@
   τιμολόγιο ανήκει στον ίδιο πελάτη, είναι ανοιχτό και ότι το ποσό δεν υπερβαίνει το οφειλόμενο.
 
 Η MongoDB (standalone) δεν έχει πολυ-εγγραφικές συναλλαγές· οι κινήσεις που αγγίζουν περισσότερα
-από ένα έγγραφα εκτελούνται με σταθερή σειρά (τιμολόγιο → λογαριασμός → εγγραφή στο ledger) και
-αναιρούνται αντίστροφα αν κάποιο βήμα αποτύχει.
+από ένα έγγραφα εκτελούνται με σταθερή σειρά (λογαριασμός → τιμολόγιο → εγγραφή στο ledger →
+κλείσιμο τιμολογίου) και αναιρούνται αντίστροφα αν κάποιο βήμα αποτύχει — ακόμη και αν το αίτημα
+ακυρωθεί στη μέση. Ο λογαριασμός χρεώνεται **πρώτος**: η συνηθισμένη άρνηση (ανεπαρκές υπόλοιπο)
+συμβαίνει πριν αγγιχτεί το τιμολόγιο, ώστε κανένα άλλο αίτημα να μη δει «μισή» εξόφληση.
 """
+import asyncio
 import logging
 import math
 import re
@@ -165,8 +168,13 @@ async def _load_client(client_id: str, user: dict) -> dict:
 
 
 async def _ensure_account(client_id: str, user: dict):
-    """Επιστρέφει (ObjectId, TrustAccount) του πελάτη, τον δημιουργεί αν λείπει."""
+    """Επιστρέφει (ObjectId, TrustAccount) του πελάτη, τον δημιουργεί αν λείπει.
+
+    Το `client_id` αποθηκεύεται πάντα στην κανονική του μορφή (πεζά hex του ObjectId): το ίδιο id με
+    κεφαλαία θα έφτιαχνε δεύτερο λογαριασμό για τον ίδιο πελάτη.
+    """
     client = await _load_client(client_id, user)
+    client_id = str(client["_id"])
     query = tenant_query(user, {"client_id": client_id})
     doc = await db.trust_accounts.find_one(query)
     if not doc:
@@ -228,12 +236,12 @@ async def get_account(client_id: str, user: dict = Depends(get_current_user)):
 @router.get("/accounts/{client_id}/open-invoices")
 async def open_invoices(client_id: str, user: dict = Depends(get_current_user)):
     """Τα ανοιχτά τιμολόγια του πελάτη με το ποσό που οφείλεται πραγματικά (μετά την παρακράτηση)."""
-    await _load_client(client_id, user)
+    client = await _load_client(client_id, user)
     settings = await db.settings.find_one(tenant_query(user)) or {}
     firm_id = firm_id_for(user)
     rows = []
     async for inv in db.invoices.find(
-        tenant_query(user, {"client_id": client_id, "status": "issued", "credit_note_for": None})
+        tenant_query(user, {"client_id": str(client["_id"]), "status": "issued", "credit_note_for": None})
     ).sort("date", 1):
         payable, _ = await payable_amount(firm_id, inv, settings)
         due, _ = await outstanding_amount(firm_id, inv, settings)
@@ -249,6 +257,15 @@ async def open_invoices(client_id: str, user: dict = Depends(get_current_user)):
 
 # --------------------------------------------------------------- κινήσεις ----
 
+async def _alert_stuck(firm_id: str, title: str, message: str, entity_id: str, dedupe: str) -> None:
+    try:
+        from automation import notify
+        await notify(firm_id, "trust_needs_review", "critical", title, message, entity="invoice",
+                     entity_id=entity_id, requires_action=True, dedupe_key=dedupe)
+    except Exception:  # noqa: BLE001
+        logger.exception("Δεν καταχωρήθηκε ειδοποίηση πελατολογικού: %s", title)
+
+
 @router.post("/transactions")
 async def create_transaction(payload: TransactionPayload, user: dict = Depends(get_current_user)):
     amount = _amount(payload.amount)
@@ -258,12 +275,13 @@ async def create_transaction(payload: TransactionPayload, user: dict = Depends(g
     case_ref = (payload.case_id or "").strip() or None
 
     acc_id, account = await _ensure_account(payload.client_id, user)
+    client_id = account.client_id           # κανονική μορφή id (βλ. _ensure_account)
 
     invoice, payable, invoice_number, label = None, None, None, ""
     if payload.type == "apply_to_invoice" and not invoice_ref:
         raise HTTPException(status_code=400, detail="Για εξόφληση τιμολογίου επιλέξτε το τιμολόγιο.")
     if invoice_ref:
-        invoice = await _client_invoice(invoice_ref, payload.client_id, user)
+        invoice = await _client_invoice(invoice_ref, client_id, user)
         invoice_number = invoice.get("number") or None
         label = f" {invoice_number}" if invoice_number else ""
         if payload.type == "apply_to_invoice":
@@ -286,10 +304,46 @@ async def create_transaction(payload: TransactionPayload, user: dict = Depends(g
         if not case:
             raise HTTPException(status_code=404, detail="Η υπόθεση δεν βρέθηκε")
 
-    # Σειρά: τιμολόγιο → λογαριασμός → ledger. Αν δεν χωρέσει το ποσό στον λογαριασμό, το
-    # τιμολόγιο δεν έχει ακόμη πειραχτεί· αν το ledger αποτύχει, αναιρούνται και τα δύο.
-    claimed = moved = False
+    # Σειρά: λογαριασμός → τιμολόγιο → ledger → κλείσιμο τιμολογίου. Αν δεν χωρέσει το ποσό στον
+    # λογαριασμό, το τιμολόγιο δεν έχει ακόμη πειραχτεί· αν κάτι αποτύχει αργότερα, αναιρούνται όλα.
+    state = {"moved": False, "claimed": False, "ledger_id": None}
+
+    async def undo() -> bool:
+        """Αναιρεί ό,τι έχει γίνει ως τώρα. False = η αναίρεση απέτυχε και θέλει χειροκίνητο έλεγχο."""
+        ok = True
+        if state["claimed"]:
+            try:
+                await _cas_update(db.invoices, tenant_query(user, {"_id": invoice["_id"]}), _applied_delta(-amount))
+            except Exception:  # noqa: BLE001
+                ok = False
+                logger.exception("Αποτυχία αναίρεσης εφαρμογής στο τιμολόγιο %s", invoice_number)
+        if state["ledger_id"] is not None:
+            try:
+                await db.trust_transactions.delete_one({"_id": state["ledger_id"]})
+            except Exception:  # noqa: BLE001
+                ok = False
+                logger.exception("Αποτυχία αναίρεσης εγγραφής ledger")
+        if state["moved"]:
+            try:
+                await _cas_update(db.trust_accounts, tenant_query(user, {"_id": acc_id}),
+                                  _account_delta(payload.type, amount, undo=True))
+            except Exception:  # noqa: BLE001
+                ok = False
+                logger.exception("Αποτυχία αναίρεσης κίνησης λογαριασμού")
+        if not ok:
+            await _alert_stuck(
+                firm_id, f"Κίνηση πελατολογικού {amount:.2f} € που δεν αναιρέθηκε πλήρως",
+                f"Μια κίνηση ({payload.type}) για τον «{account.client_name}» απέτυχε στη μέση και η αυτόματη αναίρεση δεν "
+                f"ολοκληρώθηκε. Ελέγξτε το υπόλοιπο του λογαριασμού, το ledger και το τιμολόγιο{label} πριν συνεχίσετε.",
+                str(invoice["_id"]) if invoice else "", f"trust_undo:{acc_id}:{state['ledger_id']}:{amount}")
+        return ok
+
     try:
+        updated = await _cas_update(
+            db.trust_accounts, tenant_query(user, {"_id": acc_id}), _account_delta(payload.type, amount))
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Ο λογαριασμός δεν βρέθηκε")
+        state["moved"] = True
         claim = None
         if payload.type == "apply_to_invoice":
             claim = await _cas_update(
@@ -297,15 +351,10 @@ async def create_transaction(payload: TransactionPayload, user: dict = Depends(g
                 _applied_delta(amount, payable))
             if claim is None:
                 raise HTTPException(status_code=409, detail="Το τιμολόγιο δεν είναι πλέον ανοιχτό.")
-            claimed = True
-        updated = await _cas_update(
-            db.trust_accounts, tenant_query(user, {"_id": acc_id}), _account_delta(payload.type, amount))
-        if updated is None:
-            raise HTTPException(status_code=404, detail="Ο λογαριασμός δεν βρέθηκε")
-        moved = True
+            state["claimed"] = True
         tx = TrustTransaction(
             account_id=str(acc_id),
-            client_id=payload.client_id,
+            client_id=client_id,
             client_name=account.client_name or "",
             type=payload.type,
             amount=float(amount),
@@ -319,27 +368,29 @@ async def create_transaction(payload: TransactionPayload, user: dict = Depends(g
             created_by=user["email"],
         )
         tx.firm_id = firm_id
-        await db.trust_transactions.insert_one(tx.to_mongo())
-    except Exception:
-        if moved:
-            await _cas_update(db.trust_accounts, tenant_query(user, {"_id": acc_id}),
-                              _account_delta(payload.type, amount, undo=True))
-        if claimed:
-            await _cas_update(db.invoices, tenant_query(user, {"_id": invoice["_id"]}),
-                              _applied_delta(-amount))
-        raise
+        state["ledger_id"] = (await db.trust_transactions.insert_one(tx.to_mongo())).inserted_id
 
-    message, extra = "Η κίνηση καταχωρήθηκε", {}
-    if claim is not None:
-        remaining = payable - _dec(claim.get("trust_applied"))
-        if remaining <= 0:
-            paid = await mark_paid(firm_id, invoice["_id"], paid_via="trust")
-            if not paid:
-                logger.warning("Τιμολόγιο %s: εξοφλήθηκε πλήρως από πελατολογικό αλλά δεν άλλαξε κατάσταση", invoice_number)
-            message = f"Η κίνηση καταχωρήθηκε και το τιμολόγιο{label} εξοφλήθηκε."
-        else:
-            message = f"Η κίνηση καταχωρήθηκε. Απομένουν {remaining:.2f} € για το τιμολόγιο{label}."
-        extra = {"invoice_paid": remaining <= 0, "invoice_outstanding": float(max(remaining, Decimal(0)))}
+        message, extra = "Η κίνηση καταχωρήθηκε", {}
+        if claim is not None:
+            remaining = payable - _dec(claim.get("trust_applied"))
+            if remaining <= 0:
+                closed = await mark_paid(firm_id, invoice["_id"], paid_via="trust")
+                if not closed:
+                    # Στο μεταξύ το τιμολόγιο εξοφλήθηκε από άλλη πηγή (τράπεζα, κάρτα, χειροκίνητα) ή
+                    # ακυρώθηκε. Τα χρήματα του πελάτη δεν πρέπει να χρεωθούν δεύτερη φορά: αναιρούμε.
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Το τιμολόγιο{label} δεν ήταν πια ανοιχτό όταν ολοκληρωνόταν η εξόφληση (εξοφλήθηκε "
+                               "αλλιώς ή ακυρώθηκε). Η κίνηση αναιρέθηκε· τα χρήματα παραμένουν στον λογαριασμό.")
+                message = f"Η κίνηση καταχωρήθηκε και το τιμολόγιο{label} εξοφλήθηκε."
+            else:
+                message = f"Η κίνηση καταχωρήθηκε. Απομένουν {remaining:.2f} € για το τιμολόγιο{label}."
+            extra = {"invoice_paid": remaining <= 0, "invoice_outstanding": float(max(remaining, Decimal(0)))}
+    except BaseException:
+        # BaseException + shield: και αν το αίτημα ακυρωθεί (αποσύνδεση client, shutdown) στη μέση,
+        # η αναίρεση ολοκληρώνεται — αλλιώς θα έμενε χρέωση χωρίς εγγραφή ή εφαρμογή χωρίς χρέωση.
+        await asyncio.shield(undo())
+        raise
 
     final = await db.trust_accounts.find_one(tenant_query(user, {"_id": acc_id}))
     return {

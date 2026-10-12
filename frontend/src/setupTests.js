@@ -27,6 +27,16 @@ if (!window.ResizeObserver) {
   };
 }
 
+// Το Radix Select (λίστες επιλογής) καλεί API δείκτη και κύλισης που το jsdom δεν υλοποιεί.
+for (const [name, impl] of [
+  ["hasPointerCapture", () => false],
+  ["setPointerCapture", () => {}],
+  ["releasePointerCapture", () => {}],
+  ["scrollIntoView", () => {}],
+]) {
+  if (!Element.prototype[name]) Element.prototype[name] = impl;
+}
+
 // Κάθε αίτημα χωρίς handler είναι σφάλμα: ένα test που περνά επειδή σιωπηλά δεν χτύπησε
 // το δίκτυο δεν αποδεικνύει τίποτα.
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));

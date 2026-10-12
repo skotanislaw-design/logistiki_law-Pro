@@ -179,10 +179,23 @@ def test_future_date_cannot_be_issued_and_burns_no_number(client, office):
     assert ok["number"] == f"ΤΠΥ-{year}-0001"
 
 
-def test_date_before_the_previous_number_is_refused_until_corrected(client, office):
+@pytest.fixture()
+def frozen_today(monkeypatch):
+    """Παγώνει το «σήμερα» (Αθήνα) στις 15/06/2026 — τα σενάρια με ημερομηνίες δεν εξαρτώνται από το πότε τρέχουν."""
+    import tax_utils
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(tax_utils, "datetime", FakeDateTime)
+    assert athens_today() == date(2026, 6, 15)
+    return date(2026, 6, 15)
+
+
+def test_date_before_the_previous_number_is_refused_until_corrected(client, office, frozen_today):
     today = athens_today()
-    if today.day <= 5:           # χρειάζεται ημερομηνία «πριν» μέσα στον ίδιο μήνα/έτος για απλότητα
-        pytest.skip("το σενάριο θέλει ημέρα > 5 του μήνα για ημερομηνία στο παρελθόν του ίδιου έτους")
     first = _issue(client, _draft(client, office.company)["id"]).json()
     older = _draft(client, office.company, when=(today - timedelta(days=5)).isoformat())
     r = _issue(client, older["id"])

@@ -39,6 +39,7 @@ export default function Invoices() {
   const [sendingId, setSendingId] = useState(null);
   const [reminderId, setReminderId] = useState(null);
   const [workingId, setWorkingId] = useState(null);
+  const [issuingId, setIssuingId] = useState(null);
   const [markingPaidId, setMarkingPaidId] = useState(null);
   const [filter, setFilter] = useState("all");
   const mediaRef = useState({ recorder: null, chunks: [] })[0];
@@ -154,7 +155,7 @@ export default function Invoices() {
     if (!window.confirm(`Δημιουργία πιστωτικού τιμολογίου για το ${invoiceLabel(inv)};`)) return;
     setWorkingId(inv.id);
     try {
-      const { data } = await axios.post(`${API}/invoices/${inv.id}/credit-note`, { reason: "" });
+      await axios.post(`${API}/invoices/${inv.id}/credit-note`, { reason: "" });
       toast.success("Δημιουργήθηκε πρόχειρο πιστωτικό· εκδώστε το για να λάβει αριθμό");
       load();
     } catch (e) {
@@ -191,13 +192,24 @@ export default function Invoices() {
   };
 
   const issueInvoice = async (id) => {
+    // Ένα κλικ = μία έκδοση: το δεύτερο κλικ, όσο το πρώτο αίτημα τρέχει, δεν στέλνεται καν.
+    if (issuingId) return;
+    setIssuingId(id);
     try {
       const { data } = await axios.post(`${API}/invoices/${id}/issue`);
-      toast.success("Το τιμολόγιο εκδόθηκε και στάλθηκε (mock) στο myDATA");
+      if (data.mydata_status === "synced") {
+        const mock = String(data.mydata_mark || "").startsWith("MOCK-");
+        toast.success(mock ? "Το τιμολόγιο εκδόθηκε και διαβιβάστηκε (προσομοίωση) στο myDATA"
+                           : "Το τιμολόγιο εκδόθηκε και διαβιβάστηκε στο myDATA");
+      } else {
+        toast.success("Το τιμολόγιο εκδόθηκε· η διαβίβαση στο myDATA εκκρεμεί και θα γίνει αυτόματα");
+      }
       load();
       downloadPdf(data);
     } catch (e) {
       toast.error(errMsg(e));
+    } finally {
+      setIssuingId(null);
     }
   };
 
@@ -416,7 +428,7 @@ export default function Invoices() {
                           size="icon"
                           onClick={() => createCreditNote(inv)}
                           disabled={workingId === inv.id}
-                          title="Έκδοση πιστωτικού τιμολογίου (myDATA 5.1)"
+                          title="Δημιουργία πρόχειρου πιστωτικού τιμολογίου (myDATA 5.1)"
                           data-testid={`credit-note-${inv.id}`}
                         >
                           <ArrowUUpLeft size={16} />
@@ -428,7 +440,7 @@ export default function Invoices() {
                     <>
                       <Button variant="ghost" size="icon" onClick={() => openEdit(inv)} data-testid={`edit-invoice-${inv.id}`}><PencilSimple size={16} /></Button>
                       <Button variant="ghost" size="icon" onClick={() => deleteInvoice(inv.id)} data-testid={`delete-invoice-${inv.id}`}><Trash size={16} /></Button>
-                      <Button size="sm" variant="outline" onClick={() => issueInvoice(inv.id)} data-testid={`issue-invoice-${inv.id}`}>Έκδοση</Button>
+                      <Button size="sm" variant="outline" onClick={() => issueInvoice(inv.id)} disabled={!!issuingId} data-testid={`issue-invoice-${inv.id}`}>{issuingId === inv.id ? "..." : "Έκδοση"}</Button>
                     </>
                   )}
                 </TableCell>

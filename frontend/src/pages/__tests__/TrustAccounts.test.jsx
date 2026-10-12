@@ -115,3 +115,83 @@ describe("Πελατολογικοί λογαριασμοί", () => {
     expect(await screen.findByText(/Ανεπαρκές υπόλοιπο/)).toBeInTheDocument();
   });
 });
+
+describe("Εξόφληση τιμολογίου από πελατολογικό — πρόταση ποσού", () => {
+  // Το υπόλοιπο του λογαριασμού είναι 76 €. Το πρώτο τιμολόγιο οφείλει 124 €, το δεύτερο (μετά από
+  // μερική εξόφληση) 24 € — ο server στέλνει το πραγματικά οφειλόμενο, όχι το σύνολο.
+  const open = [
+    { id: "i1", number: "ΤΠΥ-2026-0001", total: 124, outstanding: 124 },
+    { id: "i2", number: "ΤΠΥ-2026-0002", total: 124, outstanding: 24 },
+  ];
+
+  function applyHandlers(requested) {
+    baseHandlers([
+      http.get(`${API}/trust/accounts/:clientId/open-invoices`, ({ params }) => {
+        requested.push(params.clientId);
+        return HttpResponse.json(params.clientId === "c1" ? open : [{ id: "i9", number: "ΤΠΥ-2026-0009", total: 50, outstanding: 50 }]);
+      }),
+    ]);
+    // δύο πελάτες· ο δεύτερος δεν έχει γραμμή λογαριασμού (το `server.use` που έρχεται τελευταίο υπερισχύει)
+    server.use(http.get(`${API}/clients`, () => HttpResponse.json([
+      { id: "c1", name: "ΑΛΦΑ ΑΕ" }, { id: "c2", name: "ΒΗΤΑ ΕΠΕ" },
+    ])));
+  }
+
+  async function chooseApplyToInvoice(user) {
+    await user.click(screen.getByTestId("trust-type-select"));
+    await user.click(await screen.findByRole("option", { name: /Εξόφληση τιμολογίου/ }));
+  }
+
+  it("προτείνει το μικρότερο από το οφειλόμενο και το διαθέσιμο υπόλοιπο", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    applyHandlers([]);
+    renderPage();
+    await user.click(await screen.findByTestId("add-tx-c1"));
+    await chooseApplyToInvoice(user);
+
+    await user.click(screen.getByTestId("trust-invoice-select"));
+    // η ετικέτα δείχνει το οφειλόμενο, όχι το σύνολο του τιμολογίου
+    expect(await screen.findByRole("option", { name: /ΤΠΥ-2026-0002 — οφείλονται 24,00\s€/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: /ΤΠΥ-2026-0001 — οφείλονται 124,00\s€/ }));
+    expect(screen.getByTestId("trust-amount-input")).toHaveValue(76);        // 124 > 76 διαθέσιμα → 76
+
+    await user.click(screen.getByTestId("trust-invoice-select"));
+    await user.click(await screen.findByRole("option", { name: /ΤΠΥ-2026-0002/ }));
+    expect(screen.getByTestId("trust-amount-input")).toHaveValue(24);        // 24 < 76 διαθέσιμα → 24
+  });
+
+  it("φορτώνει τα ανοιχτά τιμολόγια του νέου πελάτη όταν αλλάξει ο πελάτης στη φόρμα", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const requested = [];
+    applyHandlers(requested);
+    renderPage();
+    await user.click(await screen.findByTestId("new-trust-tx-button"));
+    expect(requested).toEqual([]);                                           // χωρίς πελάτη δεν ζητείται τίποτα
+
+    await user.click(screen.getByTestId("trust-client-select"));
+    await user.click(await screen.findByRole("option", { name: "ΑΛΦΑ ΑΕ" }));
+    await waitFor(() => expect(requested).toEqual(["c1"]));
+
+    await user.click(screen.getByTestId("trust-client-select"));
+    await user.click(await screen.findByRole("option", { name: "ΒΗΤΑ ΕΠΕ" }));
+    await waitFor(() => expect(requested).toEqual(["c1", "c2"]));
+
+    await chooseApplyToInvoice(user);
+    await user.click(screen.getByTestId("trust-invoice-select"));
+    expect(await screen.findByRole("option", { name: /ΤΠΥ-2026-0009/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /ΤΠΥ-2026-0001/ })).not.toBeInTheDocument();   // όχι του προηγούμενου
+  });
+
+  it("δεν προτείνει ποσό όταν ο πελάτης δεν έχει ακόμη λογαριασμό (δεν υπάρχει υπόλοιπο να χρεωθεί)", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    applyHandlers([]);
+    renderPage();
+    await user.click(await screen.findByTestId("new-trust-tx-button"));
+    await user.click(screen.getByTestId("trust-client-select"));
+    await user.click(await screen.findByRole("option", { name: "ΒΗΤΑ ΕΠΕ" }));      // ο c2 δεν έχει γραμμή λογαριασμού
+    await chooseApplyToInvoice(user);
+    await user.click(screen.getByTestId("trust-invoice-select"));
+    await user.click(await screen.findByRole("option", { name: /ΤΠΥ-2026-0009/ }));
+    expect(screen.getByTestId("trust-amount-input")).toHaveValue(0);              // όχι 50 €
+  });
+});

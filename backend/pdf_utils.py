@@ -228,8 +228,26 @@ GREEK_MONTHS = ["", "Ιανουαρίου", "Φεβρουαρίου", "Μαρτ�
                 "Ιουλίου", "Αυγούστου", "Σεπτεμβρίου", "Οκτωβρίου", "Νοεμβρίου", "Δεκεμβρίου"]
 
 
+def _document_date(issued_at):
+    """Η ημερομηνία που φέρει το έγγραφο: της έκδοσης (ώρα Αθήνας) αν έχει εκδοθεί, αλλιώς η σημερινή.
+
+    Ο server τρέχει σε UTC — η `date.today()` δίνει την προηγούμενη μέρα μεταξύ 00:00 και 03:00 ώρα Ελλάδας.
+    Και ένα εκδοθέν έγγραφο δεν αλλάζει ημερομηνία κάθε φορά που κατεβαίνει ξανά το PDF του.
+    """
+    from datetime import datetime, timezone
+    from tax_utils import ATHENS, athens_today
+    if issued_at:
+        try:
+            stamp = datetime.fromisoformat(str(issued_at))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            return stamp.astimezone(ATHENS).date()
+        except ValueError:
+            pass
+    return athens_today()
+
+
 def build_grammatio_pdf(grammatio: dict, settings: dict) -> bytes:
-    from datetime import date as _date
     from reportlab.platypus import Image as RLImage
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=22 * mm, rightMargin=22 * mm, topMargin=14 * mm, bottomMargin=16 * mm)
@@ -246,7 +264,7 @@ def build_grammatio_pdf(grammatio: dict, settings: dict) -> bytes:
     story.append(_p(grammatio.get("number") or "—", 11, bold=True, color=GOLD, align=1))
     story.append(Spacer(1, 6 * mm))
 
-    today = _date.today()
+    today = _document_date(grammatio.get("issued_at"))
     rows = [
         [_p("Ημερομηνία", 9, bold=True), _p(f"{today.day} {GREEK_MONTHS[today.month]} {today.year}", 9)],
         [_p("Πελάτης / Εντολέας", 9, bold=True), _p(grammatio.get("client_name") or "—", 9)],
@@ -301,7 +319,6 @@ def build_grammatio_pdf(grammatio: dict, settings: dict) -> bytes:
 
 
 def build_letter_pdf(settings: dict, recipient: str, subject: str, body: str) -> bytes:
-    from datetime import date
     from reportlab.platypus import Image as RLImage
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=22 * mm, rightMargin=22 * mm, topMargin=14 * mm, bottomMargin=16 * mm)
@@ -312,7 +329,7 @@ def build_letter_pdf(settings: dict, recipient: str, subject: str, body: str) ->
     story.append(HRFlowable(width="100%", thickness=0.8, color=GOLD))
     story.append(Spacer(1, 8 * mm))
 
-    today = date.today()
+    today = _document_date(None)
     story.append(_p(f"Αθήνα, {today.day} {GREEK_MONTHS[today.month]} {today.year}", 9.5, color=GRAY, align=2))
     story.append(Spacer(1, 5 * mm))
     if recipient:

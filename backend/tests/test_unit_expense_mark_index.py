@@ -114,18 +114,22 @@ def test_startup_replaces_the_legacy_sparse_index():
     _run(scenario())
 
 
-def test_index_failure_does_not_block_startup(monkeypatch):
-    """Αν υπάρχουν ήδη διπλά MARK στα δεδομένα, η εφαρμογή ξεκινά και καταγράφει σφάλμα."""
+def test_index_failure_does_not_block_startup(caplog):
+    """Αν υπάρχουν ήδη διπλά MARK στα δεδομένα, η εφαρμογή ξεκινά και καταγράφει σφάλμα.
+
+    Το mongomock_motor δίνει νέο αντικείμενο συλλογής σε κάθε `db.expenses`, οπότε monkeypatch
+    πάνω του δεν έπιανε τίποτα (το test περνούσε χωρίς να ελέγχει τίποτα)· εδώ δίνουμε στη
+    συνάρτηση μια συλλογή που αποτυγχάνει πραγματικά.
+    """
     import server
-    from db import db
 
-    async def scenario():
-        await db.expenses.drop()
+    class FailingCollection:
+        async def index_information(self):
+            return {}
 
-        async def boom(*a, **k):
+        async def create_index(self, *args, **kwargs):
             raise RuntimeError("E11000 duplicate key")
 
-        monkeypatch.setattr(db.expenses, "create_index", boom, raising=False)
-        await server.ensure_expense_mark_index()   # δεν πρέπει να σηκώσει εξαίρεση
-
-    _run(scenario())
+    with caplog.at_level("ERROR"):
+        _run(server.ensure_expense_mark_index(FailingCollection()))   # δεν πρέπει να σηκώσει εξαίρεση
+    assert "αποτυχία δημιουργίας του unique index" in caplog.text and "E11000" in caplog.text

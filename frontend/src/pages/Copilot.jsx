@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sparkle, PaperPlaneRight, FileDoc, FilePdf, ArrowSquareOut, ArrowsClockwise, Scales, Microphone, Stop } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { invoiceLabel } from "@/lib/utils";
 
 const SUGGESTIONS = [
   "Πόσο ΦΠΑ χρωστάω αυτόν τον μήνα;",
@@ -54,7 +55,7 @@ function InvoiceCard({ invoice }) {
   return (
     <div className="mt-3 border border-[hsl(var(--gold))]/25 rounded-sm bg-background/50 p-4 flex items-center justify-between" data-testid="copilot-invoice-card">
       <div>
-        <p className="text-sm font-semibold text-[hsl(var(--gold))] font-mono">{invoice.number}</p>
+        <p className="text-sm font-semibold text-[hsl(var(--gold))] font-mono">{invoiceLabel(invoice)}</p>
         <p className="text-xs text-muted-foreground">{invoice.client_name} · {money(invoice.total)}</p>
       </div>
       <Link to="/invoices" className="text-xs flex items-center gap-1 text-[hsl(var(--gold))] hover:underline" data-testid="copilot-invoice-link">

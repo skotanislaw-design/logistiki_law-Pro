@@ -471,6 +471,8 @@ class BankTransaction(BaseDocument):
     # κατάθεση − οφειλόμενο, όταν ο άνθρωπος δέχτηκε συμφωνία με διαφορά (π.χ. προμήθεια τράπεζας)
     amount_difference: Optional[float] = None
     review_notified: bool = False
+    # Το οφειλόμενο που είδε ο άνθρωπος στην κάρτα ελέγχου· αν αλλάξει, το «Ναι, εξοφλήθηκε» δεν ισχύει.
+    review_due: Optional[float] = None
     confirmed_at: Optional[str] = None
     imported_at: str = Field(default_factory=now_iso)
     imported_by: Optional[str] = None

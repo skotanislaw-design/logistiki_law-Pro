@@ -97,7 +97,7 @@ export default function TrustAccounts() {
     const invoice = clientInvoices.find((i) => i.id === invoiceId);
     const account = accounts.find((a) => a.client_id === form.client_id);
     const amount = invoice
-      ? Math.round(Math.min(invoice.outstanding, account ? account.balance : invoice.outstanding) * 100) / 100
+      ? Math.round(Math.min(invoice.outstanding, account ? account.balance : 0) * 100) / 100
       : form.amount;
     setForm({ ...form, invoice_id: invoiceId, amount });
   };

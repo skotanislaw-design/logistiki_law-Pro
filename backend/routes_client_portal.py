@@ -187,6 +187,16 @@ async def portal_data(token: str, request: Request):
     cases = await db.cases.find({"client_id": client_id, "firm_id": firm}).sort("created_at", -1).to_list(50)
     trust = await db.trust_accounts.find_one({"client_id": client_id, "firm_id": firm})
 
+    # Το ποσό που πράγματι οφείλει ο πελάτης: πληρωτέο (μετά την παρακράτηση που κρατά ο ίδιος) μείον ό,τι
+    # έχει εξοφληθεί από τον πελατολογικό του λογαριασμό. Είναι το ίδιο ποσό που χρεώνει το checkout του
+    # portal· αν η λίστα έδειχνε μόνο το σύνολο, ο πελάτης θα έβλεπε άλλο ποσό από αυτό που πληρώνει.
+    from invoice_services import payable_amount, outstanding_amount
+    amounts = {}
+    for i in invoices:
+        payable, _w = await payable_amount(firm, i, settings, client)
+        due, _w = await outstanding_amount(firm, i, settings, client) if i.get("status") == "issued" else (0.0, 0.0)
+        amounts[str(i["_id"])] = (payable, due)
+
     payload = {
         "firm": {
             "name": settings.get("company_name", "Nomos One"),
@@ -204,6 +214,8 @@ async def portal_data(token: str, request: Request):
             "number": i.get("number", ""),
             "date": i.get("date", ""),
             "total": i.get("total", 0),
+            "payable": amounts[str(i["_id"])][0],
+            "outstanding": amounts[str(i["_id"])][1],
             "status": i.get("status", ""),
             "paid_at": i.get("paid_at"),
             "payment_method": i.get("payment_method", ""),
@@ -225,7 +237,7 @@ async def portal_data(token: str, request: Request):
         } if trust else None,
         "totals": {
             "unpaid_count": sum(1 for i in invoices if i.get("status") == "issued"),
-            "unpaid_total": round(sum(float(i.get("total", 0)) for i in invoices if i.get("status") == "issued"), 2),
+            "unpaid_total": round(sum(amounts[str(i["_id"])][1] for i in invoices if i.get("status") == "issued"), 2),
             "paid_count": sum(1 for i in invoices if i.get("status") == "paid"),
             "active_cases": sum(1 for c in cases if c.get("status") == "active"),
         },

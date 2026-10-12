@@ -52,9 +52,26 @@ async def test_connection(user: dict = Depends(require_admin)):
 
 @router.post("/sync/{invoice_id}")
 async def sync_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
-    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
+    try:
+        invoice_oid = ObjectId(invoice_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": invoice_oid}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    # Διαβιβάζονται μόνο εκδοθέντα παραστατικά: το πρόχειρο δεν έχει αριθμό (θα έφευγε με σειρά «A»,
+    # α/α 1 και μετά την έκδοσή του θα ξαναστελνόταν), το ακυρωμένο δεν πρέπει να φτάσει στην ΑΑΔΕ.
+    if doc.get("status") not in ("issued", "paid") or not doc.get("number"):
+        raise HTTPException(status_code=400, detail="Διαβιβάζονται μόνο εκδοθέντα παραστατικά (όχι πρόχειρα ή ακυρωμένα).")
+    if doc.get("mydata_status") == "synced" and doc.get("mydata_mark"):
+        # Ήδη διαβιβασμένο: δεν ξαναστέλνεται (διπλό κλικ, δεύτερη καρτέλα) ούτε αλλάζει κατάσταση αν
+        # μια νέα απόπειρα αποτύχει. Το MARK που έχει είναι το έγκυρο.
+        return {
+            "message": f"Το παραστατικό είχε ήδη διαβιβαστεί στο myDATA — MARK: {doc['mydata_mark']}",
+            "mark": doc["mydata_mark"], "uid": doc.get("mydata_uid"),
+            "mode": "mock" if str(doc["mydata_mark"]).startswith("MOCK-") else "live",
+            "synced_at": doc.get("mydata_synced_at"), "already_synced": True,
+        }
     settings = await db.settings.find_one(tenant_query(user, {})) or {}
 
     if mydata_ready(settings):

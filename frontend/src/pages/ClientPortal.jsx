@@ -136,7 +136,12 @@ export default function ClientPortal() {
                   <TableCell className="font-mono text-xs">{i.number}</TableCell>
                   <TableCell>{dateFmt(i.date)}</TableCell>
                   <TableCell><span className={`text-xs font-medium ${STATUS_STYLE[i.status]}`}>{STATUS[i.status]}</span></TableCell>
-                  <TableCell className="text-right font-mono">{money(i.total)}</TableCell>
+                  <TableCell className="text-right font-mono">
+                    {money(i.total)}
+                    {i.status === "issued" && i.outstanding != null && Math.abs(i.outstanding - i.total) >= 0.005 && (
+                      <div className="text-[10px] text-muted-foreground" data-testid={`portal-due-${i.id}`}>Οφείλεται: {money(i.outstanding)}</div>
+                    )}
+                  </TableCell>
                   <TableCell className="text-right space-x-1">
                     <Button size="sm" variant="ghost" onClick={() => downloadPdf(i.id, i.number)} data-testid={`portal-pdf-${i.id}`}>
                       <FilePdf size={14} className="mr-1" /> PDF

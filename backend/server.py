@@ -206,7 +206,7 @@ async def seed_admin():
 EXPENSE_MARK_INDEX = "uniq_firm_mydata_mark"
 
 
-async def ensure_expense_mark_index() -> None:
+async def ensure_expense_mark_index(collection=None) -> None:
     """Μοναδικότητα (firm_id, mydata_mark) μόνο για έξοδα που ΕΧΟΥΝ MARK.
 
     Το προηγούμενο index ήταν `unique + sparse` πάνω σε σύνθετο κλειδί. Στη MongoDB ένα
@@ -216,15 +216,18 @@ async def ensure_expense_mark_index() -> None:
     καταχωρεί μόνο τα έγγραφα με MARK τύπου string.
 
     Δεν ρίχνει την εκκίνηση: αν η δημιουργία αποτύχει (π.χ. υπάρχοντα διπλά MARK στα
-    δεδομένα) καταγράφεται σφάλμα και ο σχετικός έλεγχος γίνεται από τον κώδικα εφαρμογής.
+    δεδομένα) καταγράφεται σφάλμα. Η μοναδικότητα ελέγχεται και από τον κώδικα εφαρμογής
+    (`routes_expenses`), οπότε το index είναι η δεύτερη γραμμή άμυνας, όχι η μοναδική.
+    Το `collection` δίνεται μόνο στα τεστ.
     """
+    expenses = collection if collection is not None else db.expenses
     wanted_key = [("firm_id", 1), ("mydata_mark", 1)]
     try:
-        for name, info in (await db.expenses.index_information()).items():
+        for name, info in (await expenses.index_information()).items():
             if list(info.get("key", [])) == wanted_key and not info.get("partialFilterExpression"):
-                await db.expenses.drop_index(name)
+                await expenses.drop_index(name)
                 logger.info("expenses: αντικαταστάθηκε το index %s (sparse) από partial", name)
-        await db.expenses.create_index(
+        await expenses.create_index(
             wanted_key,
             name=EXPENSE_MARK_INDEX,
             unique=True,
@@ -250,6 +253,26 @@ async def ensure_trust_account_index() -> None:
     except Exception as e:  # noqa: BLE001 — η εκκίνηση δεν πρέπει να εξαρτάται από αυτό
         logger.error("trust_accounts: αποτυχία δημιουργίας του unique index (firm_id, client_id) — "
                      "ελέγξτε για διπλούς λογαριασμούς του ίδιου πελάτη: %s", e)
+
+
+async def flag_unchecked_bank_suggestions() -> int:
+    """Παλιές, μη επιβεβαιωμένες προτάσεις τράπεζας δεν έχουν περάσει τον έλεγχο μονοσημαντότητας.
+
+    Οι κινήσεις που προτάθηκαν πριν από τον γύρο 4 δεν έχουν το πεδίο `match_ambiguous`, δηλαδή
+    δεν ξέρουμε αν υπήρχε και δεύτερο τιμολόγιο του ίδιου πελάτη με το ίδιο ποσό. Σημαίνονται ως
+    «όχι μονοσήμαντες»: δεν εξοφλούνται αυτόματα ούτε μαζικά — τις επιβεβαιώνει ένας άνθρωπος.
+    Idempotent· δεν αγγίζει επιβεβαιωμένες κινήσεις ούτε νέες προτάσεις (που φέρουν το πεδίο).
+    """
+    try:
+        result = await db.bank_transactions.update_many(
+            {"match_status": "auto_matched", "match_ambiguous": {"$exists": False}},
+            {"$set": {"match_ambiguous": True}})
+        if result.modified_count:
+            logger.warning("bank_transactions: %d παλιές προτάσεις σημάνθηκαν για ατομικό έλεγχο", result.modified_count)
+        return result.modified_count
+    except Exception as e:  # noqa: BLE001 — η εκκίνηση δεν πρέπει να εξαρτάται από αυτό
+        logger.error("bank_transactions: αποτυχία σήμανσης παλιών προτάσεων: %s", e)
+        return 0
 
 
 @app.on_event("startup")
@@ -304,6 +327,7 @@ async def startup_event():
     # Ένα παραστατικό ΑΑΔΕ γίνεται έξοδο μία φορά, ακόμη κι αν το RequestDocs το επιστρέψει ξανά.
     await ensure_expense_mark_index()
     await ensure_trust_account_index()
+    await flag_unchecked_bank_suggestions()
     await db.outbox.create_index([("status", 1), ("next_attempt_at", 1)])
     await db.outbox.create_index([("firm_id", 1), ("dedupe_key", 1)])
     await db.case_tracker_events.create_index([("fetched_at", -1)])

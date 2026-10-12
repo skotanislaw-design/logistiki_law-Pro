@@ -139,6 +139,7 @@ async def create_invoice(payload: Invoice, user: dict = Depends(get_current_user
 
 @router.put("/{invoice_id}")
 async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends(get_current_user)):
+    from invoice_services import not_being_issued
     try:
         invoice_oid = ObjectId(invoice_id)
     except Exception:
@@ -148,7 +149,15 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     if existing.get("status") != "draft":
         raise HTTPException(status_code=400, detail="Μόνο πρόχειρα τιμολόγια μπορούν να τροποποιηθούν.")
+    is_credit_note = bool(existing.get("credit_note_for"))
+    if is_credit_note:
+        # Το είδος του πρόχειρου πιστωτικού (5.1) δεν αλλάζει και δεν έρχεται από τον client. Ο έλεγχος
+        # ειδών δέχεται μόνο ΤΠΥ/ΑΠΥ· αν ο client έστελνε πίσω το έγγραφο όπως το πήρε (με 5.1), θα
+        # απορριπτόταν. Το αγνοούμε εδώ και το επαναφέρουμε από τη βάση αμέσως μετά τον έλεγχο.
+        payload.invoice_type = ""
     _validate_invoice_payload(payload)
+    if is_credit_note:
+        payload.invoice_type = existing.get("invoice_type", "")
     # Η κατάσταση έκδοσης/διαβίβασης δεν έρχεται ποτέ από τον client.
     payload.status = existing.get("status", "draft")
     payload.mydata_status = existing.get("mydata_status", "not_sent")
@@ -158,8 +167,6 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
     payload.issued_at = existing.get("issued_at")
     for field, default in SERVER_OWNED_DEFAULTS.items():
         setattr(payload, field, existing.get(field, default))
-    if existing.get("credit_note_for"):          # πρόχειρο πιστωτικό: το είδος δεν αλλάζει
-        payload.invoice_type = existing.get("invoice_type", "")
     client_doc = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(payload.client_id)}))
     if not client_doc:
         raise HTTPException(status_code=404, detail="Ο πελάτης δεν βρέθηκε")
@@ -171,10 +178,22 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
     payload.vat_amount = totals["vat_amount"]
     payload.total = totals["total"]
     payload.vat_breakdown = totals["vat_breakdown"]
+    # Ίδιος κανόνας με τη δημιουργία — ένα πρόχειρο που δεν πέρασε από εκεί δεν πρέπει να
+    # φτάνει στην έκδοση με μηδενικό ή αρνητικό σύνολο (και το πιστωτικό με θετικό).
+    if is_credit_note:
+        if payload.total >= 0:
+            raise HTTPException(status_code=400, detail="Το πιστωτικό τιμολόγιο πρέπει να έχει αρνητικό σύνολο.")
+    elif payload.total <= 0:
+        raise HTTPException(status_code=400, detail="Το σύνολο του τιμολογίου πρέπει να είναι θετικό.")
     payload.number = existing["number"]
     data = payload.to_mongo()
     data.pop("_id", None)
-    await db.invoices.update_one(tenant_query(user, {"_id": invoice_oid}), {"$set": data})
+    # Το φίλτρο κατάστασης είναι αναγκαίο: ανάμεσα στην ανάγνωση και στη γραφή το πρόχειρο μπορεί να
+    # εκδόθηκε, και η εγγραφή θα άλλαζε τα ποσά ενός ήδη εκδοθέντος παραστατικού.
+    result = await db.invoices.update_one(
+        tenant_query(user, {"_id": invoice_oid, "status": "draft", **not_being_issued()}), {"$set": data})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Το τιμολόγιο εκδόθηκε ή εκδίδεται αυτή τη στιγμή — δεν τροποποιείται.")
     doc = await db.invoices.find_one(tenant_query(user, {"_id": invoice_oid}))
     return Invoice.from_mongo(doc)
 

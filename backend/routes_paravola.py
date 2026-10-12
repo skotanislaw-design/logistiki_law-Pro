@@ -68,8 +68,14 @@ async def update_paravolo(pid: str, payload: Paravolo, user: dict = Depends(get_
     doc = await db.paravola.find_one(tenant_query(user, {"_id": ObjectId(pid)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το παράβολο δεν βρέθηκε")
+    # Εκδοθέν ή εξοφλημένο παράβολο είναι καταγραφή πραγματικής συναλλαγής με το Δημόσιο — όπως στη
+    # διαγραφή, τροποποιείται μόνο το πρόχειρο (αλλιώς αλλάζει το ποσό και σβήνει ο κωδικός e-παραβόλου).
+    if doc.get("status") != "draft":
+        raise HTTPException(status_code=400, detail="Μόνο πρόχειρα παράβολα τροποποιούνται· το εκδοθέν ή εξοφλημένο παραμένει στο αρχείο.")
     data = payload.model_dump(exclude={"id", "number", "created_at", "created_by", "status", "issued_at", "firm_id"})
-    await db.paravola.update_one(tenant_query(user, {"_id": ObjectId(pid)}), {"$set": data})
+    result = await db.paravola.update_one(tenant_query(user, {"_id": ObjectId(pid), "status": "draft"}), {"$set": data})
+    if result.matched_count == 0:       # εκδόθηκε στο μεταξύ
+        raise HTTPException(status_code=400, detail="Το παράβολο δεν είναι πια πρόχειρο — δεν τροποποιείται.")
     doc = await db.paravola.find_one(tenant_query(user, {"_id": ObjectId(pid)}))
     return Paravolo.from_mongo(doc)
 
@@ -93,10 +99,15 @@ async def issue_paravolo(pid: str, payload: IssuePayload, user: dict = Depends(g
         raise HTTPException(status_code=404, detail="Το παράβολο δεν βρέθηκε")
     if doc.get("status") in ("issued", "paid"):
         raise HTTPException(status_code=400, detail="Το παράβολο έχει ήδη εκδοθεί")
-    await db.paravola.update_one(
-        tenant_query(user, {"_id": ObjectId(pid)}),
+    if doc.get("status") != "draft":
+        raise HTTPException(status_code=400, detail="Εκδίδεται μόνο πρόχειρο παράβολο.")
+    # Ατομική μετάβαση πρόχειρο → εκδοθέν: δύο ταυτόχρονες εκδόσεις δεν γράφουν η μία πάνω στην άλλη.
+    result = await db.paravola.update_one(
+        tenant_query(user, {"_id": ObjectId(pid), "status": "draft"}),
         {"$set": {"status": "issued", "issued_at": _now(), "eparavolo_code": payload.eparavolo_code}},
     )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=400, detail="Το παράβολο έχει ήδη εκδοθεί")
     if doc.get("case_id"):
         await log_case_event(doc["case_id"], f"Έκδοση παραβόλου {doc.get('number')}", user)
     doc = await db.paravola.find_one(tenant_query(user, {"_id": ObjectId(pid)}))

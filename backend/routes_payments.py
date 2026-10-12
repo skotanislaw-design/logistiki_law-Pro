@@ -1,5 +1,6 @@
 """Stripe Payments — Checkout Session για online εξόφληση τιμολογίων."""
 import os
+import logging
 import stripe
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -13,6 +14,8 @@ from tenant import tenant_query, firm_id_for
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or "sk_test_emergent"
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "")
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 public_router = APIRouter(tags=["payments-public"])  # για webhook & public status
@@ -139,7 +142,7 @@ async def get_payment_status(session_id: str):
     if record.get("payment_status") != "paid" and _stripe_ready():
         try:
             s = stripe.checkout.Session.retrieve(session_id)
-            if s.payment_status == "paid" or s.status == "complete":
+            if s.payment_status == "paid":
                 await _mark_paid(session_id, s.payment_intent if hasattr(s, "payment_intent") else None)
                 record = await db.payment_transactions.find_one({"session_id": session_id})
         except stripe.error.StripeError:
@@ -173,30 +176,74 @@ async def _mark_paid(session_id: str, payment_intent_id: str = None):
 
 
 async def _apply_card_payment(tx: dict) -> None:
-    """Εξοφλεί το τιμολόγιο της πληρωμής — μόνο αν είναι ακόμη ανοιχτό.
+    """Εξοφλεί το τιμολόγιο της πληρωμής — μόνο αν είναι ακόμη ανοιχτό και το ποσό ταιριάζει.
 
-    Παλιότερα το φίλτρο ήταν «οτιδήποτε εκτός από εξοφλημένο», οπότε μια πληρωμή που ολοκληρωνόταν
-    αφού το τιμολόγιο είχε ακυρωθεί (πιστωτικό) το έκανε «εξοφλημένο» και χαλούσε ένα ακυρωμένο
-    παραστατικό. Αν το τιμολόγιο δεν είναι ανοιχτό, τα χρήματα έχουν ήδη εισπραχθεί: ειδοποιείται
-    το γραφείο για να αποφασίσει (επιστροφή, ή σύνδεση με άλλο παραστατικό).
+    Η πληρωμή έχει ήδη γίνει όταν φτάνουμε εδώ· το ζήτημα είναι να μην «χαθούν» τα χρήματα
+    σιωπηλά. Σε κάθε περίπτωση που η εφαρμογή δεν μπορεί να κάνει το αυτονόητο (να κλείσει το
+    τιμολόγιο ακριβώς όσο εισπράχθηκε) ειδοποιεί το γραφείο, με απαίτηση ενέργειας:
+
+    * το τιμολόγιο δεν είναι πια ανοιχτό (ακυρώθηκε, πιστώθηκε, εξοφλήθηκε αλλιώς) — δεν το
+      ξαναανοίγουμε, παλιότερα η πληρωμή το έκανε «εξοφλημένο» ακόμη κι ακυρωμένο·
+    * η πληρωμή είναι **μικρότερη** από το οφειλόμενο — δεν είναι εξόφληση, το τιμολόγιο μένει ανοιχτό·
+    * η πληρωμή είναι **μεγαλύτερη** από το οφειλόμενο (π.χ. ο πελατολογικός λογαριασμός εξόφλησε
+      εν μέρει αφού άνοιξε η συνεδρία) — το τιμολόγιο εξοφλείται και το επιπλέον ποσό
+      πρέπει να επιστραφεί·
+    * οποιοδήποτε σφάλμα κατά την εφαρμογή — δεν καταπίνεται.
     """
-    from invoice_services import mark_paid
-    firm_id = tx.get("firm_id", "legacy-default-firm")
-    try:
-        if await mark_paid(firm_id, tx["invoice_id"], paid_via="stripe"):
-            return
-        invoice = await db.invoices.find_one({"_id": ObjectId(tx["invoice_id"]), "firm_id": firm_id}) or {}
-    except Exception:
-        return
+    from invoice_services import mark_paid, outstanding_amount, to_cents
     from automation import notify, _fmt
-    status = invoice.get("status") or "άγνωστη"
-    await notify(
-        firm_id, "card_payment_unapplied", "critical",
-        f"Πληρωμή κάρτας {_fmt(tx.get('amount'))} για τιμολόγιο που δεν ήταν ανοιχτό",
-        f"Το {invoice.get('number') or 'τιμολόγιο'} είχε κατάσταση «{status}» όταν ολοκληρώθηκε η πληρωμή "
-        f"(συνεδρία {tx.get('session_id')}). Τα χρήματα έχουν εισπραχθεί: ελέγξτε αν χρειάζεται επιστροφή ή σύνδεση με άλλο παραστατικό.",
-        entity="invoice", entity_id=tx["invoice_id"], requires_action=True,
-        dedupe_key=f"card_payment_unapplied:{tx.get('session_id')}")
+    firm_id = tx.get("firm_id", "legacy-default-firm")
+    invoice_id = tx.get("invoice_id")
+    session_id = tx.get("session_id")
+    paid = round(float(tx.get("amount") or 0), 2)
+
+    async def alert(type_: str, title: str, message: str) -> None:
+        try:
+            await notify(firm_id, type_, "critical", title, message, entity="invoice", entity_id=invoice_id,
+                         requires_action=True, dedupe_key=f"{type_}:{session_id}")
+        except Exception:  # noqa: BLE001 — η ειδοποίηση δεν πρέπει να κρύψει το αρχικό πρόβλημα
+            logger.exception("Δεν καταχωρήθηκε ειδοποίηση πληρωμής κάρτας (συνεδρία %s)", session_id)
+
+    try:
+        invoice = await db.invoices.find_one({"_id": ObjectId(invoice_id), "firm_id": firm_id}) or {}
+        number = invoice.get("number") or "τιμολόγιο"
+        if invoice.get("status") != "issued":
+            await alert(
+                "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} για τιμολόγιο που δεν ήταν ανοιχτό",
+                f"Το {number} είχε κατάσταση «{invoice.get('status') or 'άγνωστη'}» όταν ολοκληρώθηκε η πληρωμή "
+                f"(συνεδρία {session_id}). Τα χρήματα έχουν εισπραχθεί: ελέγξτε αν χρειάζεται επιστροφή ή σύνδεση "
+                "με άλλο παραστατικό.")
+            return
+        settings = await db.settings.find_one({"firm_id": firm_id}) or {}
+        due, _withheld = await outstanding_amount(firm_id, invoice, settings)
+        difference = round(paid - due, 2)
+        if to_cents(paid) < to_cents(due):
+            await alert(
+                "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} μικρότερη από το οφειλόμενο",
+                f"Το {number} οφείλει {_fmt(due)}, ο πελάτης πλήρωσε {_fmt(paid)} (συνεδρία {session_id}). "
+                "Το τιμολόγιο ΔΕΝ εξοφλήθηκε και μένει ανοιχτό για το υπόλοιπο· συμφωνήστε την πληρωμή χειροκίνητα "
+                "όταν διευθετηθεί.")
+            return
+        if not await mark_paid(firm_id, invoice["_id"], paid_via="stripe"):
+            fresh = await db.invoices.find_one({"_id": invoice["_id"], "firm_id": firm_id}) or {}
+            await alert(
+                "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} για τιμολόγιο που δεν ήταν ανοιχτό",
+                f"Το {number} είχε κατάσταση «{fresh.get('status') or 'άγνωστη'}» όταν ολοκληρώθηκε η πληρωμή "
+                f"(συνεδρία {session_id}). Τα χρήματα έχουν εισπραχθεί: ελέγξτε αν χρειάζεται επιστροφή ή σύνδεση "
+                "με άλλο παραστατικό.")
+            return
+        if to_cents(paid) > to_cents(due):
+            await alert(
+                "card_payment_overpaid", f"Πληρωμή κάρτας {_fmt(paid)} μεγαλύτερη από το οφειλόμενο",
+                f"Το {number} εξοφλήθηκε, αλλά το οφειλόμενο ήταν {_fmt(due)} και εισπράχθηκαν {_fmt(paid)} "
+                f"(συνεδρία {session_id}). Επιστρέψτε στον πελάτη τη διαφορά {_fmt(difference)} ή πιστώστε τον "
+                "πελατολογικό του λογαριασμό.")
+    except Exception as e:  # noqa: BLE001 — η πληρωμή έχει γίνει: το σφάλμα πρέπει να φανεί, όχι να χαθεί
+        logger.exception("Αποτυχία εφαρμογής πληρωμής κάρτας (συνεδρία %s)", session_id)
+        await alert(
+            "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} που δεν εφαρμόστηκε",
+            f"Η πληρωμή (συνεδρία {session_id}) εισπράχθηκε αλλά η εφαρμογή απέτυχε: {e}. "
+            "Ελέγξτε το τιμολόγιο και συμφωνήστε την πληρωμή χειροκίνητα.")
 
 
 @public_router.post("/api/stripe/webhook")
@@ -213,12 +260,12 @@ async def stripe_webhook(request: Request):
     obj = event["data"]["object"]
     t = event["type"]
     if t == "checkout.session.completed":
-        await _mark_paid(obj["id"], obj.get("payment_intent"))
+        # Στις καθυστερημένες μεθόδους πληρωμής η συνεδρία ολοκληρώνεται πριν φτάσουν τα χρήματα
+        # (payment_status = "unpaid")· τότε περιμένουμε το async_payment_succeeded.
+        if obj.get("payment_status", "paid") in ("paid", "no_payment_required"):
+            await _mark_paid(obj["id"], obj.get("payment_intent"))
     elif t == "checkout.session.async_payment_succeeded":
-        await db.payment_transactions.update_one(
-            {"session_id": obj["id"]},
-            {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc).isoformat()}},
-        )
+        # Όχι προ-σήμανση «paid» εδώ: το _mark_paid εφαρμόζει την πληρωμή μόνο στην πρώτη μετάβαση.
         await _mark_paid(obj["id"], obj.get("payment_intent"))
     elif t == "checkout.session.async_payment_failed":
         await db.payment_transactions.update_one(

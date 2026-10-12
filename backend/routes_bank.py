@@ -16,7 +16,7 @@ from auth import get_current_user, require_admin
 from pydantic import BaseModel
 from tenant import tenant_query, firm_id_for
 from invoice_services import (
-    AMOUNT_TOLERANCE, apply_bank_payment, firm_query, load_client, outstanding_amount,
+    apply_bank_payment, close_tx_notifications, firm_query, load_client, outstanding_amount, to_cents,
 )
 
 router = APIRouter(prefix="/bank", tags=["bank"])
@@ -156,6 +156,19 @@ AMBIGUITY_MARGIN = 10         # άλλο τιμολόγιο με σκορ τόσ
 UNSURE_CONFIDENCE = 75        # ανώτατη «βεβαιότητα» πρότασης με διαφορά ποσού ή με δεύτερη εκδοχή
 
 
+def reserves_invoice(confidence, ambiguous) -> bool:
+    """Δεσμεύει μια **μη επιβεβαιωμένη** πρόταση το τιμολόγιό της, ώστε να μην προταθεί σε άλλη κατάθεση;
+
+    Μόνο όταν είναι ισχυρή: μονοσήμαντη, με ακριβές ποσό, πάνω από το όριο αβεβαιότητας (όσες έχουν διαφορά
+    ποσού ή δεύτερη εκδοχή έχουν ανώτατη βεβαιότητα `UNSURE_CONFIDENCE`). Μια αδύναμη ή αμφίβολη πρόταση
+    είναι υπόδειξη για άνθρωπο· αν έκρυβε το τιμολόγιο, μια **δεύτερη** κατάθεση που κατονομάζει ρητά τον αριθμό
+    του θα έμενε χωρίς αντιστοίχιση — ή, χειρότερα, θα πήγαινε στο διπλανό, ίδιου ποσού τιμολόγιο και θα το
+    εξοφλούσε αυτόματα. Η εξόφληση ενός τιμολογίου από δύο κινήσεις αποκλείεται ούτως ή άλλως στο
+    `apply_bank_payment`, οπότε δύο προτάσεις για το ίδιο τιμολόγιο δεν κινδυνεύουν να το εξοφλήσουν διπλά.
+    """
+    return (not ambiguous) and int(confidence or 0) > UNSURE_CONFIDENCE
+
+
 def _due(inv: dict) -> float:
     """Το ποσό που αναμένεται να εισπραχθεί: πληρωτέο μείον ό,τι εξοφλήθηκε από πελατολογικό.
 
@@ -173,8 +186,8 @@ def match_details(tx: dict, invoices: list[dict]) -> dict:
 
     Επιστρέφει {"invoice", "confidence" 0-100, "exact" (ακριβές ποσό), "ambiguous"}.
 
-    * Μόνο ακριβές ποσό (±1 λεπτό) μπορεί να εξοφληθεί αυτόματα· διαφορά κάτω από 1 € δίνει
-      πρόταση για χειροκίνητο έλεγχο, με «βεβαιότητα» ως 75.
+    * Μόνο ακριβές ποσό (ίδιο ως το λεπτό — η σύγκριση γίνεται σε λεπτά, όχι σε float) μπορεί να
+      εξοφληθεί αυτόματα· διαφορά κάτω από 1 € δίνει πρόταση για χειροκίνητο έλεγχο, με «βεβαιότητα» ως 75.
     * Αν υπάρχει και δεύτερο τιμολόγιο εξίσου πιθανό — ή άλλο τιμολόγιο του ίδιου πελάτη με το
       ίδιο ποσό, χωρίς να αναγράφεται ο αριθμός — η πρόταση είναι `ambiguous`: ο πελάτης μπορεί
       να πληρώνει οποιοδήποτε από τα δύο, και η εξόφληση λάθος τιμολογίου μένει απαρατήρητη.
@@ -186,10 +199,10 @@ def match_details(tx: dict, invoices: list[dict]) -> dict:
     tx_desc = (tx.get("description", "") + " " + tx.get("reference", "")).lower()
     candidates = []
     for inv in invoices:
-        difference = abs(_due(inv) - tx["amount"])
-        if difference < AMOUNT_TOLERANCE:
+        difference_cents = abs(to_cents(_due(inv)) - to_cents(tx["amount"]))
+        if difference_cents == 0:
             score, exact = 50, True
-        elif difference < 1:
+        elif difference_cents < 100:
             score, exact = 30, False
         else:
             continue            # χωρίς amount match, δεν το θεωρώ ίδιο
@@ -224,11 +237,14 @@ def match_details(tx: dict, invoices: list[dict]) -> dict:
         if numbered:
             score += 20
 
-        candidates.append({"inv": inv, "score": min(100, score), "exact": exact, "numbered": numbered})
+        candidates.append({"inv": inv, "score": min(100, score), "raw": score, "exact": exact, "numbered": numbered})
 
     if not candidates:
         return nothing
-    best = max(candidates, key=lambda c: c["score"])        # στην ισοβαθμία, το πρώτο της λίστας
+    # Κατάταξη με το μη περιορισμένο σκορ, και στην ισοβαθμία κερδίζει όποιο τιμολόγιο κατονομάζεται
+    # στην αιτιολογία — όχι όποιο τυχαίνει να είναι πρώτο στη λίστα. (Το όριο 100 ισοπεδώνει διαφορετικά
+    # σκορ, οπότε χωρίς αυτό η επιλογή εξαρτιόταν από τη σειρά των τιμολογίων.)
+    best = max(candidates, key=lambda c: (c["raw"], c["numbered"]))
     if best["score"] < MATCH_THRESHOLD:
         return {**nothing, "confidence": best["score"]}
 
@@ -241,7 +257,11 @@ def match_details(tx: dict, invoices: list[dict]) -> dict:
         client_id and best["exact"] and not best["numbered"]
         and any(r["exact"] and r["inv"].get("client_id") == client_id for r in rivals)
     )
-    ambiguous = bool(close) or same_client_same_amount
+    # Η αιτιολογία κατονομάζει τον αριθμό ΑΛΛΟΥ πιθανού τιμολογίου από αυτό που προκρίνεται (π.χ. τρίτος πληρώνει
+    # το τιμολόγιο ενός πελάτη και το όνομά του ταιριάζει με άλλο τιμολόγιο του ίδιου ποσού). Το όνομα και η
+    # πρόσφατη ημερομηνία δεν αρκούν για να παρακαμφθεί ρητός αριθμός — χρειάζεται άνθρωπος.
+    named_elsewhere = bool(not best["numbered"] and any(r["numbered"] for r in rivals))
+    ambiguous = bool(close) or same_client_same_amount or named_elsewhere
     confidence = best["score"]
     if ambiguous or not best["exact"]:
         confidence = min(confidence, UNSURE_CONFIDENCE)
@@ -258,14 +278,19 @@ async def build_match_pool(firm_id: str, settings: dict) -> list[dict]:
     """Τα ανοιχτά τιμολόγια με το ποσό που οφείλεται (`_due`), για το matching.
 
     Εξαιρούνται όσα έχουν ήδη συνδεθεί με άλλη κίνηση: μία κατάθεση ↔ ένα τιμολόγιο, ώστε δύο
-    ίδιες καταθέσεις να μην «εξοφλούν» το ίδιο τιμολόγιο δύο φορές.
+    ίδιες καταθέσεις να μην «εξοφλούν» το ίδιο τιμολόγιο δύο φορές. Οι επιβεβαιωμένες συνδέσεις δεσμεύουν
+    πάντα το τιμολόγιο· οι μη επιβεβαιωμένες προτάσεις μόνο όταν είναι ισχυρές (βλ. `reserves_invoice`).
     """
     taken = set()
     async for d in db.bank_transactions.find(
         firm_query(firm_id, {"matched_invoice_id": {"$nin": [None, ""]},
                              "match_status": {"$in": ["auto_matched", "auto_confirmed", "manual_matched"]}}),
-        {"matched_invoice_id": 1},
+        {"matched_invoice_id": 1, "match_status": 1, "match_confidence": 1, "match_ambiguous": 1},
     ):
+        # Πρόταση χωρίς σήμανση `match_ambiguous` (παλιά εγγραφή) θεωρείται αμφίβολη: δεν δεσμεύει.
+        if d.get("match_status") == "auto_matched" and not reserves_invoice(
+                d.get("match_confidence"), d.get("match_ambiguous", True)):
+            continue
         taken.add(d["matched_invoice_id"])
     pool, clients = [], {}
     async for inv in db.invoices.find(firm_query(firm_id, {"status": "issued"})).limit(2000):
@@ -356,7 +381,8 @@ async def import_bank_statement(bank: str = "Άγνωστη", file: UploadFile =
         if match is not None:
             auto_matched += 1
             needs_review += 1 if (found["ambiguous"] or not found["exact"]) else 0
-            pool = [i for i in pool if i is not match]      # το τιμολόγιο δεσμεύεται από αυτή την κίνηση
+            if reserves_invoice(found["confidence"], found["ambiguous"]):
+                pool = [i for i in pool if i is not match]      # ισχυρή πρόταση: το τιμολόγιο δεσμεύεται από αυτή την κίνηση
 
     message = f"Εισήχθησαν {created} κινήσεις. Αυτόματα συνδέθηκαν με τιμολόγια: {auto_matched}."
     if needs_review:
@@ -410,6 +436,7 @@ async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, acce
             {"$set": {"match_status": "ignored", "matched_invoice_id": None, "matched_invoice_number": None,
                       "match_ambiguous": False}},
         )
+        await close_tx_notifications(firm_id_for(user), tx_id, "ignored", user["email"])
         return {"message": "Η κίνηση σημειώθηκε ως αγνοητέα"}
 
     if not invoice_id:
@@ -425,6 +452,7 @@ async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, acce
             detail += " Αν η διαφορά είναι αποδεκτή (π.χ. προμήθεια τράπεζας), επιβεβαιώστε ρητά με accept_difference=true."
         raise HTTPException(status_code=REFUSAL_STATUS.get(result["reason"], 409), detail=detail)
 
+    await close_tx_notifications(firm_id_for(user), tx_id, "already_settled", user["email"])
     message = ("Συνδέθηκε και το τιμολόγιο σημειώθηκε ως εξοφλημένο." if result["status"] == "paid"
                else "Η κατάθεση συνδέθηκε με το τιμολόγιο, που ήταν ήδη σημειωμένο ως εξοφλημένο.")
     if result["difference"]:
@@ -457,6 +485,7 @@ async def confirm_auto_matches(user: dict = Depends(get_current_user)):
             skipped.append({"id": str(tx["_id"]), "reason": result["reason"], "message": result["message"]})
         else:
             confirmed += 1
+            await close_tx_notifications(firm_id, tx["_id"], "already_settled", user["email"])
     message = f"Επιβεβαιώθηκαν {confirmed} συνδέσεις. Τα αντίστοιχα τιμολόγια εξοφλήθηκαν."
     if skipped:
         message += (f" {len(skipped)} χρειάζονται ατομικό έλεγχο (διαφορά ποσού, περισσότερα από ένα πιθανά "
