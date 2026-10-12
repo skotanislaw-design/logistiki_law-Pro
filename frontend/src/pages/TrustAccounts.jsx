@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { Vault, ArrowCircleDown, ArrowCircleUp, Receipt, Plus, User, Info, Warning } from "@phosphor-icons/react";
+import { Vault, Plus, User, Info, Warning } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { todayAthens } from "@/lib/utils";
 

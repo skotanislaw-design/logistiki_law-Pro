@@ -21,7 +21,7 @@ export function NotificationBell() {
         } else {
           setDecisions([]);
         }
-      } catch {}
+      } catch { /* προσωρινή αδυναμία: η επόμενη σάρωση (60 δευτ.) ξαναδοκιμάζει */ }
       try {
         const { data } = await axios.get(`${API}/hearings/alerts/list`);
         setAlerts(data);
@@ -33,7 +33,7 @@ export function NotificationBell() {
             else if (a.level === "warning") toast.warning(a.message, { duration: 8000 });
           }
         });
-      } catch {}
+      } catch { /* όπως παραπάνω */ }
     };
     poll();
     const t = setInterval(poll, 60000);

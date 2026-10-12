@@ -28,7 +28,9 @@ export default function Pinakia() {
       const { data } = await axios.get(`${API}/hearings`);
       setHearings(data);
       setSelected((prev) => (prev ? data.find((h) => h.id === prev.id) || data[0] || null : data[0] || null));
-    } catch {}
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);

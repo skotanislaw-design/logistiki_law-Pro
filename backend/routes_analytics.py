@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from calendar import monthrange
 from fastapi import APIRouter, Depends
 from db import db
+from tax_utils import athens_today
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from invoice_services import invoice_balances, open_total
@@ -21,7 +22,7 @@ def _add_months(d: date, months: int) -> date:
 @router.get("/cashflow")
 async def cash_flow_forecast(user: dict = Depends(get_current_user)):
     """Πρόβλεψη ταμείου 3 μηνών βάσει ανείσπρακτων + επαναλαμβανόμενων εξόδων + φορολογικών προθεσμιών."""
-    today = date.today()
+    today = athens_today()
     horizon_end = _add_months(today, 3)
     settings = await db.settings.find_one(tenant_query(user, {})) or {}
 
@@ -156,7 +157,7 @@ async def cash_flow_forecast(user: dict = Depends(get_current_user)):
 @router.get("/profitability")
 async def profitability(user: dict = Depends(get_current_user)):
     """Κερδοφορία ανά πελάτη, ανά τύπο υπόθεσης, top clients."""
-    today = date.today()
+    today = athens_today()
     year_start = f"{today.year}-01-01"
 
     invoices = await db.invoices.find(tenant_query(user, {"date": {"$gte": year_start}, "status": {"$in": ["issued", "paid"]}})).to_list(5000)

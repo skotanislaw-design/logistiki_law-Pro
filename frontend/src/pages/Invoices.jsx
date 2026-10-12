@@ -12,7 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { InvoiceDetailDialog } from "@/components/InvoiceDetailDialog";
-import { Plus, Trash, Microphone, PaperPlaneTilt, CloudCheck, Eye, PencilSimple, FilePdf, EnvelopeSimple, BellRinging, CheckCircle, ArrowClockwise, WarningCircle, Prohibit, ArrowUUpLeft } from "@phosphor-icons/react";
+import { Plus, Trash, Microphone, PaperPlaneTilt, CloudCheck, Eye, PencilSimple, FilePdf, BellRinging, CheckCircle, ArrowClockwise, WarningCircle, Prohibit, ArrowUUpLeft } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const VAT_RATES = [24, 13, 6, 0];
@@ -36,7 +36,6 @@ export default function Invoices() {
   const [recording, setRecording] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("");
   const [viewing, setViewing] = useState(null);
-  const [sendingId, setSendingId] = useState(null);
   const [reminderId, setReminderId] = useState(null);
   const [workingId, setWorkingId] = useState(null);
   const [issuingId, setIssuingId] = useState(null);
@@ -104,19 +103,6 @@ export default function Invoices() {
       toast.success(`Το PDF του ${invoiceLabel(inv)} δημιουργήθηκε`);
     } catch (e) {
       toast.error(errMsg(e));
-    }
-  };
-
-  const sendEmail = async (inv) => {
-    setSendingId(inv.id);
-    try {
-      const { data } = await axios.post(`${API}/invoices/${inv.id}/send-email`);
-      toast.success(`Το τιμολόγιο ${invoiceLabel(inv)} στάλθηκε στο ${data.email_sent_to}`);
-      load();
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setSendingId(null);
     }
   };
 
@@ -475,7 +461,7 @@ export default function Invoices() {
                   <Button size="sm" variant="destructive" onClick={stopRecording} data-testid="voice-record-stop">Διακοπή & Ανάλυση</Button>
                 )}
               </div>
-              {recording && <p className="text-xs text-destructive animate-pulse" aria-live="polite">● Ακούω... πείτε π.χ. "Τιμολόγιο για τον πελάτη Παπαδόπουλο, 500 ευρώ, νομική συμβουλή"</p>}
+              {recording && <p className="text-xs text-destructive animate-pulse" aria-live="polite">● Ακούω... πείτε π.χ. «Τιμολόγιο για τον πελάτη Παπαδόπουλο, 500 ευρώ, νομική συμβουλή»</p>}
               {voiceStatus && <p className="text-xs text-muted-foreground" aria-live="polite" data-testid="voice-status">{voiceStatus}</p>}
             </div>
           )}

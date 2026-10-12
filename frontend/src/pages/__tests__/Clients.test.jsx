@@ -6,7 +6,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { Toaster } from "@/components/ui/sonner";
 import Clients from "@/pages/Clients";
@@ -47,5 +47,47 @@ describe("Καρτέλα πελάτη", () => {
     );
     renderClients();
     expect(await screen.findByText(/Η συνεδρία έληξε/)).toBeInTheDocument();
+  });
+});
+
+describe("Σύνδεσμος πύλης πελάτη", () => {
+  const LINK = "https://app.example.gr/portal/TOKEN123";
+  const client = { id: "c1", name: "ΑΛΦΑ ΑΕ", afm: "123456783", client_type: "company", email: "", phone: "" };
+
+  function serveInvite() {
+    server.use(
+      http.get(`${API}/clients`, () => HttpResponse.json([client])),
+      http.post(`${API}/client-portal/invite`, () =>
+        HttpResponse.json({ message: "Δημιουργήθηκε σύνδεσμος πρόσβασης.", portal_link: LINK })),
+    );
+  }
+
+  // Το user-event.setup() αντικαθιστά το navigator.clipboard· ο δικός μας έλεγχος μπαίνει μετά.
+  function stubClipboard(writeText) {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  }
+
+  it("αντιγράφει τον σύνδεσμο και το λέει", async () => {
+    serveInvite();
+    const user = userEvent.setup();
+    const write = vi.fn().mockResolvedValue(undefined);
+    stubClipboard(write);
+    renderClients();
+    await user.click(await screen.findByTestId("invite-portal-c1"));
+    expect(await screen.findByText(/Ο σύνδεσμος αντιγράφηκε/)).toBeInTheDocument();
+    expect(write).toHaveBeenCalledWith(LINK);
+  });
+
+  it("αν η αντιγραφή αποτύχει, δεν ισχυρίζεται ότι αντιγράφηκε και δείχνει τον σύνδεσμο", async () => {
+    // Αλλιώς ο σύνδεσμος χανόταν: ο χρήστης πίστευε ότι τον έχει και ο μόνος τρόπος ήταν νέα πρόσκληση.
+    serveInvite();
+    const user = userEvent.setup();
+    const write = vi.fn().mockRejectedValue(new Error("NotAllowedError"));
+    stubClipboard(write);
+    renderClients();
+    await user.click(await screen.findByTestId("invite-portal-c1"));
+    expect(await screen.findByText(new RegExp(LINK.replaceAll("/", "\\/")))).toBeInTheDocument();
+    await waitFor(() => expect(write).toHaveBeenCalled());
+    expect(screen.queryByText(/Ο σύνδεσμος αντιγράφηκε/)).not.toBeInTheDocument();
   });
 });

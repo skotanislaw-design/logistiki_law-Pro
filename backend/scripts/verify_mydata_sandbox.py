@@ -29,12 +29,12 @@ import asyncio
 import json
 import os
 import sys
-from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import mydata_client as md  # noqa: E402
+from tax_utils import athens_today  # noqa: E402
 
 GREEN, RED, YELLOW, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
 
@@ -94,8 +94,8 @@ async def run(args) -> Report:
     }
     company = {"name": "Δοκιμαστική ΑΕ", "afm": args.counterpart_afm, "client_type": "company"}
     individual = {"name": "Δοκιμαστικός Ιδιώτης", "client_type": "individual"}
-    today = date.today().isoformat()
-    stamp = date.today().strftime("%m%d")
+    today = athens_today().isoformat()
+    stamp = athens_today().strftime("%m%d")
 
     print(f"\n{YELLOW}Περιβάλλον:{RESET} {settings['aade_environment']}  ·  ΑΦΜ {args.afm}\n")
 

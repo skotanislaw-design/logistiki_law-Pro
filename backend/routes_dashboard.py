@@ -1,10 +1,9 @@
-from datetime import date, datetime
 import calendar as pycal
 from fastapi import APIRouter, Depends
 from db import db
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
-from tax_utils import next_vat_deadline, next_efka_deadline
+from tax_utils import athens_today, next_vat_deadline, next_efka_deadline
 from invoice_services import invoice_balances, open_total
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -12,7 +11,7 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 @router.get("/summary")
 async def dashboard_summary(user: dict = Depends(get_current_user)):
-    today = date.today()
+    today = athens_today()
     month_start = today.replace(day=1).isoformat()
     settings = await db.settings.find_one(tenant_query(user, {}))
     vat_period = settings.get("vat_period", "monthly") if settings else "monthly"

@@ -16,6 +16,7 @@ from http_utils import content_disposition
 from ai_helpers import EMERGENT_LLM_KEY
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
+from tax_utils import athens_today
 
 router = APIRouter(prefix="/drafting", tags=["drafting"])
 
@@ -331,7 +332,7 @@ async def render_template(payload: TemplateVars, user: dict = Depends(get_curren
 
     settings = await db.settings.find_one(tenant_query(user, {})) or {}
     base_vars = {
-        "date": datetime.now().strftime("%d/%m/%Y"),
+        "date": athens_today().strftime("%d/%m/%Y"),
         "lawyer_name": settings.get("company_name", ""),
         "lawyer_firm": settings.get("company_name", ""),
         "bar_association": "Αθηνών",

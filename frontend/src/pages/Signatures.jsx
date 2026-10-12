@@ -84,7 +84,6 @@ export default function Signatures() {
   const [form, setForm] = useState({
     document_title: "", signer_name: "", signer_email: "", signer_role: "client", signature_data: "",
   });
-  const [verifyResult, setVerifyResult] = useState(null);
 
   const load = () => axios.get(`${API}/signatures`).then((r) => setSignatures(r.data)).catch((e) => toast.error(errMsg(e)));
   useEffect(() => { load(); }, []);
@@ -104,7 +103,6 @@ export default function Signatures() {
   const verify = async (id) => {
     try {
       const { data } = await axios.post(`${API}/signatures/${id}/verify`);
-      setVerifyResult({ id, ...data });
       toast[data.valid ? "success" : "error"](data.valid ? "Έγκυρη υπογραφή — ακεραιότητα επιβεβαιωμένη" : "Η υπογραφή έχει αλλοιωθεί!");
     } catch (e) { toast.error(errMsg(e)); }
   };

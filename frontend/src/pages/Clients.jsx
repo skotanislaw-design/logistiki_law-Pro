@@ -67,8 +67,16 @@ export default function Clients() {
         client_id: c.id,
         origin_url: window.location.origin,
       });
-      try { await navigator.clipboard.writeText(data.portal_link); } catch {}
-      toast.success((data.message || "Δημιουργήθηκε σύνδεσμος") + " · Ο σύνδεσμος αντιγράφηκε στο clipboard.");
+      const message = data.message || "Δημιουργήθηκε σύνδεσμος";
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(data.portal_link);
+        copied = true;
+      } catch {
+        // Άρνηση δικαιώματος ή μη ασφαλές περιβάλλον: ο σύνδεσμος πρέπει να φανεί, αλλιώς χάνεται.
+      }
+      if (copied) toast.success(`${message} · Ο σύνδεσμος αντιγράφηκε στο clipboard.`);
+      else toast.warning(`${message} · Η αυτόματη αντιγραφή δεν ήταν δυνατή — αντιγράψτε τον σύνδεσμο: ${data.portal_link}`, { duration: 60000 });
     } catch (e) { toast.error(errMsg(e)); }
   };
 

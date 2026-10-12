@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer, Cell, PieChart, Pie } from "recharts";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Trophy, ChartPieSlice, Receipt, Percent } from "@phosphor-icons/react";
+import { Trophy, ChartPieSlice } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const GOLD_TONES = ["#c9a227", "#e5c15a", "#8a6f1e", "#f4d97a", "#a8871f", "#deb944"];

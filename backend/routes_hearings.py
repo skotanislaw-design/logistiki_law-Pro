@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from typing import Optional
 from bson import ObjectId
 from db import db
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
-from tenant import tenant_query, firm_id_for
+from tax_utils import athens_today
 from models import Hearing
 from routes_cases import log_case_event
 
@@ -118,7 +118,7 @@ async def live_update(hid: str, payload: LiveUpdatePayload, user: dict = Depends
 
 @router.get("/alerts/list")
 async def alerts(user: dict = Depends(get_current_user)):
-    today = date.today().isoformat()
+    today = athens_today().isoformat()
     docs = await db.hearings.find(tenant_query(user, {"status": {"$nin": ["completed", "postponed"]}})).to_list(200)
     out = []
     for d in docs:

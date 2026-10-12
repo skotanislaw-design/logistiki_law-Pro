@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer, Legend, Line, ComposedChart } from "recharts";
+import { Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer, Legend, Line, ComposedChart } from "recharts";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
 import { TrendUp, TrendDown, ChartLineUp, Wallet, Warning } from "@phosphor-icons/react";
 import { toast } from "sonner";
 

@@ -1,12 +1,11 @@
 import json
 import re
 import uuid
-from datetime import date
 from ai_runtime import LlmChat, UserMessage, TextDelta, StreamDone
 from ai_helpers import EMERGENT_LLM_KEY
 from db import db
 from tenant import tenant_query, firm_id_for
-from tax_utils import next_vat_deadline, next_efka_deadline
+from tax_utils import athens_today, next_vat_deadline, next_efka_deadline
 from invoice_services import invoice_balances, open_total
 
 
@@ -15,7 +14,7 @@ def _fmt(v):
 
 
 async def build_context(user: dict) -> dict:
-    today = date.today()
+    today = athens_today()
     month_start = today.replace(day=1).isoformat()
     q = lambda extra=None: tenant_query(user, extra)  # noqa: E731
     settings = await db.settings.find_one(q()) or {}

@@ -1,5 +1,6 @@
 from io import BytesIO
-from datetime import date
+from branding import LETTERHEAD_LOGO
+from tax_utils import athens_today
 from docx import Document
 from docx.shared import Pt, Cm, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -9,7 +10,7 @@ from docx.oxml import OxmlElement
 NAVY = RGBColor(0x0A, 0x0F, 0x1E)
 GOLD = RGBColor(0xC9, 0xA2, 0x27)
 GRAY = RGBColor(0x5A, 0x61, 0x72)
-LOGO_PATH = "/app/backend/assets/letterhead_logo.png"
+LOGO_PATH = LETTERHEAD_LOGO
 
 GREEK_MONTHS = ["", "Ιανουαρίου", "Φεβρουαρίου", "Μαρτίου", "Απριλίου", "Μαΐου", "Ιουνίου",
                 "Ιουλίου", "Αυγούστου", "Σεπτεμβρίου", "Οκτωβρίου", "Νοεμβρίου", "Δεκεμβρίου"]
@@ -46,7 +47,7 @@ def build_letter_docx(settings: dict, recipient: str, subject: str, body: str) -
     rule = doc.add_paragraph()
     _gold_rule(rule)
 
-    today = date.today()
+    today = athens_today()
     date_p = doc.add_paragraph()
     date_p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     dr = date_p.add_run(f"Αθήνα, {today.day} {GREEK_MONTHS[today.month]} {today.year}")

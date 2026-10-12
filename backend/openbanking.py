@@ -23,6 +23,7 @@ from datetime import date, datetime, timezone, timedelta
 import httpx
 
 from crypto import decrypt
+from tax_utils import athens_today
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,7 @@ def normalize_transaction(raw: dict) -> dict:
     """Μία κίνηση του παρόχου → η μορφή που ήδη χρησιμοποιεί το `bank_transactions`."""
     booking = (raw.get("bookingDate") or raw.get("valueDate") or "")[:10]
     if not booking:
-        booking = date.today().isoformat()
+        booking = athens_today().isoformat()
     external_id = (raw.get("transactionId") or raw.get("internalTransactionId")
                    or f"{booking}|{_amount(raw):.2f}|{_description(raw)[:60]}")
     return {
@@ -172,4 +173,4 @@ def requisition_expiring(settings: dict, within_days: int = 7, today: date | Non
         expiry = date.fromisoformat(str(expires)[:10])
     except ValueError:
         return False
-    return (expiry - (today or date.today())).days <= within_days
+    return (expiry - (today or athens_today())).days <= within_days

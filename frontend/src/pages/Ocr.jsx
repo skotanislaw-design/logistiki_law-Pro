@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import axios, { API, dateFmt, errMsg } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { FileMagnifyingGlass, UploadSimple, ScanSmiley, WarningCircle, Sparkle } from "@phosphor-icons/react";
+import { UploadSimple, ScanSmiley, WarningCircle, Sparkle } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const CONFIDENCE_STYLE = {

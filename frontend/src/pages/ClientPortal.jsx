@@ -4,7 +4,7 @@ import axios from "axios";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { FilePdf, CreditCard, Briefcase, Vault, WarningCircle, CheckCircle, Scales } from "@phosphor-icons/react";
+import { FilePdf, CreditCard, Briefcase, WarningCircle, CheckCircle, Scales } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";

@@ -34,7 +34,7 @@ from pymongo.errors import DuplicateKeyError
 from db import db
 from crypto import decrypt
 from models import Notification, AutomationRun, VatPeriod, Expense
-from tax_utils import generate_tax_calendar, vat_deadline_for_period_end
+from tax_utils import athens_today, generate_tax_calendar, vat_deadline_for_period_end
 from email_utils import smtp_ready, send_email_with_pdf
 from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
@@ -269,7 +269,7 @@ def reminder_due(invoice: dict, settings: dict, today: _date | None = None) -> b
         return False
     if invoice.get("credit_note_id"):
         return False        # υπάρχει πιστωτικό: το ποσό που οφείλεται δεν είναι πια το ποσό του τιμολογίου
-    today = today or _date.today()
+    today = today or athens_today()
     try:
         issued = _date.fromisoformat((invoice.get("date") or "")[:10])
     except ValueError:
@@ -396,7 +396,7 @@ async def job_reminders(firm_id: str, settings: dict) -> dict:
     if not smtp_ready(settings):
         return {"skipped": True, "reason": "smtp"}
     queued = skipped = 0
-    today = _date.today()
+    today = athens_today()
     async for inv in db.invoices.find(firm_query(firm_id, {"status": "issued"})):
         if not reminder_due(inv, settings, today):
             skipped += 1
@@ -523,7 +523,7 @@ async def job_reconcile(firm_id: str, settings: dict) -> dict:
 
 
 async def job_deadlines(firm_id: str, settings: dict) -> dict:
-    today = _date.today()
+    today = athens_today()
     alert_days = settings.get("deadline_alert_days") or [7, 1]
     raised = 0
     for item in generate_tax_calendar(today, settings.get("vat_period", "monthly")):
@@ -581,7 +581,7 @@ async def compute_vat_period(firm_id: str, period: dict) -> VatPeriod:
 
 async def job_vat_periods(firm_id: str, settings: dict) -> dict:
     computed = 0
-    for period in closed_vat_periods(_date.today(), settings.get("vat_period", "monthly")):
+    for period in closed_vat_periods(athens_today(), settings.get("vat_period", "monthly")):
         existing = await db.vat_periods.find_one(firm_query(firm_id, {"period": period["period"]}))
         vp = await compute_vat_period(firm_id, period)
         if existing:
@@ -682,7 +682,7 @@ async def job_inbox_receipts(firm_id: str, settings: dict) -> dict:
         exp = Expense(
             firm_id=firm_id,
             vendor=(parsed or {}).get("vendor") or att["sender"][:80] or "Άγνωστος προμηθευτής",
-            date=(parsed or {}).get("date") or _date.today().isoformat(),
+            date=(parsed or {}).get("date") or athens_today().isoformat(),
             amount=float((parsed or {}).get("amount") or 0),
             vat_amount=float((parsed or {}).get("vat_amount") or 0),
             vat_rate=int((parsed or {}).get("vat_rate") or 24),
@@ -782,7 +782,7 @@ async def job_mydata_expenses(firm_id: str, settings: dict) -> dict:
 # ---------------------------------------------------------------- digest ----
 
 async def firm_snapshot(firm_id: str, settings: dict, since: datetime | None = None) -> dict:
-    today = _date.today()
+    today = athens_today()
     month_start = today.replace(day=1).isoformat()
     invoices = await db.invoices.find(firm_query(firm_id, {"status": {"$in": ["issued", "paid"]}})).to_list(5000)
     expenses = await db.expenses.find(firm_query(firm_id, {"date": {"$gte": month_start}})).to_list(5000)
@@ -888,7 +888,7 @@ async def job_digest(firm_id: str, settings: dict, force: bool = False) -> dict:
     if not to:
         return {"skipped": True, "reason": "no_recipient"}
     entry = await outbox.enqueue(firm_id, "email_digest", {"firm_id": firm_id, "to": to},
-                                 dedupe_key=f"email_digest:{_date.today().isoformat()}")
+                                 dedupe_key=f"email_digest:{athens_today().isoformat()}")
     return {"queued_to": to} if entry else {"skipped": True, "reason": "already_queued"}
 
 
@@ -919,7 +919,7 @@ async def job_bank_sync(firm_id: str, settings: dict) -> dict:
     # Επικάλυψη ημερών: οι τράπεζες αργούν να οριστικοποιήσουν κινήσεις.
     last = settings.get("bank_sync_last_date")
     date_from = (_date.fromisoformat(last) - timedelta(days=5)).isoformat() if last else \
-        (_date.today() - timedelta(days=90)).isoformat()
+        (athens_today() - timedelta(days=90)).isoformat()
 
     pool = await build_match_pool(firm_id, settings)
     created = skipped = matched = 0
@@ -959,7 +959,7 @@ async def job_bank_sync(firm_id: str, settings: dict) -> dict:
                 if reserves_invoice(found["confidence"], found["ambiguous"]):
                     pool = [i for i in pool if i is not match]      # ισχυρή πρόταση: δεσμεύεται από αυτή την κίνηση
 
-    await db.settings.update_one(firm_query(firm_id), {"$set": {"bank_sync_last_date": _date.today().isoformat()}})
+    await db.settings.update_one(firm_query(firm_id), {"$set": {"bank_sync_last_date": athens_today().isoformat()}})
     if created:
         await db.notifications.update_many(
             firm_query(firm_id, {"dedupe_key": "bank_sync_failed", "resolved_at": None}),

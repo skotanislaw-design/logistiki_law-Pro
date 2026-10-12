@@ -66,10 +66,6 @@ async def outstanding_amount(firm_id: str, invoice: dict, settings: dict, client
     return round(max(payable - applied, 0.0), 2), withheld
 
 
-def _eur(value: float) -> str:
-    return f"{value:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
 def check_explicit_withholding(invoice: dict, invoice_type: str) -> None:
     """Η ρητή παρακράτηση του τιμολογίου (`withholding_amount`) έχει νόημα μόνο σε ΤΠΥ και μέσα σε όρια.
 
@@ -492,7 +488,7 @@ async def build_payment_link(invoice: dict, settings: dict) -> str:
 
 
 def days_since_invoice(invoice: dict, today: _date | None = None) -> int:
-    today = today or _date.today()
+    today = today or athens_today()
     try:
         issued_date = _date.fromisoformat((invoice.get("date") or "")[:10])
         return max(0, (today - issued_date).days)

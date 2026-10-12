@@ -15,7 +15,7 @@
 """
 import os
 from decimal import Decimal
-from datetime import date
+from tax_utils import athens_today
 from xml.sax.saxutils import escape
 from xml.etree.ElementTree import fromstring
 
@@ -468,7 +468,7 @@ def parse_requested_docs(xml_text: str, our_afm: str) -> list[dict]:
             "uid": _text(_find(inv, "uid")),
             "issuer_afm": issuer_afm,
             "issuer_name": _text(_find(issuer, "name")),
-            "date": _text(_find(header, "issueDate"))[:10] or date.today().isoformat(),
+            "date": _text(_find(header, "issueDate"))[:10] or athens_today().isoformat(),
             "invoice_type": _text(_find(header, "invoiceType")),
             "series": _text(_find(header, "series")),
             "aa": _text(_find(header, "aa")),

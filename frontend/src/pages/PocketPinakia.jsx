@@ -40,7 +40,7 @@ export default function PocketPinakia() {
     const t = setInterval(() => setTick((v) => v + 1), 30000);
     return () => clearInterval(t);
   }, []);
-  useEffect(() => { if (tick > 0) load(); /* eslint-disable-next-line */ }, [tick]);
+  useEffect(() => { if (tick > 0) load(); }, [tick]);
 
   const liveUpdate = async (hid, payload) => {
     try {
@@ -54,7 +54,7 @@ export default function PocketPinakia() {
     const next = (h.current_number || 0) + 1;
     await liveUpdate(h.id, { current_number: next });
     if (h.pinakio_number - next === 1) {
-      try { navigator.vibrate?.([100, 50, 100]); } catch {}
+      try { navigator.vibrate?.([100, 50, 100]); } catch { /* η δόνηση είναι προαιρετική */ }
     }
   };
 

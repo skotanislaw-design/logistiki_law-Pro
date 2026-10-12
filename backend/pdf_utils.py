@@ -7,6 +7,8 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
 from reportlab.lib.styles import ParagraphStyle
 
+from branding import LETTERHEAD_LOGO
+
 
 def _gr_date(value) -> str:
     """ΕΕΕΕ-ΜΜ-ΗΗ -> ΗΗ/ΜΜ/ΕΕΕΕ. Ελληνικό παραστατικό δεν γράφει ISO ημερομηνία."""
@@ -253,7 +255,7 @@ def build_grammatio_pdf(grammatio: dict, settings: dict) -> bytes:
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=22 * mm, rightMargin=22 * mm, topMargin=14 * mm, bottomMargin=16 * mm)
     story = []
 
-    story.append(RLImage("/app/backend/assets/letterhead_logo.png", width=48 * mm, height=32 * mm, hAlign="CENTER"))
+    story.append(RLImage(LETTERHEAD_LOGO, width=48 * mm, height=32 * mm, hAlign="CENTER"))
     story.append(Spacer(1, 4 * mm))
     story.append(HRFlowable(width="100%", thickness=0.8, color=GOLD))
     story.append(Spacer(1, 6 * mm))
@@ -324,7 +326,7 @@ def build_letter_pdf(settings: dict, recipient: str, subject: str, body: str) ->
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=22 * mm, rightMargin=22 * mm, topMargin=14 * mm, bottomMargin=16 * mm)
     story = []
 
-    story.append(RLImage("/app/backend/assets/letterhead_logo.png", width=52 * mm, height=34.7 * mm, hAlign="CENTER"))
+    story.append(RLImage(LETTERHEAD_LOGO, width=52 * mm, height=34.7 * mm, hAlign="CENTER"))
     story.append(Spacer(1, 4 * mm))
     story.append(HRFlowable(width="100%", thickness=0.8, color=GOLD))
     story.append(Spacer(1, 8 * mm))

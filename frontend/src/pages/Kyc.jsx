@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ShieldCheck, WarningCircle, Warning, User, CheckCircle } from "@phosphor-icons/react";
+import { ShieldCheck, Warning, User, CheckCircle } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const RISK_STYLE = {
