@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams, useLocation } from "react-router-dom";
 import axios from "axios";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { FilePdf, CreditCard, Briefcase, WarningCircle, CheckCircle, Scales } from "@phosphor-icons/react";
+import { FilePdf, CreditCard, Briefcase, WarningCircle, CheckCircle, Scales, Spinner, XCircle } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
@@ -13,18 +13,133 @@ const dateFmt = (s) => s ? new Date(s).toLocaleDateString("el-GR") : "—";
 const STATUS = { issued: "Ανεξόφλητο", paid: "Πληρωμένο", cancelled: "Ακυρωμένο" };
 const STATUS_STYLE = { issued: "text-[hsl(var(--gold))]", paid: "text-[hsl(var(--success))]", cancelled: "text-muted-foreground" };
 
-export default function ClientPortal() {
+const NOTICE = {
+  checking: { icon: "spin", tone: "", title: "Επιβεβαίωση της πληρωμής σας…", text: "Παρακαλούμε περιμένετε λίγα δευτερόλεπτα." },
+  failed: {
+    icon: "bad", tone: "border-[hsl(var(--destructive))]/40", title: "Η πληρωμή δεν ολοκληρώθηκε",
+    text: "Αν έχει γίνει χρέωση στην κάρτα σας, επικοινωνήστε με το γραφείο. Μπορείτε επίσης να δοκιμάσετε ξανά από τον κατάλογο τιμολογίων.",
+  },
+  timeout: {
+    icon: "wait", tone: "", title: "Η πληρωμή σας επεξεργάζεται ακόμη",
+    text: "Το τιμολόγιο θα εμφανιστεί ως εξοφλημένο μόλις επιβεβαιωθεί η πληρωμή. Ανανεώστε τη σελίδα σε λίγο.",
+  },
+  error: {
+    icon: "wait", tone: "", title: "Δεν ήταν δυνατή η επιβεβαίωση της πληρωμής αυτή τη στιγμή",
+    text: "Ανανεώστε τη σελίδα σε λίγο ή επικοινωνήστε με το γραφείο.",
+  },
+  cancelled: {
+    icon: "bad", tone: "", title: "Η πληρωμή ακυρώθηκε",
+    text: "Δεν έγινε καμία χρέωση. Μπορείτε να δοκιμάσετε ξανά όποτε θέλετε.",
+  },
+  unverified: {
+    icon: "wait", tone: "", title: "Επιστρέψατε από τη σελίδα πληρωμής",
+    text: "Η κατάσταση των τιμολογίων παρακάτω είναι η τρέχουσα. Αν πληρώσατε πριν από λίγο, ανανεώστε τη σελίδα σε λίγο.",
+  },
+};
+
+function PaymentNotice({ payment, cancelled, returnedWithoutSession }) {
+  let key = null;
+  let body = null;
+  if (payment?.state === "paid") {
+    key = "paid";
+    body = (
+      <>
+        <CheckCircle size={24} className="text-[hsl(var(--success))]" weight="fill" />
+        <div>
+          <div className="font-medium">Η πληρωμή σας ολοκληρώθηκε επιτυχώς</div>
+          <p className="text-xs text-muted-foreground">
+            {payment.invoice ? `Τιμολόγιο ${payment.invoice}` : "Το τιμολόγιο"}{payment.amount != null ? ` · ${money(payment.amount)}` : ""}. Ευχαριστούμε!
+          </p>
+        </div>
+      </>
+    );
+  } else {
+    key = payment?.state || (cancelled ? "cancelled" : returnedWithoutSession ? "unverified" : null);
+    if (!key) return null;
+    const n = NOTICE[key];
+    body = (
+      <>
+        {n.icon === "spin" ? <Spinner size={24} className="animate-spin text-[hsl(var(--gold))]" />
+          : n.icon === "bad" ? <XCircle size={24} className="text-[hsl(var(--destructive))]" />
+          : <WarningCircle size={24} className="text-[hsl(var(--gold))]" />}
+        <div>
+          <div className="font-medium">{n.title}</div>
+          <p className="text-xs text-muted-foreground">{n.text}</p>
+        </div>
+      </>
+    );
+  }
+  const tone = key === "paid" ? "border-[hsl(var(--success))]/40" : (NOTICE[key]?.tone || "");
+  return <div className={`lux-card p-4 flex items-center gap-3 ${tone}`} data-testid={`portal-payment-${key}`} role="status">{body}</div>;
+}
+
+// Μετά την πληρωμή το Stripe επιστρέφει στη σελίδα της πύλης με `?paid=1&session_id=…` (ή `?cancelled=1`). Η επιστροφή δεν
+// αποδεικνύει ότι η πληρωμή εφαρμόστηκε στο τιμολόγιο (το webhook μπορεί να καθυστερεί): η σελίδα ρωτά τον server για τη
+// συνεδρία, κάθε `pollMs`, έως `maxPolls` φορές, και μόνο όταν επιβεβαιωθεί δείχνει επιτυχία.
+const goTo = (url) => { window.location.href = url; };
+
+export default function ClientPortal({ pollMs = 2000, maxPolls = 15, redirect = goTo }) {
   const { token } = useParams();
   const location = useLocation();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [paying, setPaying] = useState(null);
+  // Οι παράμετροι επιστροφής διαβάζονται μία φορά, κατά την άφιξη στη σελίδα.
+  const [returned] = useState(() => {
+    const params = new URLSearchParams(location.search);
+    return {
+      sessionId: params.get("session_id") || "",
+      paid: params.get("paid") === "1",
+      cancelled: params.get("cancelled") === "1",
+    };
+  });
+  const [payment, setPayment] = useState(returned.paid && returned.sessionId ? { state: "checking" } : null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     axios.get(`${API}/portal/${token}`)
       .then((r) => setData(r.data))
       .catch((e) => setError(e.response?.data?.detail || "Ο σύνδεσμος δεν είναι έγκυρος"));
   }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!returned.paid || !returned.sessionId) return undefined;
+    let stopped = false;
+    let timer = null;
+    let attempts = 0;
+    const poll = async () => {
+      try {
+        const { data: tx } = await axios.get(`${API}/payments/status/${returned.sessionId}`);
+        if (stopped) return;
+        if (tx.payment_status === "paid") {
+          setPayment({ state: "paid", invoice: tx.invoice_number, amount: tx.amount });
+          load();                                   // το τιμολόγιο εμφανίζεται πλέον ως εξοφλημένο
+          return;
+        }
+        if (tx.payment_status === "failed" || tx.payment_status === "expired") {
+          setPayment({ state: "failed" });
+          return;
+        }
+      } catch {
+        if (!stopped) setPayment({ state: "error" });
+        return;
+      }
+      attempts += 1;
+      if (attempts < maxPolls) timer = setTimeout(poll, pollMs);
+      else setPayment({ state: "timeout" });
+    };
+    poll();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [returned, load, pollMs, maxPolls]);
+
+  // Πίσω από τη σελίδα πληρωμής του Stripe ο browser μπορεί να επαναφέρει την πύλη από την προσωρινή μνήμη, με το κουμπί
+  // «Πληρωμή» ακόμη απενεργοποιημένο.
+  useEffect(() => {
+    const reset = (e) => { if (e.persisted) setPaying(null); };
+    window.addEventListener("pageshow", reset);
+    return () => window.removeEventListener("pageshow", reset);
+  }, []);
 
   const downloadPdf = (invoiceId, number) => {
     const url = `${API}/portal/${token}/invoice/${invoiceId}/pdf`;
@@ -42,7 +157,7 @@ export default function ClientPortal() {
         origin_url: `${origin}/portal/${token}`,
         client_token: token,
       });
-      window.location.href = res.checkout_url;
+      redirect(res.checkout_url);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Αποτυχία δημιουργίας πληρωμής");
       setPaying(null);
@@ -63,10 +178,6 @@ export default function ClientPortal() {
   }
   if (!data) return <div className="min-h-screen flex items-center justify-center text-muted-foreground">Φόρτωση...</div>;
 
-  // Check if returning from successful payment
-  const params = new URLSearchParams(location.search);
-  const paidNotice = params.get("paid") === "1";
-
   return (
     <div className="min-h-screen p-6" data-testid="portal-page">
       <div className="max-w-5xl mx-auto space-y-6">
@@ -81,15 +192,7 @@ export default function ClientPortal() {
           </div>
         </div>
 
-        {paidNotice && (
-          <div className="lux-card p-4 border-[hsl(var(--success))]/40 flex items-center gap-3">
-            <CheckCircle size={24} className="text-[hsl(var(--success))]" weight="fill" />
-            <div>
-              <div className="font-medium">Η πληρωμή σας ολοκληρώθηκε επιτυχώς</div>
-              <p className="text-xs text-muted-foreground">Ενημερώθηκαν τα αρχεία του γραφείου. Ευχαριστούμε!</p>
-            </div>
-          </div>
-        )}
+        <PaymentNotice payment={payment} cancelled={returned.cancelled} returnedWithoutSession={returned.paid && !returned.sessionId} />
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="lux-card p-4">

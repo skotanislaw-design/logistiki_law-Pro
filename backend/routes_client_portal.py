@@ -1,6 +1,8 @@
 """Client Portal — Δημόσιο portal για πελάτες με magic-link token.
 Ο δικηγόρος στέλνει στον πελάτη magic link (via email) → ο πελάτης βλέπει τιμολόγια/υποθέσεις/έγγραφα του.
 """
+import html
+import os
 import secrets
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -8,7 +10,7 @@ from pydantic import BaseModel
 from bson import ObjectId
 from audit import audit_portal_read
 from db import db, fetch_all
-from http_utils import content_disposition
+from http_utils import allowed_origins, checked_return_url, configured_origin, content_disposition
 from models import ClientPortalToken
 from auth import get_current_user
 from rate_limit import enforce, key_for_token
@@ -30,6 +32,25 @@ class InviteRequest(BaseModel):
     origin_url: str = ""
 
 
+def _portal_base(origin_url: str, settings: dict) -> str:
+    """Η διεύθυνση της εφαρμογής για τον σύνδεσμο του email, επικυρωμένη (βλ. ``http_utils.checked_return_url``).
+
+    Ο σύνδεσμος φτάνει στον πελάτη σε email του γραφείου· αν το ``origin_url`` του αιτήματος μπαινόταν αυτούσιο, ένας
+    σύνδεσμος προς ξένο ιστότοπο θα έφτανε ως «ασφαλής πρόσβαση στον φάκελό σας». Επιτρέπονται οι διευθύνσεις της
+    εγκατάστασης και η ``public_url`` των Ρυθμίσεων *αυτού* του γραφείου. Χωρίς διεύθυνση από τον browser, χρησιμοποιείται η
+    ``public_url`` των Ρυθμίσεων και μετά το ``PUBLIC_URL``· χωρίς καμία, ο σύνδεσμος μένει σχετικός (``/portal/<token>``).
+    """
+    public_url = settings.get("public_url")
+    if (origin_url or "").strip():
+        base = checked_return_url(origin_url, [*allowed_origins(), *([public_url] if public_url else [])])
+        if base is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Μη έγκυρη διεύθυνση εφαρμογής για τον σύνδεσμο. Ανοίξτε την εφαρμογή από τη διεύθυνση του γραφείου.")
+        return base
+    return configured_origin(public_url, os.environ.get("PUBLIC_URL"))
+
+
 @router.post("/invite")
 async def invite_client(payload: InviteRequest, user: dict = Depends(get_current_user)):
     """Δημιουργεί magic link για πρόσβαση πελάτη και στέλνει email."""
@@ -42,6 +63,9 @@ async def invite_client(payload: InviteRequest, user: dict = Depends(get_current
     if not client.get("email"):
         raise HTTPException(status_code=400, detail="Ο πελάτης δεν έχει email — προσθέστε ένα στην καρτέλα του.")
 
+    settings = await db.settings.find_one(tenant_query(user, {})) or {}
+    base = _portal_base(payload.origin_url, settings)              # πριν δημιουργηθεί token: το απορριπτέο αίτημα δεν αφήνει ίχνος
+
     token = secrets.token_urlsafe(32)
     expires = datetime.now(timezone.utc) + timedelta(days=30)
     tk = ClientPortalToken(
@@ -53,27 +77,27 @@ async def invite_client(payload: InviteRequest, user: dict = Depends(get_current
     )
     await db.client_portal_tokens.insert_one(tk.to_mongo())
 
-    portal_link = f"{payload.origin_url}/portal/{token}" if payload.origin_url else f"/portal/{token}"
+    portal_link = f"{base}/portal/{token}"
 
     # Στείλε email αν είναι διαθέσιμο SMTP
-    settings = await db.settings.find_one(tenant_query(user, {})) or {}
     email_sent = False
     from email_utils import smtp_ready, send_email_with_pdf
     if smtp_ready(settings):
         try:
             company = settings.get("company_name") or "Nomos One"
             subject = f"Πρόσβαση στον πελατολογικό σας φάκελο — {company}"
-            html = f"""
+            # Ό,τι μπαίνει στο HTML περνά από escape: το όνομα του πελάτη (εισαγωγές, OCR) δεν είναι αξιόπιστο κείμενο.
+            html_body = f"""
             <html><body style="font-family:Arial,sans-serif;color:#1a2035;max-width:560px;">
               <div style="background:#0a0f1e;padding:20px 24px;border-bottom:3px solid #c9a227;">
                 <span style="color:#c9a227;font-size:20px;font-weight:bold;letter-spacing:2px;">NOMOS ONE</span>
               </div>
               <div style="padding:24px;">
-                <p>Αγαπητέ/ή <strong>{client.get('name')}</strong>,</p>
+                <p>Αγαπητέ/ή <strong>{html.escape(str(client.get('name') or ''))}</strong>,</p>
                 <p>Σας παρέχουμε ασφαλή πρόσβαση στον πελατολογικό σας φάκελο.
                 Μπορείτε να δείτε τα τιμολόγιά σας, το ιστορικό υποθέσεων και να πληρώσετε online.</p>
                 <p style="margin:20px 0;">
-                  <a href="{portal_link}" style="background:#c9a227;color:#0a0f1e;padding:12px 24px;
+                  <a href="{html.escape(portal_link)}" style="background:#c9a227;color:#0a0f1e;padding:12px 24px;
                      text-decoration:none;font-weight:600;border-radius:4px;">Είσοδος στον φάκελο</a>
                 </p>
                 <p style="font-size:11px;color:#8a93a8;">Ο σύνδεσμος λήγει σε 30 ημέρες.
@@ -82,7 +106,7 @@ async def invite_client(payload: InviteRequest, user: dict = Depends(get_current
             </body></html>
             """
             text = f"Αγαπητέ/ή {client.get('name')},\n\nΠρόσβαση στον φάκελό σας: {portal_link}\n\nΛήγει σε 30 ημέρες."
-            await send_email_with_pdf(settings, client["email"], subject, text, html)
+            await send_email_with_pdf(settings, client["email"], subject, text, html_body)
             email_sent = True
         except Exception:
             pass
@@ -265,11 +289,14 @@ async def portal_invoice_pdf(token: str, invoice_id: str, request: Request):
     from pdf_utils import build_invoice_pdf
     tk = await _validate_token(token, request)
     try:
-        inv = await db.invoices.find_one({"_id": ObjectId(invoice_id), "firm_id": tk.get("firm_id", "legacy-default-firm")})
+        oid = ObjectId(invoice_id)
     except Exception:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
-    if not inv or inv.get("client_id") != tk["client_id"]:
-        raise HTTPException(status_code=403, detail="Δεν επιτρέπεται η πρόσβαση σε αυτό το τιμολόγιο.")
+    # Μέσα στα τιμολόγια αυτού του πελάτη και γραφείου: το τιμολόγιο άλλου πελάτη είναι ίδιο με ένα που δεν υπάρχει (404),
+    # αντί για 403 που θα επιβεβαίωνε ότι υπάρχει (βλ. routes_payments._validate_invoice_and_get_amount).
+    inv = await db.invoices.find_one({"_id": oid, "firm_id": tk.get("firm_id", "legacy-default-firm"), "client_id": tk["client_id"]})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     client = await db.clients.find_one({"_id": ObjectId(tk["client_id"]), "firm_id": tk.get("firm_id", "legacy-default-firm")})
     settings = await db.settings.find_one({"firm_id": tk.get("firm_id", "legacy-default-firm")}) or {}
     pdf_bytes = build_invoice_pdf(inv, client or {}, settings)

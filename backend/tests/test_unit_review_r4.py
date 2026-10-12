@@ -111,6 +111,7 @@ def stripe_calls(monkeypatch):
         return Session()
 
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_realistic_key")
+    monkeypatch.setenv("PUBLIC_URL", "https://nomos.example.gr")      # χωρίς διεύθυνση εφαρμογής δεν δημιουργείται σύνδεσμος
     monkeypatch.setattr(stripe.checkout.Session, "create", staticmethod(fake_create))
     return created
 

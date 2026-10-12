@@ -16,6 +16,7 @@ from tenant import tenant_query, firm_id_for
 # Δέκα μηνύματα το λεπτό καλύπτουν άνετα κάθε πραγματική συνομιλία.
 CHAT_LIMIT_PER_MINUTE = 10
 MAX_MESSAGE_LENGTH = 4000
+VISIBLE_MESSAGES = 500        # πόσα μηνύματα δείχνει μια συνομιλία: τα ΝΕΟΤΕΡΑ (παλιότερα: τα παλαιότερα, και τα νεότερα χάνονταν)
 
 router = APIRouter(prefix="/portal-chat", tags=["portal-chat"])
 public_router = APIRouter(prefix="/portal", tags=["portal-chat-public"])
@@ -62,14 +63,31 @@ async def list_conversations(user: dict = Depends(get_current_user)):
     return convos
 
 
+async def _newest_messages(query: dict) -> list[dict]:
+    """Τα ``VISIBLE_MESSAGES`` νεότερα μηνύματα, με το παλαιότερο πρώτο.
+
+    Το ``sort(created_at, 1).to_list(500)`` επέστρεφε τα **παλαιότερα** 500: σε μακρά συνομιλία τα νεότερα μηνύματα δεν
+    φαίνονταν ποτέ — ούτε στον δικηγόρο ούτε στον πελάτη."""
+    newest_first = await db.portal_messages.find(query).sort("created_at", -1).to_list(VISIBLE_MESSAGES)
+    return newest_first[::-1]
+
+
+async def _mark_read(shown: list[dict], sender: str, base_query: dict) -> None:
+    """Σημαίνει ως διαβασμένα μόνο όσα μηνύματα του ``sender`` **εμφανίστηκαν**· ό,τι έμεινε έξω από το παράθυρο
+    παραμένει αδιάβαστο (και μετρά στον μετρητή αδιάβαστων), αντί να χαθεί σιωπηλά."""
+    ids = [d["_id"] for d in shown if d.get("sender") == sender and d.get("read_at") is None]
+    if ids:
+        await db.portal_messages.update_many(
+            {**base_query, "_id": {"$in": ids}},
+            {"$set": {"read_at": datetime.now(timezone.utc).isoformat()}},
+        )
+
+
 @router.get("/messages/{client_id}")
 async def get_messages(client_id: str, user: dict = Depends(get_current_user)):
-    docs = await db.portal_messages.find(tenant_query(user, {"client_id": client_id})).sort("created_at", 1).to_list(500)
-    # Auto-mark ως read όσα ήταν από τον client
-    await db.portal_messages.update_many(
-        tenant_query(user, {"client_id": client_id, "sender": "client", "read_at": None}),
-        {"$set": {"read_at": datetime.now(timezone.utc).isoformat()}},
-    )
+    query = tenant_query(user, {"client_id": client_id})
+    docs = await _newest_messages(query)
+    await _mark_read(docs, "client", query)               # Auto-mark ως read όσα ήταν από τον client
     return [PortalMessage.from_mongo(d) for d in docs]
 
 
@@ -123,12 +141,9 @@ async def unread_count(user: dict = Depends(get_current_user)):
 @public_router.get("/{token}/chat")
 async def portal_get_messages(token: str, request: Request):
     tk = await _validate_token(token, request)
-    docs = await db.portal_messages.find({"client_id": tk["client_id"], "firm_id": tk.get("firm_id", "legacy-default-firm")}).sort("created_at", 1).to_list(500)
-    # Auto-mark lawyer messages as read from client side
-    await db.portal_messages.update_many(
-        {"client_id": tk["client_id"], "firm_id": tk.get("firm_id", "legacy-default-firm"), "sender": "lawyer", "read_at": None},
-        {"$set": {"read_at": datetime.now(timezone.utc).isoformat()}},
-    )
+    query = {"client_id": tk["client_id"], "firm_id": tk.get("firm_id", "legacy-default-firm")}
+    docs = await _newest_messages(query)
+    await _mark_read(docs, "lawyer", query)               # Auto-mark lawyer messages as read from client side
     return [PortalMessage.from_mongo(d) for d in docs]
 
 

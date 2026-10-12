@@ -14,12 +14,15 @@
 """
 
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from pymongo import ReturnDocument
 
 from db import db
+
+logger = logging.getLogger(__name__)
 
 
 def key_for_token(token: str) -> str:
@@ -51,7 +54,11 @@ async def check(bucket: str, key: str, limit: int, window_seconds: int) -> tuple
             upsert=True,
             return_document=ReturnDocument.AFTER,
         )
-    except Exception:
+    except Exception as e:  # noqa: BLE001 — σκόπιμα «ανοιχτά», αλλά όχι σιωπηλά
+        # Αν ο μετρητής χαλάσει, κάθε όριο ρυθμού παύει να ισχύει χωρίς κανένα σημάδι. Το αίτημα περνά (βλ. πάνω), αλλά
+        # το πρόβλημα καταγράφεται ώστε να φανεί στον διαχειριστή.
+        logger.warning("Ο μετρητής ρυθμού αιτημάτων απέτυχε (%s): το αίτημα επιτρέπεται, το όριο δεν εφαρμόζεται — %s: %s",
+                       bucket, type(e).__name__, e)
         return True, 0
 
     if (rec or {}).get("count", 1) > limit:

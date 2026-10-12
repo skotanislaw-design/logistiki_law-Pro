@@ -3,12 +3,28 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { Button } from "@/components/ui/button";
 import { CheckCircle, XCircle, Spinner } from "@phosphor-icons/react";
+import { useAuth } from "@/context/AuthContext";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
+
+// Το «πίσω» του browser οδηγούσε στη σελίδα πληρωμής του Stripe (που έχει πια ολοκληρωθεί): αδιέξοδο. Το προσωπικό του
+// γραφείου επιστρέφει στα τιμολόγια· ο πελάτης (που φτάνει εδώ από σύνδεσμο πληρωμής σε email υπενθύμισης, χωρίς λογαριασμό)
+// δεν έχει πού να πάει στην εφαρμογή και απλώς ενημερώνεται ότι μπορεί να κλείσει τη σελίδα.
+function Exit({ user, navigate, outline = false }) {
+  if (user) {
+    return (
+      <Button className="mt-6" variant={outline ? "outline" : "default"} onClick={() => navigate("/invoices")} data-testid="payment-back">
+        Επιστροφή στα τιμολόγια
+      </Button>
+    );
+  }
+  return <p className="text-xs text-muted-foreground mt-6" data-testid="payment-close">Μπορείτε να κλείσετε αυτή τη σελίδα.</p>;
+}
 
 export default function PaymentResult({ mode = "success" }) {
   const [params] = useSearchParams();
   const navigate = useNavigate();
+  const { user } = useAuth() || {};
   const sessionId = params.get("session_id");
   const [status, setStatus] = useState("checking");
   const [tx, setTx] = useState(null);
@@ -52,7 +68,7 @@ export default function PaymentResult({ mode = "success" }) {
               Το τιμολόγιο {tx?.invoice_number} για {(tx?.amount || 0).toFixed(2)} € εξοφλήθηκε.
             </p>
             <p className="text-xs text-muted-foreground mt-2">Θα λάβετε επιβεβαίωση στο email σας.</p>
-            <Button className="mt-6" onClick={() => navigate(-1)}>Επιστροφή</Button>
+            <Exit user={user} navigate={navigate} />
           </>
         )}
         {(status === "cancelled" || status === "failed" || status === "timeout" || status === "error") && (
@@ -64,7 +80,7 @@ export default function PaymentResult({ mode = "success" }) {
             <p className="text-sm text-muted-foreground mt-2">
               {status === "cancelled" ? "Μπορείτε να δοκιμάσετε ξανά όποτε θέλετε." : "Παρακαλώ επικοινωνήστε με το γραφείο ή δοκιμάστε ξανά."}
             </p>
-            <Button className="mt-6" variant="outline" onClick={() => navigate(-1)}>Επιστροφή</Button>
+            <Exit user={user} navigate={navigate} outline />
           </>
         )}
       </div>

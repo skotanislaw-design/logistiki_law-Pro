@@ -50,14 +50,24 @@ async def payment_config(user: dict = Depends(get_current_user)):
     }
 
 
-async def _validate_invoice_and_get_amount(invoice_id: str, firm_id: str | None = None) -> tuple[dict, float]:
+async def _validate_invoice_and_get_amount(invoice_id: str, firm_id: str | None = None,
+                                           client_id: str | None = None) -> tuple[dict, float]:
+    """Το τιμολόγιο και το ποσό που οφείλεται, ή σφάλμα που εξηγεί γιατί δεν πληρώνεται.
+
+    Με ``client_id`` (πύλη πελάτη) το τιμολόγιο αναζητείται **μέσα στα τιμολόγια αυτού του πελάτη**: ένα τιμολόγιο άλλου
+    πελάτη είναι για την πύλη ακριβώς το ίδιο με ένα που δεν υπάρχει (404). Αν ελεγχόταν η ιδιοκτησία μετά την
+    επικύρωση, οι απαντήσεις «ήδη εξοφλημένο», «πρόχειρο», «υπάρχει πιστωτικό», «δεν επιτρέπεται» θα μαρτυρούσαν
+    σε όποιον έχει έγκυρο σύνδεσμο ποια τιμολόγια των άλλων πελατών του γραφείου υπάρχουν και σε ποια κατάσταση είναι.
+    """
     try:
         query = {"_id": ObjectId(invoice_id)}
-        if firm_id:
-            query["firm_id"] = firm_id
-        inv = await db.invoices.find_one(query)
     except Exception:
         raise HTTPException(status_code=400, detail="Μη έγκυρο id τιμολογίου")
+    if firm_id:
+        query["firm_id"] = firm_id
+    if client_id is not None:
+        query["client_id"] = client_id
+    inv = await db.invoices.find_one(query)
     if not inv:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     if inv.get("status") == "paid":
@@ -78,7 +88,7 @@ async def _validate_invoice_and_get_amount(invoice_id: str, firm_id: str | None 
     return inv, total
 
 
-async def _create_session(inv: dict, amount: float, origin_url: str) -> dict:
+async def _create_session(inv: dict, amount: float, success_url: str, cancel_url: str) -> dict:
     if not _stripe_ready():
         raise HTTPException(status_code=400, detail="Οι πληρωμές δεν είναι ενεργοποιημένες. Ρυθμίστε τα κλειδιά Stripe στις Ρυθμίσεις ή επικοινωνήστε με τη διαχείριση.")
     invoice_id = str(inv["_id"])
@@ -95,8 +105,8 @@ async def _create_session(inv: dict, amount: float, origin_url: str) -> dict:
             },
             "quantity": 1,
         }],
-        success_url=f"{origin_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{origin_url}/payment/cancel?invoice={invoice_id}",
+        success_url=success_url,
+        cancel_url=cancel_url,
         metadata={
             "invoice_id": invoice_id,
             "invoice_number": inv.get("number", ""),
@@ -123,22 +133,39 @@ async def _create_session(inv: dict, amount: float, origin_url: str) -> dict:
     return {"checkout_url": session.url, "session_id": session.id}
 
 
-async def _return_url(origin_url: str, firm_id: str, *, portal_token: str = "") -> str:
-    """Η διεύθυνση επιστροφής μετά την πληρωμή, επικυρωμένη (βλ. ``http_utils.checked_return_url``).
+async def _return_origin(origin_url: str, firm_id: str, *, portal_token: str = "") -> str:
+    """Η διεύθυνση της εφαρμογής (scheme://host[:port]) όπου επιστρέφει ο πελάτης μετά την πληρωμή, επικυρωμένη
+    (βλ. ``http_utils.checked_return_url``).
 
     Επιτρέπονται οι διευθύνσεις της εγκατάστασης (``allowed_origins``) και η ``public_url`` των Ρυθμίσεων του γραφείου
-    στο οποίο ανήκει το τιμολόγιο. Η πύλη μπορεί να επιστρέφει και στη δική της σελίδα (``/portal/<token>``)."""
+    στο οποίο ανήκει το τιμολόγιο — όχι των Ρυθμίσεων άλλου γραφείου. Η πύλη μπορεί να στείλει και τη διεύθυνση της δικής
+    της σελίδας (``<origin>/portal/<token>``)· επιστρέφεται πάντα μόνο το origin, και οι διευθύνσεις επιστροφής χτίζονται
+    από τον server (``_staff_return_urls``, ``_portal_return_urls``)."""
     settings = await db.settings.find_one({"firm_id": firm_id}) or {}
     origins = allowed_origins()
     if settings.get("public_url"):
         origins = [*origins, settings["public_url"]]
-    paths = ("", f"/portal/{portal_token}") if portal_token else ("",)
-    url = checked_return_url(origin_url, origins, allowed_paths=paths)
+    page = f"/portal/{portal_token}" if portal_token else ""
+    url = checked_return_url(origin_url, origins, allowed_paths=("", page) if page else ("",))
     if url is None:
         raise HTTPException(
             status_code=400,
             detail="Μη έγκυρη διεύθυνση επιστροφής μετά την πληρωμή. Ανοίξτε την εφαρμογή από τη διεύθυνση του γραφείου.")
-    return url
+    return url[: -len(page)] if page and url.endswith(page) else url
+
+
+def _staff_return_urls(origin: str, invoice_id: str) -> tuple[str, str]:
+    """Το προσωπικό του γραφείου επιστρέφει στη σελίδα αποτελέσματος πληρωμής της εφαρμογής."""
+    return (f"{origin}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+            f"{origin}/payment/cancel?invoice={invoice_id}")
+
+
+def _portal_return_urls(origin: str, token: str) -> tuple[str, str]:
+    """Ο πελάτης της πύλης επιστρέφει στη **δική του σελίδα** (`/portal/<token>`), η οποία επαληθεύει την πληρωμή από το
+    `session_id` ή δείχνει ότι ακυρώθηκε. Παλιότερα η επιστροφή ήταν `/portal/<token>/payment/success`: διαδρομή που δεν
+    υπάρχει στο SPA, ενώ η σελίδα της πύλης περίμενε μια παράμετρο (`?paid=1`) που κανείς δεν έστελνε."""
+    page = f"{origin}/portal/{token}"
+    return page + "?paid=1&session_id={CHECKOUT_SESSION_ID}", page + "?cancelled=1"
 
 
 def _note_for_trail(request: Request, inv: dict, amount: float) -> None:
@@ -150,10 +177,10 @@ def _note_for_trail(request: Request, inv: dict, amount: float) -> None:
 @router.post("/checkout")
 async def create_checkout(req: CheckoutRequest, request: Request, user: dict = Depends(get_current_user)):
     firm_id = firm_id_for(user)
-    origin = await _return_url(req.origin_url, firm_id)
+    origin = await _return_origin(req.origin_url, firm_id)
     inv, amount = await _validate_invoice_and_get_amount(req.invoice_id, firm_id)
     _note_for_trail(request, inv, amount)
-    return await _create_session(inv, amount, origin)
+    return await _create_session(inv, amount, *_staff_return_urls(origin, str(inv["_id"])))
 
 
 @public_router.post("/api/payments/portal-checkout")
@@ -162,18 +189,18 @@ async def portal_checkout(req: CheckoutRequest, request: Request):
 
     Η επικύρωση του token είναι η **κοινή** της πύλης (``_validate_token``): όριο ρυθμού ανά token και IP, λήξη με
     σύγκριση ημερομηνιών, ενημέρωση του ``last_used_at`` και απόδοση της ενέργειας στο ελεγκτικό ίχνος του γραφείου και
-    του πελάτη. Εδώ προστίθεται δικό της, αυστηρότερο όριο, γιατί κάθε επιτυχία δημιουργεί συνεδρία στο Stripe."""
+    του πελάτη. Εδώ προστίθεται δικό της, αυστηρότερο όριο, γιατί κάθε επιτυχία δημιουργεί συνεδρία στο Stripe.
+
+    Το τιμολόγιο αναζητείται μέσα στα τιμολόγια του πελάτη του συνδέσμου (βλ. ``_validate_invoice_and_get_amount``)."""
     if not req.client_token:
         raise HTTPException(status_code=401, detail="Απαιτείται token πελάτη")
     token = await _validate_token(req.client_token, request)
     await enforce("portal:checkout", key_for_token(req.client_token), PORTAL_CHECKOUT_LIMIT, 60,
                   "Πολλές προσπάθειες πληρωμής.")
-    origin = await _return_url(req.origin_url, token.get("firm_id") or "", portal_token=req.client_token)
-    inv, amount = await _validate_invoice_and_get_amount(req.invoice_id, token.get("firm_id"))
-    if inv.get("client_id") != token["client_id"]:
-        raise HTTPException(status_code=403, detail="Δεν επιτρέπεται η πληρωμή τιμολογίου άλλου πελάτη")
+    origin = await _return_origin(req.origin_url, token.get("firm_id") or "", portal_token=req.client_token)
+    inv, amount = await _validate_invoice_and_get_amount(req.invoice_id, token.get("firm_id"), token["client_id"])
     _note_for_trail(request, inv, amount)
-    return await _create_session(inv, amount, origin)
+    return await _create_session(inv, amount, *_portal_return_urls(origin, req.client_token))
 
 
 @public_router.get("/api/payments/status/{session_id}")

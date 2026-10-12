@@ -15,6 +15,7 @@ from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
 from db import db
+from http_utils import configured_origin
 from mydata_client import (
     mydata_ready, send_invoice, cancel_invoice, MyDataError, mydata_mock_enabled,
     MYDATA_NOT_CONFIGURED_MSG, resolve_invoice_type, withholding_for,
@@ -480,7 +481,14 @@ async def build_payment_link(invoice: dict, settings: dict) -> str:
         total, _withheld = await outstanding_amount(invoice.get("firm_id", ""), invoice, settings)
         if total <= 0:
             return ""
-        origin = settings.get("public_url") or os.environ.get("PUBLIC_URL") or os.environ.get("PREVIEW_ENDPOINT", "") or "https://example.com"
+        # Η διεύθυνση όπου επιστρέφει ο πελάτης αφού πληρώσει. Παλιότερα, χωρίς ρύθμιση, έπεφτε στο «https://example.com» και
+        # ο πελάτης πλήρωνε και μετά οδηγούνταν σε ξένο ιστότοπο· τώρα δεν δημιουργείται καθόλου σύνδεσμος (η υπενθύμιση
+        # στέλνεται με IBAN), και το γραφείο ενημερώνεται από το αρχείο καταγραφής.
+        origin = configured_origin(settings.get("public_url"), os.environ.get("PUBLIC_URL"), os.environ.get("PREVIEW_ENDPOINT"))
+        if not origin:
+            logger.warning("Δεν δημιουργήθηκε σύνδεσμος πληρωμής: δεν έχει οριστεί έγκυρη διεύθυνση εφαρμογής "
+                           "(public_url στις Ρυθμίσεις ή PUBLIC_URL)")
+            return ""
         invoice_id = str(invoice["_id"])
         session = _stripe.checkout.Session.create(
             mode="payment",

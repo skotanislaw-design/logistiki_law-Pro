@@ -120,3 +120,16 @@ def checked_return_url(url, allowed, *, allowed_paths: tuple[str, ...] = ("",)) 
     if path not in allowed_paths:
         return None
     return origin + path
+
+
+def configured_origin(*candidates) -> str:
+    """Η πρώτη έγκυρη διεύθυνση εφαρμογής (``scheme://host[:port]``, κανονική μορφή) από τις υποψήφιες τιμές, ή ``""``.
+
+    Για σημεία όπου η διεύθυνση δεν προκύπτει από αίτημα αλλά από ρύθμιση (``public_url`` του γραφείου, ``PUBLIC_URL``):
+    ο σύνδεσμος πληρωμής των υπενθυμίσεων και ο σύνδεσμος της πρόσκλησης χωρίς διεύθυνση από τον browser. Μια τιμή που δεν
+    είναι καθαρό origin http(s) (κενή, με διαδρομή, άλλο σχήμα, σκουπίδια) αγνοείται — δεν μπαίνει ποτέ σε email."""
+    for candidate in candidates:
+        url = checked_return_url(candidate, [candidate]) if isinstance(candidate, str) else None
+        if url:
+            return url
+    return ""

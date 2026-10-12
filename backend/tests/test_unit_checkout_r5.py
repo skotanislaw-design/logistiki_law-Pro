@@ -157,8 +157,9 @@ def test_the_limit_is_per_token_not_global(client, office, stripe_calls):
 
 
 def test_another_clients_invoice_is_refused(client, office, stripe_calls):
+    """404 και όχι 403: το τιμολόγιο άλλου πελάτη δεν διακρίνεται από ανύπαρκτο (βλ. test_unit_portal_r5)."""
     r = _checkout(client, office, invoice=office.other_invoice_id)
-    assert r.status_code == 403
+    assert r.status_code == 404
     assert stripe_calls == []
 
 
@@ -246,6 +247,12 @@ def test_the_offices_own_address_is_accepted_and_normalised(client, office, stri
     r = _checkout(client, office, origin=given)
     assert r.status_code == 200, r.text
     call = stripe_calls[-1]
+    page = f"{normalised}/portal/{office.token}"          # η πύλη επιστρέφει στη δική της σελίδα (P3)
+    assert call["success_url"] == page + "?paid=1&session_id={CHECKOUT_SESSION_ID}"
+    assert call["cancel_url"] == page + "?cancelled=1"
+    staff = client.post("/api/payments/checkout", json={"invoice_id": office.invoice_id, "origin_url": given})
+    assert staff.status_code == 200, staff.text
+    call = stripe_calls[-1]
     assert call["success_url"] == f"{normalised}/payment/success?session_id={{CHECKOUT_SESSION_ID}}"
     assert call["cancel_url"] == f"{normalised}/payment/cancel?invoice={office.invoice_id}"
 
@@ -255,7 +262,7 @@ def test_the_portal_may_return_to_its_own_page_only(client, office, stripe_calls
     own = f"https://nomos.example.gr/portal/{office.token}"
     r = _checkout(client, office, origin=own)
     assert r.status_code == 200, r.text
-    assert stripe_calls[-1]["success_url"].startswith(own + "/payment/success")
+    assert stripe_calls[-1]["success_url"] == own + "?paid=1&session_id={CHECKOUT_SESSION_ID}"
 
     other_token = client.post("/api/client-portal/invite", json={"client_id": office.client_id}).json()["token"]
     for bad in (f"https://nomos.example.gr/portal/{other_token}", "https://nomos.example.gr/portal",
@@ -277,7 +284,7 @@ def test_the_offices_public_url_setting_adds_an_allowed_address(client, office, 
     assert client.patch("/api/settings", json={"public_url": "https://portal.skotanis.example"}).status_code == 200
     r = _checkout(client, office, origin="https://portal.skotanis.example")
     assert r.status_code == 200, r.text
-    assert stripe_calls[-1]["success_url"].startswith("https://portal.skotanis.example/payment/success")
+    assert stripe_calls[-1]["success_url"].startswith(f"https://portal.skotanis.example/portal/{office.token}?paid=1")
     assert _checkout(client, office, origin="https://evil.example").status_code == 400
 
 

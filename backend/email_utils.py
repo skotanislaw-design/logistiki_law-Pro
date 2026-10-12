@@ -1,3 +1,4 @@
+import html
 import aiosmtplib
 from crypto import decrypt
 from email.message import EmailMessage
@@ -7,6 +8,12 @@ from email.utils import formataddr
 
 def smtp_ready(settings: dict) -> bool:
     return bool(settings.get("smtp_user") and settings.get("smtp_password"))
+
+
+def esc(value) -> str:
+    """Escape για κάθε τιμή που μπαίνει σε HTML email. Ονόματα πελατών, αριθμοί και στοιχεία τράπεζας προέρχονται από
+    φόρμες, εισαγωγές αρχείων και OCR: δεν είναι αξιόπιστο κείμενο και δεν επιτρέπεται να γίνουν markup."""
+    return html.escape("" if value is None else str(value))
 
 
 async def send_email_with_pdf(settings: dict, to_email: str, subject: str, body_text: str,
@@ -48,12 +55,12 @@ def _outstanding(invoice: dict) -> float:
 
 
 def invoice_email_html(invoice: dict, settings: dict) -> str:
-    company = settings.get("company_name") or "Nomos One"
+    company = esc(settings.get("company_name") or "Nomos One")
     total = f"{_payable(invoice):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
     iban_row = ""
     if settings.get("iban"):
-        bank = f" ({settings['bank_name']})" if settings.get("bank_name") else ""
-        iban_row = f'<p style="margin:4px 0;">IBAN: <strong>{settings["iban"]}</strong>{bank}</p>'
+        bank = f" ({esc(settings['bank_name'])})" if settings.get("bank_name") else ""
+        iban_row = f'<p style="margin:4px 0;">IBAN: <strong>{esc(settings["iban"])}</strong>{bank}</p>'
     return f"""
     <html><body style="font-family:Arial,sans-serif;color:#1a2035;max-width:560px;">
       <div style="background:#0a0f1e;padding:20px 24px;border-bottom:3px solid #c9a227;">
@@ -61,11 +68,11 @@ def invoice_email_html(invoice: dict, settings: dict) -> str:
         <span style="color:#8a93a8;font-size:10px;letter-spacing:3px;">PERSONAL LOGISTICS · PERSACC</span>
       </div>
       <div style="padding:24px;">
-        <p>Αγαπητέ/ή <strong>{invoice.get('client_name') or 'πελάτη'}</strong>,</p>
-        <p>Σας αποστέλλουμε συνημμένο το τιμολόγιο <strong>{invoice.get('number')}</strong> για τις παρεχόμενες νομικές υπηρεσίες.</p>
+        <p>Αγαπητέ/ή <strong>{esc(invoice.get('client_name') or 'πελάτη')}</strong>,</p>
+        <p>Σας αποστέλλουμε συνημμένο το τιμολόγιο <strong>{esc(invoice.get('number'))}</strong> για τις παρεχόμενες νομικές υπηρεσίες.</p>
         <div style="background:#f4f2ec;border-left:3px solid #c9a227;padding:12px 16px;margin:16px 0;">
           <p style="margin:4px 0;">Πληρωτέο ποσό: <strong style="color:#0a0f1e;font-size:16px;">{total}</strong></p>
-          <p style="margin:4px 0;">Τρόπος πληρωμής: {invoice.get('payment_method') or '—'}</p>
+          <p style="margin:4px 0;">Τρόπος πληρωμής: {esc(invoice.get('payment_method') or '—')}</p>
           {iban_row}
         </div>
         <p>Για οποιαδήποτε διευκρίνιση παραμένουμε στη διάθεσή σας.</p>
@@ -99,12 +106,12 @@ def _fmt_money(v) -> str:
 
 
 def reminder_email_html(invoice: dict, settings: dict, days_overdue: int, reminder_count: int, payment_link: str = "") -> str:
-    company = settings.get("company_name") or "Nomos One"
+    company = esc(settings.get("company_name") or "Nomos One")
     total = _fmt_money(_outstanding(invoice))
     iban_row = ""
     if settings.get("iban"):
-        bank = f" ({settings['bank_name']})" if settings.get("bank_name") else ""
-        iban_row = f'<p style="margin:4px 0;">IBAN: <strong>{settings["iban"]}</strong>{bank}</p>'
+        bank = f" ({esc(settings['bank_name'])})" if settings.get("bank_name") else ""
+        iban_row = f'<p style="margin:4px 0;">IBAN: <strong>{esc(settings["iban"])}</strong>{bank}</p>'
     tone = "ευγενική υπενθύμιση" if reminder_count == 0 else ("δεύτερη υπενθύμιση" if reminder_count == 1 else "νέα υπενθύμιση")
     overdue_note = ""
     if days_overdue > 0:
@@ -117,7 +124,7 @@ def reminder_email_html(invoice: dict, settings: dict, days_overdue: int, remind
     if payment_link:
         pay_button = (
             f'<p style="margin:20px 0;text-align:center;">'
-            f'<a href="{payment_link}" style="background:#c9a227;color:#0a0f1e;padding:14px 32px;'
+            f'<a href="{esc(payment_link)}" style="background:#c9a227;color:#0a0f1e;padding:14px 32px;'
             f'text-decoration:none;font-weight:600;border-radius:6px;display:inline-block;">'
             f'💳 Πληρωμή με κάρτα — {total}</a></p>'
             f'<p style="text-align:center;font-size:11px;color:#8a93a8;">Ασφαλής πληρωμή μέσω Stripe</p>'
@@ -129,13 +136,13 @@ def reminder_email_html(invoice: dict, settings: dict, days_overdue: int, remind
         <span style="color:#8a93a8;font-size:10px;letter-spacing:3px;">PERSONAL LOGISTICS · PERSACC</span>
       </div>
       <div style="padding:24px;">
-        <p>Αγαπητέ/ή <strong>{invoice.get('client_name') or 'πελάτη'}</strong>,</p>
-        <p>Σας αποστέλλουμε μια <strong>{tone}</strong> για το εκκρεμές τιμολόγιο <strong>{invoice.get('number')}</strong>,
+        <p>Αγαπητέ/ή <strong>{esc(invoice.get('client_name') or 'πελάτη')}</strong>,</p>
+        <p>Σας αποστέλλουμε μια <strong>{tone}</strong> για το εκκρεμές τιμολόγιο <strong>{esc(invoice.get('number'))}</strong>,
         το οποίο σύμφωνα με τα αρχεία μας δεν έχει ακόμη εξοφληθεί.</p>
         {overdue_note}
         <div style="background:#f4f2ec;border-left:3px solid #c9a227;padding:12px 16px;margin:16px 0;">
           <p style="margin:4px 0;">Οφειλόμενο ποσό: <strong style="color:#0a0f1e;font-size:16px;">{total}</strong></p>
-          <p style="margin:4px 0;">Τρόπος πληρωμής: {invoice.get('payment_method') or '—'}</p>
+          <p style="margin:4px 0;">Τρόπος πληρωμής: {esc(invoice.get('payment_method') or '—')}</p>
           {iban_row}
         </div>
         {pay_button}
