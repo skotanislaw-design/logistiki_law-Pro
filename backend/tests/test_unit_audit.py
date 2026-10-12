@@ -195,6 +195,8 @@ def test_credit_note_pdf_downloads(client):
         db.invoices.update_one({"_id": ObjectId(iid)},
                                {"$set": {"mydata_status": "synced", "mydata_mark": "400001111111111"}}))
     credit = client.post(f"/api/invoices/{iid}/credit-note", json={"reason": "Ακύρωση"}).json()
+    assert credit["number"] == ""                       # αριθμός στην έκδοση, όχι στη δημιουργία
+    credit = client.post(f"/api/invoices/{credit['id']}/issue").json()
     assert credit["number"].startswith("ΠΙΣ")
 
     r = client.get(f"/api/invoices/{credit['id']}/pdf")

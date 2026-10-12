@@ -6,9 +6,8 @@ import os
 from db import db
 from auth import get_current_user
 from models import Invoice, InvoiceLineItem
-from tax_utils import calculate_invoice_totals
+from tax_utils import calculate_invoice_totals, athens_today
 from copilot import copilot_llm, _try_action
-from routes_invoices import _next_invoice_number
 from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/copilot", tags=["copilot"])
@@ -52,19 +51,18 @@ async def _execute_create_invoice(action: dict, user: dict):
     inv = Invoice(
         client_id=str(client["_id"]),
         client_name=client["name"],
-        date=date.today().isoformat(),
+        date=athens_today().isoformat(),
         line_items=[InvoiceLineItem(description=action.get("description") or "Νομικές υπηρεσίες", quantity=1, unit_price=amount, vat_rate=vat_rate)],
         created_by=user["email"],
         firm_id=firm_id_for(user),
     )
     totals = calculate_invoice_totals(inv.line_items)
     inv.subtotal, inv.vat_amount, inv.total, inv.vat_breakdown = totals["subtotal"], totals["vat_amount"], totals["total"], totals["vat_breakdown"]
-    inv.number = await _next_invoice_number(firm_id_for(user))
-    result = await db.invoices.insert_one(inv.to_mongo())
+    result = await db.invoices.insert_one(inv.to_mongo())   # ο αριθμός δίνεται στην έκδοση
     doc = await db.invoices.find_one(tenant_query(user, {"_id": result.inserted_id}))
     created = Invoice.from_mongo(doc)
     reply = (
-        f"✅ Δημιούργησα το τιμολόγιο **{created.number}** για τον πελάτη **{client['name']}**:\n"
+        f"✅ Δημιούργησα πρόχειρο τιμολόγιο για τον πελάτη **{client['name']}**:\n"
         f"• {action.get('description') or 'Νομικές υπηρεσίες'}\n"
         f"• Καθαρή αξία: {_fmt(created.subtotal)} · ΦΠΑ {vat_rate}%: {_fmt(created.vat_amount)} · Σύνολο: {_fmt(created.total)}\n"
         f"Είναι σε κατάσταση «Πρόχειρο» — μπορείς να το εκδώσεις (myDATA) από τη σελίδα Τιμολόγια."

@@ -7,6 +7,7 @@ from db import db
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from models import Paravolo
+from tax_utils import athens_today
 from routes_cases import log_case_event
 
 router = APIRouter(prefix="/paravola", tags=["paravola"])
@@ -28,8 +29,9 @@ def _now():
 
 
 async def _next_number(firm_id: str):
-    count = await db.paravola.count_documents({"firm_id": firm_id})
-    return f"ΠΡΒ-{date.today().year}-{count + 1:04d}"
+    from numbering import next_in_series
+    year = athens_today().year
+    return await next_in_series(db.paravola, f"paravolo-{firm_id}-{year}", firm_id, "ΠΡΒ", year)
 
 
 class IssuePayload(BaseModel):
@@ -53,6 +55,7 @@ async def create_paravolo(payload: Paravolo, user: dict = Depends(get_current_us
     payload.number = await _next_number(firm_id_for(user))
     payload.firm_id = firm_id_for(user)
     payload.created_by = user["email"]
+    payload.status, payload.issued_at = "draft", None       # η κατάσταση ανήκει στον server
     result = await db.paravola.insert_one(payload.to_mongo())
     doc = await db.paravola.find_one(tenant_query(user, {"_id": result.inserted_id}))
     if payload.case_id:
@@ -73,9 +76,13 @@ async def update_paravolo(pid: str, payload: Paravolo, user: dict = Depends(get_
 
 @router.delete("/{pid}")
 async def delete_paravolo(pid: str, user: dict = Depends(get_current_user)):
-    result = await db.paravola.delete_one(tenant_query(user, {"_id": ObjectId(pid)}))
-    if result.deleted_count == 0:
+    doc = await db.paravola.find_one(tenant_query(user, {"_id": ObjectId(pid)}))
+    if not doc:
         raise HTTPException(status_code=404, detail="Το παράβολο δεν βρέθηκε")
+    # Εκδοθέν ή εξοφλημένο παράβολο είναι καταγραφή πραγματικής συναλλαγής με το Δημόσιο.
+    if doc.get("status") != "draft":
+        raise HTTPException(status_code=400, detail="Μόνο πρόχειρα παράβολα διαγράφονται· το εκδοθέν ή εξοφλημένο παραμένει στο αρχείο.")
+    await db.paravola.delete_one(tenant_query(user, {"_id": ObjectId(pid), "status": "draft"}))
     return {"message": "Το παράβολο διαγράφηκε"}
 
 
@@ -101,6 +108,8 @@ async def mark_paid(pid: str, user: dict = Depends(get_current_user)):
     doc = await db.paravola.find_one(tenant_query(user, {"_id": ObjectId(pid)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το παράβολο δεν βρέθηκε")
+    if doc.get("status") != "issued":
+        raise HTTPException(status_code=400, detail="Εξοφλείται μόνο εκδοθέν παράβολο (και όχι ήδη εξοφλημένο).")
     await db.paravola.update_one(tenant_query(user, {"_id": ObjectId(pid)}), {"$set": {"status": "paid"}})
     if doc.get("case_id"):
         await log_case_event(doc["case_id"], f"Εξόφληση παραβόλου {doc.get('number')}", user)

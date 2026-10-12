@@ -56,6 +56,15 @@ LIGHT = colors.HexColor("#f4f2ec")
 
 STATUS_LABEL = {"draft": "ΠΡΟΧΕΙΡΟ", "issued": "ΕΚΔΟΘΗΚΕ", "paid": "ΕΞΟΦΛΗΜΕΝΟ", "cancelled": "ΑΚΥΡΩΜΕΝΟ"}
 
+# Ο τίτλος ακολουθεί το είδος του παραστατικού (myDATA): μια ΑΠΥ ή ένα πιστωτικό δεν
+# επιτρέπεται να τυπώνονται ως «Τιμολόγιο Παροχής Υπηρεσιών».
+DOCUMENT_TITLES = {
+    "2.1": "ΤΙΜΟΛΟΓΙΟ ΠΑΡΟΧΗΣ ΥΠΗΡΕΣΙΩΝ",
+    "11.2": "ΑΠΟΔΕΙΞΗ ΠΑΡΟΧΗΣ ΥΠΗΡΕΣΙΩΝ",
+    "5.1": "ΠΙΣΤΩΤΙΚΟ ΤΙΜΟΛΟΓΙΟ",
+}
+DEFAULT_DOCUMENT_TITLE = DOCUMENT_TITLES["2.1"]
+
 
 def _money(v):
     return f"{(v or 0):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -70,6 +79,11 @@ def _p(text, size=9, bold=False, color=colors.black, align=0, leading=None):
 
 
 def build_invoice_pdf(invoice: dict, client: dict, settings: dict) -> bytes:
+    from mydata_client import resolve_invoice_type, withholding_for
+    invoice_type = resolve_invoice_type(invoice, client or {})
+    # Ίδιος υπολογισμός με το XML προς την ΑΑΔΕ: το ποσό που τυπώνεται είναι αυτό που δηλώνεται.
+    withheld = withholding_for(invoice, settings, invoice_type, float(invoice.get("subtotal") or 0))
+    payable = round(float(invoice.get("total") or 0) - withheld, 2)
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=16 * mm, rightMargin=16 * mm, topMargin=14 * mm, bottomMargin=14 * mm)
     story = []
@@ -92,7 +106,7 @@ def build_invoice_pdf(invoice: dict, client: dict, settings: dict) -> bytes:
     ] + [_p(l, 8, color=colors.HexColor("#aeb6c8")) for l in comp_lines]
 
     meta_cell = [
-        _p("ΤΙΜΟΛΟΓΙΟ ΠΑΡΟΧΗΣ ΥΠΗΡΕΣΙΩΝ", 10, bold=True, color=colors.white, align=2),
+        _p(DOCUMENT_TITLES.get(invoice_type, DEFAULT_DOCUMENT_TITLE), 10, bold=True, color=colors.white, align=2),
         Spacer(1, 3),
         _p(invoice.get("number") or "—", 13, bold=True, color=GOLD, align=2),
         _p(f"Ημερομηνία: {_gr_date(invoice.get('date'))}", 8.5, color=colors.HexColor("#aeb6c8"), align=2),
@@ -165,7 +179,10 @@ def build_invoice_pdf(invoice: dict, client: dict, settings: dict) -> bytes:
         totals_rows.append([_p(f"ΦΠΑ {rate}%", 8.5, color=GRAY, align=2), _p(_money(amount), 8.5, color=GRAY, align=2)])
     totals_rows.append([_p("Καθαρή Αξία", 9, align=2), _p(_money(invoice.get("subtotal")), 9, align=2)])
     totals_rows.append([_p("Σύνολο ΦΠΑ", 9, align=2), _p(_money(invoice.get("vat_amount")), 9, align=2)])
-    totals_rows.append([_p("ΠΛΗΡΩΤΕΟ ΠΟΣΟ", 10.5, bold=True, color=NAVY, align=2), _p(_money(invoice.get("total")), 11, bold=True, color=GOLD, align=2)])
+    if withheld:
+        totals_rows.append([_p("Σύνολο με ΦΠΑ", 9, align=2), _p(_money(invoice.get("total")), 9, align=2)])
+        totals_rows.append([_p("Παρακράτηση φόρου", 9, align=2), _p(_money(-withheld), 9, align=2)])
+    totals_rows.append([_p("ΠΛΗΡΩΤΕΟ ΠΟΣΟ", 10.5, bold=True, color=NAVY, align=2), _p(_money(payable), 11, bold=True, color=GOLD, align=2)])
     totals = Table(totals_rows, colWidths=[135 * mm, 43 * mm])
     totals.setStyle(TableStyle([
         ("TOPPADDING", (0, 0), (-1, -1), 3),
@@ -183,6 +200,9 @@ def build_invoice_pdf(invoice: dict, client: dict, settings: dict) -> bytes:
     if invoice.get("mydata_mark"):
         pay_lines.append(Spacer(1, 3))
         pay_lines.append(_p(f"myDATA MARK: {invoice['mydata_mark']} · UID: {invoice.get('mydata_uid') or '—'}", 8, color=GRAY))
+    if invoice.get("correlated_mark"):
+        pay_lines.append(Spacer(1, 3))
+        pay_lines.append(_p(f"Συσχετιζόμενο παραστατικό (MARK): {invoice['correlated_mark']}", 8, color=GRAY))
     if invoice.get("notes"):
         pay_lines.append(Spacer(1, 3))
         pay_lines.append(_p(f"Σημειώσεις: {invoice['notes']}", 8.5, color=GRAY))

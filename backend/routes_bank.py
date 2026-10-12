@@ -9,11 +9,15 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 from db import db
 from models import BankTransaction
 from auth import get_current_user, require_admin
 from pydantic import BaseModel
 from tenant import tenant_query, firm_id_for
+from invoice_services import (
+    AMOUNT_TOLERANCE, apply_bank_payment, firm_query, load_client, outstanding_amount,
+)
 
 router = APIRouter(prefix="/bank", tags=["bank"])
 
@@ -147,26 +151,50 @@ def _parse_csv(content: bytes) -> list[dict]:
     return result
 
 
-async def _find_match(tx: dict, invoices: list[dict]) -> tuple[dict, int]:
-    """Επιστρέφει (best_invoice_or_None, confidence 0-100)."""
+MATCH_THRESHOLD = 60          # κάτω από αυτό δεν προτείνεται τιμολόγιο
+AMBIGUITY_MARGIN = 10         # άλλο τιμολόγιο με σκορ τόσο κοντά ⇒ η πρόταση δεν είναι μονοσήμαντη
+UNSURE_CONFIDENCE = 75        # ανώτατη «βεβαιότητα» πρότασης με διαφορά ποσού ή με δεύτερη εκδοχή
+
+
+def _due(inv: dict) -> float:
+    """Το ποσό που αναμένεται να εισπραχθεί: πληρωτέο μείον ό,τι εξοφλήθηκε από πελατολογικό.
+
+    Ο πελάτης-επιχείρηση κρατά την παρακράτηση φόρου και καταθέτει λιγότερα από το σύνολο του
+    τιμολογίου· αν η σύγκριση γινόταν με το σύνολο, οι εισπράξεις τους δεν θα ταίριαζαν ποτέ
+    (ή θα ταίριαζαν σε λάθος τιμολόγιο). Το `_due` το υπολογίζει το `build_match_pool`.
+    """
+    if inv.get("_due") is not None:
+        return float(inv["_due"])
+    return float(inv.get("total") or 0)
+
+
+def match_details(tx: dict, invoices: list[dict]) -> dict:
+    """Το τιμολόγιο που πιθανότατα εξοφλεί η κατάθεση και πόσο σίγουρη είναι η πρόταση.
+
+    Επιστρέφει {"invoice", "confidence" 0-100, "exact" (ακριβές ποσό), "ambiguous"}.
+
+    * Μόνο ακριβές ποσό (±1 λεπτό) μπορεί να εξοφληθεί αυτόματα· διαφορά κάτω από 1 € δίνει
+      πρόταση για χειροκίνητο έλεγχο, με «βεβαιότητα» ως 75.
+    * Αν υπάρχει και δεύτερο τιμολόγιο εξίσου πιθανό — ή άλλο τιμολόγιο του ίδιου πελάτη με το
+      ίδιο ποσό, χωρίς να αναγράφεται ο αριθμός — η πρόταση είναι `ambiguous`: ο πελάτης μπορεί
+      να πληρώνει οποιοδήποτε από τα δύο, και η εξόφληση λάθος τιμολογίου μένει απαρατήρητη.
+    """
+    nothing = {"invoice": None, "confidence": 0, "exact": False, "ambiguous": False}
     if tx["amount"] <= 0:
-        return None, 0  # Δεν κάνει matching για χρεώσεις — μόνο για εισπράξεις
-    best = None
-    best_score = 0
+        return nothing          # δεν γίνεται matching για χρεώσεις — μόνο για εισπράξεις
 
     tx_desc = (tx.get("description", "") + " " + tx.get("reference", "")).lower()
-
+    candidates = []
     for inv in invoices:
-        score = 0
-        # 1. Amount match (±0.01)
-        if abs(inv.get("total", 0) - tx["amount"]) < 0.01:
-            score += 50
-        elif abs(inv.get("total", 0) - tx["amount"]) < 1:
-            score += 30
+        difference = abs(_due(inv) - tx["amount"])
+        if difference < AMOUNT_TOLERANCE:
+            score, exact = 50, True
+        elif difference < 1:
+            score, exact = 30, False
         else:
-            continue  # χωρίς amount match, δεν το θεωρώ ίδιο
+            continue            # χωρίς amount match, δεν το θεωρώ ίδιο
 
-        # 2. Date proximity (±60 days)
+        # Ημερομηνία (±60 ημέρες)
         try:
             inv_date = datetime.fromisoformat(inv.get("date", "")[:10]).date()
             tx_date = datetime.fromisoformat(tx["date"]).date()
@@ -180,7 +208,7 @@ async def _find_match(tx: dict, invoices: list[dict]) -> tuple[dict, int]:
         except Exception:
             pass
 
-        # 3. Client name in description
+        # Όνομα πελάτη στην αιτιολογία
         cname = (inv.get("client_name", "") or "").lower()
         if cname:
             first_word = cname.split()[0] if cname.split() else ""
@@ -190,19 +218,80 @@ async def _find_match(tx: dict, invoices: list[dict]) -> tuple[dict, int]:
             if ratio > 0.4:
                 score += int(ratio * 10)
 
-        # 4. Invoice number in description
+        # Αριθμός τιμολογίου στην αιτιολογία
         inv_num = (inv.get("number", "") or "").lower()
-        if inv_num and inv_num in tx_desc:
+        numbered = bool(inv_num and inv_num in tx_desc)
+        if numbered:
             score += 20
 
-        score = min(100, score)
-        if score > best_score:
-            best = inv
-            best_score = score
+        candidates.append({"inv": inv, "score": min(100, score), "exact": exact, "numbered": numbered})
 
-    if best_score >= 60:  # threshold για auto-match
-        return best, best_score
-    return None, best_score
+    if not candidates:
+        return nothing
+    best = max(candidates, key=lambda c: c["score"])        # στην ισοβαθμία, το πρώτο της λίστας
+    if best["score"] < MATCH_THRESHOLD:
+        return {**nothing, "confidence": best["score"]}
+
+    rivals = [c for c in candidates if c is not best]
+    # Όταν η αιτιολογία κατονομάζει τον αριθμό του μόνο ενός τιμολογίου, αυτό κερδίζει.
+    close = [r for r in rivals
+             if r["score"] >= best["score"] - AMBIGUITY_MARGIN and not (best["numbered"] and not r["numbered"])]
+    client_id = best["inv"].get("client_id")
+    same_client_same_amount = bool(
+        client_id and best["exact"] and not best["numbered"]
+        and any(r["exact"] and r["inv"].get("client_id") == client_id for r in rivals)
+    )
+    ambiguous = bool(close) or same_client_same_amount
+    confidence = best["score"]
+    if ambiguous or not best["exact"]:
+        confidence = min(confidence, UNSURE_CONFIDENCE)
+    return {"invoice": best["inv"], "confidence": confidence, "exact": best["exact"], "ambiguous": ambiguous}
+
+
+async def _find_match(tx: dict, invoices: list[dict]) -> tuple[dict, int]:
+    """Επιστρέφει (best_invoice_or_None, confidence 0-100)."""
+    found = match_details(tx, invoices)
+    return found["invoice"], found["confidence"]
+
+
+async def build_match_pool(firm_id: str, settings: dict) -> list[dict]:
+    """Τα ανοιχτά τιμολόγια με το ποσό που οφείλεται (`_due`), για το matching.
+
+    Εξαιρούνται όσα έχουν ήδη συνδεθεί με άλλη κίνηση: μία κατάθεση ↔ ένα τιμολόγιο, ώστε δύο
+    ίδιες καταθέσεις να μην «εξοφλούν» το ίδιο τιμολόγιο δύο φορές.
+    """
+    taken = set()
+    async for d in db.bank_transactions.find(
+        firm_query(firm_id, {"matched_invoice_id": {"$nin": [None, ""]},
+                             "match_status": {"$in": ["auto_matched", "auto_confirmed", "manual_matched"]}}),
+        {"matched_invoice_id": 1},
+    ):
+        taken.add(d["matched_invoice_id"])
+    pool, clients = [], {}
+    async for inv in db.invoices.find(firm_query(firm_id, {"status": "issued"})).limit(2000):
+        if str(inv["_id"]) in taken or float(inv.get("total") or 0) <= 0:
+            continue                              # ήδη δεσμευμένο, ή πιστωτικό (αρνητικό σύνολο)
+        client_id = inv.get("client_id")
+        if client_id not in clients:
+            clients[client_id] = await load_client(firm_id, inv) or {}
+        due, _withheld = await outstanding_amount(firm_id, inv, settings, clients[client_id])
+        pool.append({**inv, "_due": due})
+    return pool
+
+
+def _statement_key(rec: dict) -> str:
+    """Κλειδί αναγνώρισης γραμμής extrait. Δεν ταυτίζει γραμμές με διαφορετικό reference ή υπόλοιπο."""
+    key = f"{rec['date']}|{rec['amount']:.2f}|{rec['description'][:80]}"
+    if rec.get("reference"):
+        key += f"|{rec['reference']}"
+    if rec.get("balance") is not None:
+        key += f"|{rec['balance']:.2f}"
+    return key
+
+
+def _legacy_statement_key(rec: dict) -> str:
+    """Το κλειδί των εισαγωγών πριν τον γύρο 4 — αναγνωρίζεται ώστε να μη διπλογράφονται παλιές κινήσεις."""
+    return f"{rec['date']}|{rec['amount']:.2f}|{rec['description'][:80]}"
 
 
 @router.post("/import")
@@ -215,46 +304,69 @@ async def import_bank_statement(bank: str = "Άγνωστη", file: UploadFile =
     if not parsed:
         raise HTTPException(status_code=400, detail="Δεν βρέθηκαν εγκυρες κινήσεις.")
 
-    unpaid_invoices = await db.invoices.find(tenant_query(user, {"status": "issued"})).to_list(2000)
+    firm_id = firm_id_for(user)
+    settings = await db.settings.find_one(tenant_query(user)) or {}
+    pool = await build_match_pool(firm_id, settings)
 
-    created, skipped, auto_matched = 0, 0, 0
+    created, skipped, auto_matched, needs_review = 0, 0, 0, 0
+    seen: dict[str, int] = {}
     for rec in parsed:
-        # Dedup με βάση (date, amount, description)
-        dedup_key = f"{rec['date']}|{rec['amount']:.2f}|{rec['description'][:80]}"
-        existing = await db.bank_transactions.find_one(tenant_query(user, {"external_id": dedup_key}))
-        if existing:
+        # Δύο πανομοιότυπες γραμμές στο ίδιο αρχείο (δύο καταθέσεις €100 την ίδια μέρα με την ίδια
+        # αιτιολογία) είναι δύο κινήσεις· παλιότερα η δεύτερη χανόταν ως «διπλότυπο».
+        key = _statement_key(rec)
+        seen[key] = seen.get(key, 0) + 1
+        ordinal = seen[key]
+        if ordinal == 1:
+            external_id = key
+            known = {"external_id": {"$in": [key, _legacy_statement_key(rec)]}}
+        else:
+            external_id = f"{key}#{ordinal}"
+            known = {"external_id": external_id}
+        if await db.bank_transactions.find_one(tenant_query(user, known)):
             skipped += 1
             continue
 
         tx = BankTransaction(
-            firm_id=firm_id_for(user),
+            firm_id=firm_id,
             date=rec["date"],
             description=rec["description"][:500],
             reference=rec["reference"],
             amount=rec["amount"],
             balance_after=rec.get("balance"),
             bank=bank,
-            external_id=dedup_key,
+            external_id=external_id,
             imported_by=user["email"],
         )
 
-        # Auto-match
-        match, confidence = await _find_match(rec, unpaid_invoices)
-        if match:
+        found = match_details(rec, pool)
+        match = found["invoice"]
+        if match is not None:
             tx.matched_invoice_id = str(match["_id"])
             tx.matched_invoice_number = match.get("number", "")
-            tx.match_confidence = confidence
+            tx.match_confidence = found["confidence"]
             tx.match_status = "auto_matched"
-            auto_matched += 1
+            tx.match_ambiguous = found["ambiguous"]
 
-        await db.bank_transactions.insert_one(tx.to_mongo())
+        try:
+            await db.bank_transactions.insert_one(tx.to_mongo())
+        except DuplicateKeyError:
+            skipped += 1                # ταυτόχρονη εισαγωγή του ίδιου αρχείου
+            continue
         created += 1
+        if match is not None:
+            auto_matched += 1
+            needs_review += 1 if (found["ambiguous"] or not found["exact"]) else 0
+            pool = [i for i in pool if i is not match]      # το τιμολόγιο δεσμεύεται από αυτή την κίνηση
 
+    message = f"Εισήχθησαν {created} κινήσεις. Αυτόματα συνδέθηκαν με τιμολόγια: {auto_matched}."
+    if needs_review:
+        message += f" Από αυτές, {needs_review} χρειάζονται έλεγχο (διαφορά ποσού ή περισσότερα από ένα πιθανά τιμολόγια)."
     return {
-        "message": f"Εισήχθησαν {created} κινήσεις. Αυτόματα συνδέθηκαν με τιμολόγια: {auto_matched}.",
+        "message": message,
         "created": created,
         "skipped": skipped,
         "auto_matched": auto_matched,
+        "needs_review": needs_review,
     }
 
 
@@ -267,8 +379,18 @@ async def list_transactions(status: str = "all", user: dict = Depends(get_curren
     return [BankTransaction.from_mongo(d) for d in docs]
 
 
+CONFIRMED_STATES = ("auto_confirmed", "manual_matched")
+REFUSAL_STATUS = {"invoice_missing": 404, "not_a_deposit": 400}
+
+
 @router.post("/reconcile/{tx_id}")
-async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, user: dict = Depends(get_current_user)):
+async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, accept_difference: bool = False,
+                    user: dict = Depends(get_current_user)):
+    """Χειροκίνητη συμφωνία κατάθεσης με τιμολόγιο.
+
+    Το ποσό πρέπει να ισούται με το οφειλόμενο. Αν η διαφορά είναι αποδεκτή (π.χ. προμήθεια της
+    τράπεζας) ο χρήστης το δηλώνει ρητά με `accept_difference=true` και η διαφορά καταγράφεται.
+    """
     try:
         tx = await db.bank_transactions.find_one(tenant_query(user, {"_id": ObjectId(tx_id)}))
     except Exception:
@@ -277,58 +399,69 @@ async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, user
         raise HTTPException(status_code=404, detail="Δεν βρέθηκε")
 
     if ignore:
+        if tx.get("match_status") in CONFIRMED_STATES:
+            number = tx.get("matched_invoice_number")
+            raise HTTPException(
+                status_code=409,
+                detail=f"Η κίνηση έχει ήδη συμφωνηθεί με το τιμολόγιο{' ' + number if number else ''} "
+                       "και δεν μπορεί να αγνοηθεί.")
         await db.bank_transactions.update_one(
             tenant_query(user, {"_id": ObjectId(tx_id)}),
-            {"$set": {"match_status": "ignored", "matched_invoice_id": None, "matched_invoice_number": None}},
+            {"$set": {"match_status": "ignored", "matched_invoice_id": None, "matched_invoice_number": None,
+                      "match_ambiguous": False}},
         )
         return {"message": "Η κίνηση σημειώθηκε ως αγνοητέα"}
 
     if not invoice_id:
         raise HTTPException(status_code=400, detail="Δώστε invoice_id")
 
-    try:
-        inv = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
-    except Exception:
-        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
-    if not inv:
-        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    settings = await db.settings.find_one(tenant_query(user)) or {}
+    result = await apply_bank_payment(
+        firm_id_for(user), tx, invoice_id, settings=settings, paid_via="bank_manual",
+        status_on_success="manual_matched", accept_difference=accept_difference)
+    if result["status"] == "refused":
+        detail = result["message"]
+        if result["reason"] == "amount_mismatch":
+            detail += " Αν η διαφορά είναι αποδεκτή (π.χ. προμήθεια τράπεζας), επιβεβαιώστε ρητά με accept_difference=true."
+        raise HTTPException(status_code=REFUSAL_STATUS.get(result["reason"], 409), detail=detail)
 
-    await db.bank_transactions.update_one(
-        tenant_query(user, {"_id": ObjectId(tx_id)}),
-        {"$set": {
-            "matched_invoice_id": invoice_id,
-            "matched_invoice_number": inv.get("number", ""),
-            "match_status": "manual_matched",
-            "match_confidence": 100,
-        }},
-    )
-    # Auto-mark το τιμολόγιο ως εξοφλημένο αν είναι σε issued
-    from invoice_services import mark_paid
-    await mark_paid(firm_id_for(user), invoice_id, paid_via="bank_manual")
-    return {"message": "Συνδέθηκε και το τιμολόγιο σημειώθηκε ως εξοφλημένο."}
+    message = ("Συνδέθηκε και το τιμολόγιο σημειώθηκε ως εξοφλημένο." if result["status"] == "paid"
+               else "Η κατάθεση συνδέθηκε με το τιμολόγιο, που ήταν ήδη σημειωμένο ως εξοφλημένο.")
+    if result["difference"]:
+        message += f" Καταγράφηκε διαφορά {result['difference']:+.2f} €."
+    return {"message": message, "status": result["status"], "difference": result["difference"]}
 
 
 @router.post("/confirm-auto-matches")
 async def confirm_auto_matches(user: dict = Depends(get_current_user)):
-    """Επιβεβαιώνει όλα τα auto_matched — σημαίνει τα τιμολόγια ως paid."""
-    now = datetime.now(timezone.utc).isoformat()
-    confirmed = 0
+    """Επιβεβαιώνει τις προτάσεις που είναι ασφαλές να επιβεβαιωθούν μαζικά.
+
+    Μαζικά περνούν μόνο οι μονοσήμαντες προτάσεις με ακριβές ποσό για ανοιχτό τιμολόγιο. Όσες έχουν
+    διαφορά ποσού, δεύτερη πιθανή εκδοχή ή τιμολόγιο που δεν είναι πια ανοιχτό μένουν ως έχουν και
+    αναφέρονται στην απάντηση: χρειάζονται ατομική απόφαση.
+    """
+    firm_id = firm_id_for(user)
+    settings = await db.settings.find_one(tenant_query(user)) or {}
+    confirmed, skipped = 0, []
     async for tx in db.bank_transactions.find(tenant_query(user, {"match_status": "auto_matched"})):
-        if tx.get("matched_invoice_id"):
-            try:
-                result = await db.invoices.update_one(
-                    tenant_query(user, {"_id": ObjectId(tx["matched_invoice_id"]), "status": "issued"}),
-                    {"$set": {"status": "paid", "paid_at": now}},
-                )
-                if result.modified_count > 0:
-                    confirmed += 1
-                await db.bank_transactions.update_one(
-                    tenant_query(user, {"_id": tx["_id"]}),
-                    {"$set": {"match_status": "manual_matched", "match_confidence": 100}},
-                )
-            except Exception:
-                continue
-    return {"message": f"Επιβεβαιώθηκαν {confirmed} συνδέσεις. Τα αντίστοιχα τιμολόγια εξοφλήθηκαν.", "confirmed": confirmed}
+        if not tx.get("matched_invoice_id"):
+            continue
+        if tx.get("match_ambiguous"):
+            skipped.append({"id": str(tx["_id"]), "reason": "ambiguous",
+                            "message": "Ταιριάζουν περισσότερα από ένα τιμολόγια — επιλέξτε ατομικά."})
+            continue
+        result = await apply_bank_payment(
+            firm_id, tx, tx["matched_invoice_id"], settings=settings, paid_via="bank_manual",
+            status_on_success="manual_matched")
+        if result["status"] == "refused":
+            skipped.append({"id": str(tx["_id"]), "reason": result["reason"], "message": result["message"]})
+        else:
+            confirmed += 1
+    message = f"Επιβεβαιώθηκαν {confirmed} συνδέσεις. Τα αντίστοιχα τιμολόγια εξοφλήθηκαν."
+    if skipped:
+        message += (f" {len(skipped)} χρειάζονται ατομικό έλεγχο (διαφορά ποσού, περισσότερα από ένα πιθανά "
+                    "τιμολόγια ή τιμολόγιο που έχει ήδη εξοφληθεί).")
+    return {"message": message, "confirmed": confirmed, "skipped": len(skipped), "skipped_items": skipped}
 
 
 # ------------------------------------------------- open banking (PSD2) -----

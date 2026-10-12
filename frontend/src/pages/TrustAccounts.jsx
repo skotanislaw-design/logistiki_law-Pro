@@ -8,8 +8,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { Vault, ArrowCircleDown, ArrowCircleUp, Receipt, Plus, User, Info } from "@phosphor-icons/react";
+import { Vault, ArrowCircleDown, ArrowCircleUp, Receipt, Plus, User, Info, Warning } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { todayAthens } from "@/lib/utils";
 
 const TYPE_LABEL = {
   deposit: "Κατάθεση",
@@ -33,7 +34,7 @@ export default function TrustAccounts() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({
     client_id: "", type: "deposit", amount: 0,
-    date: new Date().toISOString().slice(0, 10),
+    date: todayAthens(),
     description: "", reference: "", invoice_id: "",
   });
   const [clientInvoices, setClientInvoices] = useState([]);
@@ -65,28 +66,40 @@ export default function TrustAccounts() {
     }
   };
 
+  // Ανοιχτά τιμολόγια του πελάτη με το ποσό που οφείλεται πραγματικά (μετά την παρακράτηση
+  // και ό,τι έχει ήδη εξοφληθεί από τον λογαριασμό) — υπολογίζεται στον server.
+  const loadOpenInvoices = async (clientId) => {
+    try {
+      const { data } = await axios.get(`${API}/trust/accounts/${clientId}/open-invoices`);
+      setClientInvoices(data);
+    } catch { setClientInvoices([]); }
+  };
+
   const openNew = async (clientId) => {
     setForm({
       client_id: clientId || "",
       type: "deposit", amount: 0,
-      date: new Date().toISOString().slice(0, 10),
+      date: todayAthens(),
       description: "", reference: "", invoice_id: "",
     });
-    if (clientId) {
-      try {
-        const { data } = await axios.get(`${API}/invoices`);
-        setClientInvoices(data.filter((i) => i.client_id === clientId && i.status === "issued"));
-      } catch { setClientInvoices([]); }
-    }
+    if (clientId) await loadOpenInvoices(clientId);
+    else setClientInvoices([]);
     setOpen(true);
   };
 
   const handleClientChange = async (cid) => {
     setForm({ ...form, client_id: cid, invoice_id: "" });
-    try {
-      const { data } = await axios.get(`${API}/invoices`);
-      setClientInvoices(data.filter((i) => i.client_id === cid && i.status === "issued"));
-    } catch { setClientInvoices([]); }
+    await loadOpenInvoices(cid);
+  };
+
+  // Επιλογή τιμολογίου: προτείνεται το μεγαλύτερο ποσό που επιτρέπεται (οφειλόμενο ή διαθέσιμο υπόλοιπο).
+  const handleInvoiceChange = (invoiceId) => {
+    const invoice = clientInvoices.find((i) => i.id === invoiceId);
+    const account = accounts.find((a) => a.client_id === form.client_id);
+    const amount = invoice
+      ? Math.round(Math.min(invoice.outstanding, account ? account.balance : invoice.outstanding) * 100) / 100
+      : form.amount;
+    setForm({ ...form, invoice_id: invoiceId, amount });
   };
 
   const handleSubmit = async () => {
@@ -95,8 +108,8 @@ export default function TrustAccounts() {
     try {
       const payload = { ...form, amount: Number(form.amount) };
       if (payload.type !== "apply_to_invoice") payload.invoice_id = null;
-      await axios.post(`${API}/trust/transactions`, payload);
-      toast.success("Η κίνηση καταχωρήθηκε");
+      const { data } = await axios.post(`${API}/trust/transactions`, payload);
+      toast.success(data?.message || "Η κίνηση καταχωρήθηκε");
       setOpen(false);
       await load();
       if (selected) await openDetail(selected);
@@ -184,6 +197,15 @@ export default function TrustAccounts() {
           </DialogHeader>
           {detail && (
             <>
+              {detail.ledger_check && !detail.ledger_check.consistent && (
+                <div className="flex gap-2 rounded-lg border border-[hsl(var(--destructive))]/40 bg-[hsl(var(--destructive))]/10 p-3 text-xs" data-testid="trust-ledger-warning">
+                  <Warning size={16} className="shrink-0 text-[hsl(var(--destructive))]" />
+                  <div>
+                    Το υπόλοιπο του λογαριασμού ({money(detail.account.balance)}) δεν συμφωνεί με το άθροισμα των κινήσεων
+                    ({money(detail.ledger_check.ledger_balance)}). Ελέγξτε το ιστορικό πριν προχωρήσετε σε νέες κινήσεις.
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-3 gap-3 text-sm">
                 <div className="lux-card p-3">
                   <div className="text-xs text-muted-foreground">Καταθέσεις</div>
@@ -266,10 +288,12 @@ export default function TrustAccounts() {
           {form.type === "apply_to_invoice" && (
             <div>
               <Label>Ανεξόφλητο τιμολόγιο πελάτη</Label>
-              <Select value={form.invoice_id} onValueChange={(v) => setForm({ ...form, invoice_id: v })}>
-                <SelectTrigger className="mt-1.5"><SelectValue placeholder="Επιλέξτε τιμολόγιο" /></SelectTrigger>
+              <Select value={form.invoice_id} onValueChange={handleInvoiceChange}>
+                <SelectTrigger className="mt-1.5" data-testid="trust-invoice-select"><SelectValue placeholder="Επιλέξτε τιμολόγιο" /></SelectTrigger>
                 <SelectContent>
-                  {clientInvoices.map((i) => <SelectItem key={i.id} value={i.id}>{i.number} — {money(i.total)}</SelectItem>)}
+                  {clientInvoices.map((i) => (
+                    <SelectItem key={i.id} value={i.id}>{i.number} — οφείλονται {money(i.outstanding)}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
               {clientInvoices.length === 0 && form.client_id && <p className="text-xs text-muted-foreground mt-1">Δεν υπάρχουν ανεξόφλητα τιμολόγια για τον πελάτη.</p>}

@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 from db import db
 from models import Expense
 from auth import get_current_user
@@ -11,6 +12,8 @@ from ai_helpers import ocr_receipt
 from storage import upload_receipt_image, get_object
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
+
+DUPLICATE_MARK_MSG = "Υπάρχει ήδη έξοδο με αυτό το MARK της ΑΑΔΕ· το ίδιο παραστατικό δεν καταχωρείται δύο φορές."
 
 
 @router.get("")
@@ -24,7 +27,10 @@ async def create_expense(payload: Expense, user: dict = Depends(get_current_user
     payload.id = None
     payload.firm_id = firm_id_for(user)
     payload.created_by = user["email"]
-    result = await db.expenses.insert_one(payload.to_mongo())
+    try:
+        result = await db.expenses.insert_one(payload.to_mongo())
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail=DUPLICATE_MARK_MSG)
     doc = await db.expenses.find_one(tenant_query(user, {"_id": result.inserted_id}))
     return Expense.from_mongo(doc)
 
@@ -35,7 +41,10 @@ async def update_expense(expense_id: str, payload: Expense, user: dict = Depends
     data = payload.to_mongo()
     data.pop("_id", None)
     data.pop("firm_id", None)
-    result = await db.expenses.update_one(tenant_query(user, {"_id": ObjectId(expense_id)}), {"$set": data})
+    try:
+        result = await db.expenses.update_one(tenant_query(user, {"_id": ObjectId(expense_id)}), {"$set": data})
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail=DUPLICATE_MARK_MSG)
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Το έξοδο δεν βρέθηκε")
     doc = await db.expenses.find_one(tenant_query(user, {"_id": ObjectId(expense_id)}))

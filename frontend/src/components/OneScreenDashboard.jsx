@@ -1,4 +1,5 @@
 import { money, dateFmt } from "@/lib/api";
+import { invoiceLabel } from "@/lib/utils";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer } from "recharts";
 import { Lightbulb, CalendarCheck } from "@phosphor-icons/react";
 
@@ -58,7 +59,7 @@ export function OneScreenDashboard({ data }) {
                 {data.recent_invoices.length === 0 && <p className="text-sm text-muted-foreground py-2">Δεν υπάρχουν τιμολόγια.</p>}
                 {data.recent_invoices.slice(0, 4).map((inv) => (
                   <div key={inv.id} className="flex items-center justify-between py-1.5 text-sm">
-                    <span className="truncate mr-2">{inv.number} <span className="text-muted-foreground text-xs">{inv.client_name}</span></span>
+                    <span className="truncate mr-2">{invoiceLabel(inv)} <span className="text-muted-foreground text-xs">{inv.client_name}</span></span>
                     <span className="font-mono">{money(inv.total)}</span>
                   </div>
                 ))}

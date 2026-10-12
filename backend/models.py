@@ -1,5 +1,5 @@
 from typing import Optional, List, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime, timezone
 from db import BaseDocument, PyObjectId
 from tenant import LEGACY_FIRM_ID
@@ -106,6 +106,9 @@ class Invoice(BaseDocument):
     cancellation_reason: str = ""
     withholding_amount: Optional[float] = None  # None = υπολογισμός από τις Ρυθμίσεις
     paid_via: Optional[str] = None  # manual / bank_auto / bank_manual / stripe / trust
+    # Ποσό που έχει ήδη εξοφληθεί από τον πελατολογικό λογαριασμό του πελάτη (μερική ή πλήρης
+    # εξόφληση). Το ποσό που οφείλεται πλέον είναι πληρωτέο − trust_applied.
+    trust_applied: Optional[float] = None
 
 
 class Expense(BaseDocument):
@@ -126,6 +129,15 @@ class Expense(BaseDocument):
     mydata_invoice_type: str = ""
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
+
+    @field_validator("mydata_mark", mode="before")
+    @classmethod
+    def _blank_mark_is_none(cls, v):
+        # Το κενό string δεν είναι MARK· αν περνούσε, το unique index θα το μετρούσε ως τιμή.
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
 
 
 class PayrollEmployee(BaseDocument):
@@ -260,7 +272,8 @@ class Settings(BaseDocument):
     withholding_enabled: bool = False
     withholding_rate: float = 0.20
     withholding_min_net: float = 300.0
-    withholding_category: str = "2"
+    # Κατηγορία παρακράτησης myDATA: «3» (αμοιβές, 20%) — το «2» είναι δικαιώματα (βλ. mydata_client).
+    withholding_category: str = "3"
     # Αυτόματη λήψη εξόδων από το myDATA (παραστατικά προμηθευτών)
     mydata_expense_sync: bool = True
     mydata_expense_last_mark: str = "0"
@@ -453,6 +466,10 @@ class BankTransaction(BaseDocument):
     matched_invoice_number: Optional[str] = None
     match_confidence: int = 0  # 0-100
     match_status: Literal["unmatched", "auto_matched", "auto_confirmed", "manual_matched", "ignored"] = "unmatched"
+    # Η πρόταση δεν είναι μονοσήμαντη (άλλο τιμολόγιο ταιριάζει εξίσου) — δεν εξοφλείται αυτόματα.
+    match_ambiguous: bool = False
+    # κατάθεση − οφειλόμενο, όταν ο άνθρωπος δέχτηκε συμφωνία με διαφορά (π.χ. προμήθεια τράπεζας)
+    amount_difference: Optional[float] = None
     review_notified: bool = False
     confirmed_at: Optional[str] = None
     imported_at: str = Field(default_factory=now_iso)

@@ -29,6 +29,7 @@ from datetime import datetime, timezone, timedelta, date as _date
 from zoneinfo import ZoneInfo
 
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 
 from db import db
 from crypto import decrypt
@@ -38,6 +39,7 @@ from email_utils import smtp_ready, send_email_with_pdf
 from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
     email_invoice, send_reminder, transmit_to_mydata, mark_paid, load_client, InvoiceEmailError, firm_query,
+    apply_bank_payment, SettlementRefused,
 )
 import outbox
 
@@ -148,18 +150,26 @@ async def resolve_notification(firm_id: str, notification_id: str, user_email: s
     if not n:
         raise ValueError("Η ειδοποίηση δεν βρέθηκε")
     outcome = decision
-    if n.get("type") == "reconcile_review" and n.get("entity") == "bank_tx":
+    if n.get("type") in ("reconcile_review", "reconcile_conflict") and n.get("entity") == "bank_tx":
         tx = await db.bank_transactions.find_one(firm_query(firm_id, {"_id": ObjectId(n["entity_id"])}))
-        if tx:
+        if tx and tx.get("match_status") in ("auto_confirmed", "manual_matched"):
+            outcome = "already_settled"          # στο μεταξύ συμφωνήθηκε αλλιώς· η ειδοποίηση είναι παλιά
+        elif tx:
             if decision == "confirm" and tx.get("matched_invoice_id"):
-                await mark_paid(firm_id, tx["matched_invoice_id"], paid_via="bank_manual")
-                await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"match_status": "manual_matched", "match_confidence": 100}})
+                # Το «Ναι, εξοφλήθηκε» είναι ρητή απόφαση ανθρώπου: δέχεται και διαφορά ποσού (που
+                # αναγράφεται στην ειδοποίηση). Δεν δέχεται τιμολόγιο που δεν είναι πια ανοιχτό.
+                settings = await db.settings.find_one(firm_query(firm_id)) or {}
+                result = await apply_bank_payment(
+                    firm_id, tx, tx["matched_invoice_id"], settings=settings, paid_via="bank_manual",
+                    status_on_success="manual_matched", accept_difference=True)
+                if result["status"] == "refused":
+                    raise SettlementRefused(result["reason"], result["message"])
                 outcome = "confirmed"
             elif decision == "ignore":
-                await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"match_status": "ignored", "matched_invoice_id": None, "matched_invoice_number": None}})
+                await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"match_status": "ignored", "matched_invoice_id": None, "matched_invoice_number": None, "match_ambiguous": False}})
                 outcome = "ignored"
             elif decision == "unmatch":
-                await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"match_status": "unmatched", "matched_invoice_id": None, "matched_invoice_number": None, "match_confidence": 0}})
+                await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"match_status": "unmatched", "matched_invoice_id": None, "matched_invoice_number": None, "match_confidence": 0, "match_ambiguous": False}})
                 outcome = "unmatched"
     elif n.get("entity") == "outbox" and n.get("type") in ("outbox_stuck", "outbox_failed"):
         outcome = await outbox.resolve_stuck(firm_id, n["entity_id"], decision)
@@ -412,26 +422,59 @@ async def job_mydata_retry(firm_id: str, settings: dict) -> dict:
 
 
 async def job_reconcile(firm_id: str, settings: dict) -> dict:
+    """Εξοφλεί αυτόματα μόνο ό,τι είναι ασφαλές· όλα τα υπόλοιπα πάνε στο inbox με την αιτία τους.
+
+    Αυτόματη εξόφληση απαιτεί **και** βεβαιότητα ≥ όριο **και** μονοσήμαντη πρόταση **και** ακριβές
+    ποσό για ανοιχτό τιμολόγιο (βλ. `apply_bank_payment`). Η βεβαιότητα μόνη της δεν αρκεί:
+    ένα σκορ 90+ μπορεί να προκύπτει από όνομα και ημερομηνία ενώ το ποσό διαφέρει.
+    """
     threshold = int(settings.get("auto_reconcile_min_confidence", 90) or 0)
     confirmed = review = 0
     async for tx in db.bank_transactions.find(firm_query(firm_id, {"match_status": "auto_matched"})):
         inv_id = tx.get("matched_invoice_id")
         if not inv_id:
             continue
-        if threshold and int(tx.get("match_confidence") or 0) >= threshold:
-            paid = await mark_paid(firm_id, inv_id, paid_via="bank_auto")
-            await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"match_status": "auto_confirmed", "confirmed_at": _now()}})
+        confident = bool(threshold) and int(tx.get("match_confidence") or 0) >= threshold and not tx.get("match_ambiguous")
+        result = await apply_bank_payment(
+            firm_id, tx, inv_id, settings=settings, paid_via="bank_auto",
+            status_on_success="auto_confirmed", dry_run=not confident)
+
+        if confident and result["status"] in ("paid", "linked"):
             confirmed += 1
             await notify(firm_id, "reconciled", "success", f"Εξοφλήθηκε το {tx.get('matched_invoice_number')}",
                          f"Κατάθεση {_fmt(tx.get('amount'))} στις {tx.get('date')} — «{(tx.get('description') or '')[:60]}» (βεβαιότητα {tx.get('match_confidence')}%)"
-                         + ("" if paid else " — το τιμολόγιο ήταν ήδη εξοφλημένο"),
+                         + ("" if result["status"] == "paid" else " — το τιμολόγιο ήταν ήδη εξοφλημένο"),
                          entity="bank_tx", entity_id=tx["_id"])
-        elif not tx.get("review_notified"):
+            continue
+
+        if result["status"] == "refused" and result["reason"] != "amount_mismatch":
+            # Το τιμολόγιο δεν είναι πια ανοιχτό ή το έχει εξοφλήσει άλλη κίνηση/κανάλι: η κατάθεση
+            # δεν μπορεί να του αποδοθεί (πιθανή διπλοπληρωμή ή επιστροφή). Αποδεσμεύεται και
+            # ένας άνθρωπος αποφασίζει — δεν «συμφωνείται» σιωπηλά.
+            await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {
+                "match_status": "unmatched", "matched_invoice_id": None, "matched_invoice_number": None,
+                "match_confidence": 0, "match_ambiguous": False}})
+            review += 1
+            await notify(firm_id, "reconcile_conflict", "warning",
+                         f"Η κατάθεση {_fmt(tx.get('amount'))} δεν συνδέθηκε με το {tx.get('matched_invoice_number')}",
+                         f"{tx.get('date')} — «{(tx.get('description') or '')[:80]}». {result['message']}",
+                         entity="bank_tx", entity_id=tx["_id"], requires_action=True,
+                         actions=[{"key": "ignore", "label": "Αγνόησε την κίνηση"}, {"key": "done", "label": "Το χειρίστηκα"}],
+                         dedupe_key=f"reconcile_conflict:{tx['_id']}")
+            continue
+
+        if not tx.get("review_notified"):
+            if tx.get("match_ambiguous"):
+                why = "Ταιριάζουν και άλλα τιμολόγια με το ίδιο ποσό — επιλέξτε ποιο εξοφλείται."
+            elif result["status"] == "refused":          # amount_mismatch
+                why = result["message"]
+            else:
+                why = f"Η βεβαιότητα ({tx.get('match_confidence')}%) είναι κάτω από το όριο αυτόματης εξόφλησης ({threshold}%)."
             review += 1
             await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"review_notified": True}})
             await notify(firm_id, "reconcile_review", "warning",
                          f"Ταιριάζει η κατάθεση {_fmt(tx.get('amount'))} με το {tx.get('matched_invoice_number')};",
-                         f"{tx.get('date')} — «{(tx.get('description') or '')[:80]}» (βεβαιότητα {tx.get('match_confidence')}%)",
+                         f"{tx.get('date')} — «{(tx.get('description') or '')[:80]}» (βεβαιότητα {tx.get('match_confidence')}%). {why}",
                          entity="bank_tx", entity_id=tx["_id"], requires_action=True,
                          actions=[{"key": "confirm", "label": "Ναι, εξοφλήθηκε"}, {"key": "unmatch", "label": "Όχι, άλλο τιμολόγιο"}, {"key": "ignore", "label": "Αγνόησε την κίνηση"}],
                          dedupe_key=f"reconcile_review:{tx['_id']}")
@@ -468,7 +511,7 @@ async def job_stale_drafts(firm_id: str, settings: dict) -> dict:
     flagged = 0
     async for inv in db.invoices.find(firm_query(firm_id, {"status": "draft", "created_at": {"$lt": cutoff}})):
         created = await notify(firm_id, "stale_draft", "info",
-                               f"Πρόχειρο τιμολόγιο {inv.get('number')} περιμένει έκδοση",
+                               f"Πρόχειρο τιμολόγιο{(' ' + inv['number']) if inv.get('number') else ''} περιμένει έκδοση",
                                f"{inv.get('client_name')} — {_fmt(inv.get('total'))}, δημιουργήθηκε {inv.get('created_at', '')[:10]}",
                                entity="invoice", entity_id=inv["_id"], requires_action=True,
                                dedupe_key=f"stale_draft:{inv['_id']}")
@@ -674,7 +717,12 @@ async def job_mydata_expenses(firm_id: str, settings: dict) -> dict:
             # Τα ποσά είναι επίσημα· μόνο η κατηγορία χρειάζεται ματιά για τη φορολογική έκπτωση.
             review_status="needs_review",
         )
-        result = await db.expenses.insert_one(exp.to_mongo())
+        try:
+            result = await db.expenses.insert_one(exp.to_mongo())
+        except DuplicateKeyError:
+            # Ταυτόχρονος κύκλος (API/worker) πρόλαβε το ίδιο MARK· το unique index το κρατά μοναδικό.
+            skipped += 1
+            continue
         created += 1
         await notify(firm_id, "expense_created", "success",
                      f"Νέο έξοδο από myDATA: {_fmt(exp.amount)} — {exp.vendor}",
@@ -798,7 +846,7 @@ async def job_bank_sync(firm_id: str, settings: dict) -> dict:
     from openbanking import (
         openbanking_ready, fetch_transactions, requisition_expiring, OpenBankingError,
     )
-    from routes_bank import _find_match
+    from routes_bank import match_details, build_match_pool
     from models import BankTransaction
 
     if not settings.get("openbanking_enabled") or not openbanking_ready(settings):
@@ -822,7 +870,7 @@ async def job_bank_sync(firm_id: str, settings: dict) -> dict:
     date_from = (_date.fromisoformat(last) - timedelta(days=5)).isoformat() if last else \
         (_date.today() - timedelta(days=90)).isoformat()
 
-    unpaid = await db.invoices.find(firm_query(firm_id, {"status": "issued"})).to_list(2000)
+    pool = await build_match_pool(firm_id, settings)
     created = skipped = matched = 0
     for account_id in account_ids:
         try:
@@ -841,15 +889,23 @@ async def job_bank_sync(firm_id: str, settings: dict) -> dict:
                 reference=tx["reference"], amount=tx["amount"], bank=settings.get("gocardless_institution_name", ""),
                 account=account_id, external_id=external_id, imported_by="open_banking",
             )
-            match, confidence = await _find_match(tx, unpaid)
-            if match:
+            found = match_details(tx, pool)
+            match = found["invoice"]
+            if match is not None:
                 record.matched_invoice_id = str(match["_id"])
                 record.matched_invoice_number = match.get("number", "")
-                record.match_confidence = confidence
+                record.match_confidence = found["confidence"]
+                record.match_ambiguous = found["ambiguous"]
                 record.match_status = "auto_matched"
-                matched += 1
-            await db.bank_transactions.insert_one(record.to_mongo())
+            try:
+                await db.bank_transactions.insert_one(record.to_mongo())
+            except DuplicateKeyError:
+                skipped += 1                # άλλη διεργασία πρόλαβε να καταχωρήσει την ίδια κίνηση
+                continue
             created += 1
+            if match is not None:
+                matched += 1
+                pool = [i for i in pool if i is not match]      # δεσμεύεται από αυτή την κίνηση
 
     await db.settings.update_one(firm_query(firm_id), {"$set": {"bank_sync_last_date": _date.today().isoformat()}})
     if created:

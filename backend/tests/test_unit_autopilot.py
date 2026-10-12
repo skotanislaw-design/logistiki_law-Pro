@@ -374,11 +374,14 @@ async def test_credit_note_mirrors_original_and_links_both_ways():
     doc = await db.invoices.find_one({"_id": original.inserted_id})
 
     credit = await svc.build_credit_note(FIRM, doc, "user@example.gr", reason="Λάθος χρέωση")
-    assert credit["number"].startswith("ΠΙΣ-")
+    assert credit["number"] == "" and credit["status"] == "draft"      # αριθμός μόνο στην έκδοση
     assert credit["invoice_type"] == "5.1" and credit["correlated_mark"] == "400001"
     assert credit["credit_note_for"] == str(original.inserted_id)
     assert credit["total"] == -124.0 and credit["line_items"][0]["unit_price"] == -100
     assert (await db.invoices.find_one({"_id": original.inserted_id}))["credit_note_id"] == str(credit["_id"])
+
+    issued = await svc.issue_draft(FIRM, credit, settings)
+    assert issued["status"] == "issued" and issued["number"].startswith("ΠΙΣ-")
 
     # δεύτερο πιστωτικό για το ίδιο τιμολόγιο απορρίπτεται
     with pytest.raises(svc.InvoiceWorkflowError, match="ήδη"):

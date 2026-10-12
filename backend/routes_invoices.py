@@ -11,41 +11,25 @@ from models import Invoice
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from tax_utils import calculate_invoice_totals, VALID_VAT_RATES
+from mydata_client import INVOICE_TYPE_LABELS, TYPE_SERVICES_B2B, TYPE_RECEIPT_B2C
 from ai_helpers import transcribe_audio, parse_invoice_from_text
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
+# Είδη που μπορεί να ζητήσει ο χρήστης σε πρόχειρο. Το 5.1 (πιστωτικό) δημιουργείται μόνο από
+# το /credit-note.
+USER_INVOICE_TYPES = (TYPE_SERVICES_B2B, TYPE_RECEIPT_B2C)
 
-async def _next_invoice_number(firm_id: str, prefix: str = "ΤΠΥ") -> str:
-    from datetime import datetime, timezone
-    from pymongo import ReturnDocument
-    year = datetime.now(timezone.utc).year
-    counter_id = f"invoice-{firm_id}-{year}" if prefix == "ΤΠΥ" else f"invoice-{prefix}-{firm_id}-{year}"
-    counter = await db.counters.find_one_and_update(
-        {"_id": counter_id},
-        {"$inc": {"seq": 1}},
-        upsert=True,
-        return_document=ReturnDocument.AFTER,
-    )
-    seq = counter["seq"]
-    # Seed the counter above any pre-existing max if this is the first use for the year
-    if seq == 1:
-        existing_max = 0
-        async for d in db.invoices.find({"firm_id": firm_id, "number": {"$regex": f"^{prefix}-{year}-"}}, {"number": 1}):
-            try:
-                n = int(d["number"].rsplit("-", 1)[-1])
-                if n > existing_max:
-                    existing_max = n
-            except Exception:
-                pass
-        if existing_max >= seq:
-            counter = await db.counters.find_one_and_update(
-                {"_id": counter_id},
-                {"$set": {"seq": existing_max + 1}},
-                return_document=ReturnDocument.AFTER,
-            )
-            seq = counter["seq"]
-    return f"{prefix}-{year}-{seq:04d}"
+# Πεδία που ανήκουν στον server (με την αρχική τιμή τους): ο client δεν τα ορίζει ποτέ, ούτε στη
+# δημιουργία ούτε στην τροποποίηση. Τα `status`/`mydata_*`/`issued_at`/`paid_at` έχουν δικούς
+# τους κανόνες πιο κάτω.
+SERVER_OWNED_DEFAULTS = {
+    "credit_note_for": None, "correlated_mark": None, "credit_note_id": None,
+    "cancelled_at": None, "cancellation_reason": "", "mydata_cancellation_mark": None,
+    "mydata_cancelled_at": None, "mydata_synced_at": None, "mydata_attempts": 0,
+    "paid_via": None, "trust_applied": None, "email_sent_at": None, "email_sent_to": None,
+    "reminder_sent_at": None, "reminder_count": 0,
+}
 
 
 @router.get("")
@@ -76,6 +60,15 @@ def _validate_invoice_payload(payload: Invoice) -> None:
 
     if not payload.line_items:
         raise HTTPException(status_code=400, detail="Το τιμολόγιο πρέπει να έχει τουλάχιστον μία γραμμή.")
+    # Πιστωτικό δεν φτιάχνεται «με το χέρι»: εκδίδεται από το τιμολόγιο που πιστώνει (/credit-note),
+    # ώστε να δένεται με το MARK του αρχικού. Άγνωστα είδη δεν περνούν.
+    if payload.invoice_type and payload.invoice_type not in USER_INVOICE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Μη έγκυρο είδος παραστατικού. Επιτρέπονται: "
+                   + ", ".join(f"{code} ({INVOICE_TYPE_LABELS[code]})" for code in USER_INVOICE_TYPES)
+                   + ". Το πιστωτικό εκδίδεται από το αρχικό τιμολόγιο.",
+        )
     try:
         _date.fromisoformat(payload.date)
     except (ValueError, TypeError):
@@ -90,6 +83,13 @@ def _validate_invoice_payload(payload: Invoice) -> None:
             raise HTTPException(
                 status_code=400,
                 detail=f"Γραμμή {idx}: μη έγκυρος συντελεστής ΦΠΑ {line.vat_rate}%. Επιτρέπονται: {allowed}.",
+            )
+    if payload.withholding_amount is not None:
+        net = calculate_invoice_totals(payload.line_items)["subtotal"]
+        if payload.withholding_amount < 0 or payload.withholding_amount > net:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Η παρακράτηση ({payload.withholding_amount:.2f} €) πρέπει να είναι από 0 έως την καθαρή αξία ({net:.2f} €).",
             )
 
 
@@ -108,6 +108,8 @@ def _reset_lifecycle_fields(payload: Invoice) -> None:
     payload.mydata_error = None
     payload.paid_at = None
     payload.issued_at = None
+    for field, default in SERVER_OWNED_DEFAULTS.items():
+        setattr(payload, field, default)
 
 
 @router.post("")
@@ -127,7 +129,8 @@ async def create_invoice(payload: Invoice, user: dict = Depends(get_current_user
     payload.vat_breakdown = totals["vat_breakdown"]
     if payload.total <= 0:
         raise HTTPException(status_code=400, detail="Το σύνολο του τιμολογίου πρέπει να είναι θετικό.")
-    payload.number = await _next_invoice_number(firm_id_for(user))
+    # Το πρόχειρο δεν έχει αριθμό: ο αριθμός δίνεται στην έκδοση (βλ. invoice_services.issue_draft).
+    payload.number = ""
     payload.created_by = user["email"]
     result = await db.invoices.insert_one(payload.to_mongo())
     doc = await db.invoices.find_one(tenant_query(user, {"_id": result.inserted_id}))
@@ -153,6 +156,10 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
     payload.mydata_uid = existing.get("mydata_uid")
     payload.paid_at = existing.get("paid_at")
     payload.issued_at = existing.get("issued_at")
+    for field, default in SERVER_OWNED_DEFAULTS.items():
+        setattr(payload, field, existing.get(field, default))
+    if existing.get("credit_note_for"):          # πρόχειρο πιστωτικό: το είδος δεν αλλάζει
+        payload.invoice_type = existing.get("invoice_type", "")
     client_doc = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(payload.client_id)}))
     if not client_doc:
         raise HTTPException(status_code=404, detail="Ο πελάτης δεν βρέθηκε")
@@ -189,13 +196,26 @@ async def delete_invoice(invoice_id: str, user: dict = Depends(get_current_user)
             detail="Εκδοθέν τιμολόγιο δεν διαγράφεται. Χρησιμοποιήστε ακύρωση ή πιστωτικό τιμολόγιο.",
         )
     await db.invoices.delete_one(tenant_query(user, {"_id": invoice_oid}))
+    # Αποδέσμευση: αλλιώς το αρχικό τιμολόγιο θα έμενε με «έχει ήδη πιστωτικό» και το γραμμάτιο με
+    # «έχει ήδη ενσωματωθεί» για παραστατικό που δεν υπάρχει πια, και δεν θα μπορούσαν να ξαναγίνουν.
+    original_id = existing.get("credit_note_for")
+    if original_id:
+        try:
+            await db.invoices.update_one(
+                tenant_query(user, {"_id": ObjectId(original_id), "credit_note_id": invoice_id}),
+                {"$unset": {"credit_note_id": ""}},
+            )
+        except Exception:  # noqa: BLE001 — άκυρο id στο παλιό έγγραφο: δεν εμποδίζει τη διαγραφή
+            pass
+    await db.grammatia.update_many(tenant_query(user, {"invoice_id": invoice_id}), {"$unset": {"invoice_id": ""}})
     return {"message": "Το πρόχειρο τιμολόγιο διαγράφηκε"}
 
 
 @router.post("/{invoice_id}/issue")
 async def issue_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
-    from datetime import datetime, timezone
-    from invoice_services import transmit_to_mydata, email_invoice, InvoiceEmailError
+    from invoice_services import (
+        issue_draft, transmit_to_mydata, email_invoice, InvoiceEmailError, InvoiceWorkflowError,
+    )
     firm_id = firm_id_for(user)
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     if not doc:
@@ -203,12 +223,13 @@ async def issue_invoice(invoice_id: str, user: dict = Depends(get_current_user))
     if doc.get("status") != "draft":
         raise HTTPException(status_code=400, detail="Μόνο πρόχειρα τιμολόγια μπορούν να εκδοθούν.")
     settings = await db.settings.find_one(tenant_query(user, {})) or {}
-    await db.invoices.update_one(
-        tenant_query(user, {"_id": ObjectId(invoice_id)}),
-        {"$set": {"status": "issued", "issued_at": datetime.now(timezone.utc).isoformat()}},
-    )
-    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
+    try:
+        doc = await issue_draft(firm_id, doc, settings)
+    except InvoiceWorkflowError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     await transmit_to_mydata(firm_id, doc, settings)
+    # Ξαναδιαβάζουμε μετά τη διαβίβαση: το PDF που θα σταλεί στον πελάτη πρέπει να φέρει το MARK.
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
 
     # Autopilot: send the PDF to the client right away so the user never has to.
     if settings.get("autopilot_enabled", True) and settings.get("auto_email_on_issue", True):

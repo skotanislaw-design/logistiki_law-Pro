@@ -16,8 +16,22 @@
 
 import calendar
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
+from zoneinfo import ZoneInfo
+
+ATHENS = ZoneInfo("Europe/Athens")
+
+
+def athens_today() -> date:
+    """Η σημερινή ημερομηνία στην Ελλάδα — όχι του server.
+
+    Ο server τρέχει σε UTC· μεταξύ 00:00 και 03:00 ώρα Ελλάδας η `date.today()` δίνει ακόμη
+    την προηγούμενη μέρα, οπότε ένα τιμολόγιο θα έφερε ημερομηνία χθες και η σειρά
+    αρίθμησης θα άλλαζε έτος με καθυστέρηση. Κάθε ημερομηνία παραστατικού βγαίνει από εδώ.
+    """
+    return datetime.now(ATHENS).date()
+
 
 # --------------------------------------------------------------- χρήμα ---
 

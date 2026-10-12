@@ -34,9 +34,22 @@ async def send_email_with_pdf(settings: dict, to_email: str, subject: str, body_
     )
 
 
+def _payable(invoice: dict) -> float:
+    """Ό,τι πρέπει να καταβάλει ο πελάτης: σύνολο μείον την παρακράτηση που κρατά ο ίδιος.
+
+    Ταυτίζεται με το «ΠΛΗΡΩΤΕΟ ΠΟΣΟ» του PDF και με το ποσό πληρωμής στο XML της ΑΑΔΕ.
+    """
+    return round(float(invoice.get("total") or 0) - float(invoice.get("withholding_amount") or 0), 2)
+
+
+def _outstanding(invoice: dict) -> float:
+    """Ό,τι απομένει να καταβάλει ο πελάτης: το πληρωτέο μείον ό,τι εξοφλήθηκε από πελατολογικό λογαριασμό."""
+    return round(max(_payable(invoice) - float(invoice.get("trust_applied") or 0), 0.0), 2)
+
+
 def invoice_email_html(invoice: dict, settings: dict) -> str:
     company = settings.get("company_name") or "Nomos One"
-    total = f"{(invoice.get('total') or 0):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+    total = f"{_payable(invoice):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
     iban_row = ""
     if settings.get("iban"):
         bank = f" ({settings['bank_name']})" if settings.get("bank_name") else ""
@@ -67,7 +80,7 @@ def invoice_email_html(invoice: dict, settings: dict) -> str:
 
 def invoice_email_text(invoice: dict, settings: dict) -> str:
     company = settings.get("company_name") or "Nomos One"
-    total = f"{(invoice.get('total') or 0):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+    total = f"{_payable(invoice):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
     lines = [
         f"Αγαπητέ/ή {invoice.get('client_name') or 'πελάτη'},",
         "",
@@ -87,7 +100,7 @@ def _fmt_money(v) -> str:
 
 def reminder_email_html(invoice: dict, settings: dict, days_overdue: int, reminder_count: int, payment_link: str = "") -> str:
     company = settings.get("company_name") or "Nomos One"
-    total = _fmt_money(invoice.get("total"))
+    total = _fmt_money(_outstanding(invoice))
     iban_row = ""
     if settings.get("iban"):
         bank = f" ({settings['bank_name']})" if settings.get("bank_name") else ""
@@ -140,7 +153,7 @@ def reminder_email_html(invoice: dict, settings: dict, days_overdue: int, remind
 
 def reminder_email_text(invoice: dict, settings: dict, days_overdue: int, reminder_count: int, payment_link: str = "") -> str:
     company = settings.get("company_name") or "Nomos One"
-    total = _fmt_money(invoice.get("total"))
+    total = _fmt_money(_outstanding(invoice))
     tone = "Ευγενική υπενθύμιση" if reminder_count == 0 else ("Δεύτερη υπενθύμιση" if reminder_count == 1 else "Υπενθύμιση")
     lines = [
         f"Αγαπητέ/ή {invoice.get('client_name') or 'πελάτη'},",

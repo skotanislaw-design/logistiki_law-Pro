@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
+import { invoiceLabel } from "@/lib/utils";
 import { CloudCheck, CloudSlash, FilePdf, EnvelopeSimple, BellRinging, CheckCircle, CreditCard } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -92,7 +93,7 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }
       <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto" aria-describedby={undefined} data-testid="invoice-detail-dialog">
         <DialogHeader>
           <div className="flex items-center justify-between pr-6">
-            <DialogTitle>Τιμολόγιο {invoice.number}</DialogTitle>
+            <DialogTitle>Τιμολόγιο {invoiceLabel(invoice)}</DialogTitle>
             <div className="flex gap-2 flex-wrap">
               <Button size="sm" variant="outline" onClick={downloadPdf} data-testid="invoice-detail-pdf-button">
                 <FilePdf size={16} className="mr-1.5" /> PDF

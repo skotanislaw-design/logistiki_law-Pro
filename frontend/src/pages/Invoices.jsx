@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
+import { invoiceLabel, todayAthens } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,7 +21,7 @@ const STATUS_VARIANT = { draft: "secondary", issued: "outline", paid: "default",
 
 function emptyForm() {
   return {
-    client_id: "", date: new Date().toISOString().slice(0, 10),
+    client_id: "", date: todayAthens(),
     line_items: [{ description: "", quantity: 1, unit_price: 0, vat_rate: 24 }],
     payment_method: "Τραπεζική κατάθεση", notes: "",
   };
@@ -99,7 +100,7 @@ export default function Invoices() {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      toast.success(`Το PDF του ${inv.number} δημιουργήθηκε`);
+      toast.success(`Το PDF του ${invoiceLabel(inv)} δημιουργήθηκε`);
     } catch (e) {
       toast.error(errMsg(e));
     }
@@ -109,7 +110,7 @@ export default function Invoices() {
     setSendingId(inv.id);
     try {
       const { data } = await axios.post(`${API}/invoices/${inv.id}/send-email`);
-      toast.success(`Το τιμολόγιο ${inv.number} στάλθηκε στο ${data.email_sent_to}`);
+      toast.success(`Το τιμολόγιο ${invoiceLabel(inv)} στάλθηκε στο ${data.email_sent_to}`);
       load();
     } catch (e) {
       toast.error(errMsg(e));
@@ -134,8 +135,8 @@ export default function Invoices() {
   const cancelInvoice = async (inv) => {
     const sentToAade = inv.mydata_status === "synced";
     const question = sentToAade
-      ? `Ακύρωση του ${inv.number}; Θα σταλεί και ακύρωση στο myDATA της ΑΑΔΕ.`
-      : `Ακύρωση του ${inv.number};`;
+      ? `Ακύρωση του ${invoiceLabel(inv)}; Θα σταλεί και ακύρωση στο myDATA της ΑΑΔΕ.`
+      : `Ακύρωση του ${invoiceLabel(inv)};`;
     if (!window.confirm(question)) return;
     setWorkingId(inv.id);
     try {
@@ -150,11 +151,11 @@ export default function Invoices() {
   };
 
   const createCreditNote = async (inv) => {
-    if (!window.confirm(`Έκδοση πιστωτικού τιμολογίου για το ${inv.number};`)) return;
+    if (!window.confirm(`Δημιουργία πιστωτικού τιμολογίου για το ${invoiceLabel(inv)};`)) return;
     setWorkingId(inv.id);
     try {
       const { data } = await axios.post(`${API}/invoices/${inv.id}/credit-note`, { reason: "" });
-      toast.success(`Δημιουργήθηκε το πιστωτικό ${data.number}`);
+      toast.success("Δημιουργήθηκε πρόχειρο πιστωτικό· εκδώστε το για να λάβει αριθμό");
       load();
     } catch (e) {
       toast.error(errMsg(e));
@@ -167,7 +168,7 @@ export default function Invoices() {
     setMarkingPaidId(inv.id);
     try {
       await axios.post(`${API}/invoices/${inv.id}/mark-paid`);
-      toast.success(`Το τιμολόγιο ${inv.number} σημάνθηκε ως εξοφλημένο`);
+      toast.success(`Το τιμολόγιο ${invoiceLabel(inv)} σημάνθηκε ως εξοφλημένο`);
       load();
     } catch (e) {
       toast.error(errMsg(e));
@@ -180,7 +181,7 @@ export default function Invoices() {
     setMarkingPaidId(inv.id);
     try {
       await axios.post(`${API}/invoices/${inv.id}/mark-unpaid`);
-      toast.success(`Το τιμολόγιο ${inv.number} επαναφέρθηκε σε ανεξόφλητο`);
+      toast.success(`Το τιμολόγιο ${invoiceLabel(inv)} επαναφέρθηκε σε ανεξόφλητο`);
       load();
     } catch (e) {
       toast.error(errMsg(e));
@@ -342,7 +343,7 @@ export default function Invoices() {
               const overdue = inv.status === "issued" ? daysOverdue(inv.date) : 0;
               return (
               <TableRow key={inv.id} data-testid={`invoice-row-${inv.id}`}>
-                <TableCell className="font-mono text-xs">{inv.number}</TableCell>
+                <TableCell className="font-mono text-xs">{invoiceLabel(inv)}</TableCell>
                 <TableCell>{inv.client_name}</TableCell>
                 <TableCell>
                   {dateFmt(inv.date)}
@@ -445,7 +446,7 @@ export default function Invoices() {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" aria-describedby={undefined}>
-          <DialogHeader><DialogTitle>{editing ? `Επεξεργασία Τιμολογίου ${editing.number}` : "Νέο Τιμολόγιο"}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{editing ? `Επεξεργασία Τιμολογίου ${invoiceLabel(editing)}` : "Νέο Τιμολόγιο"}</DialogTitle></DialogHeader>
 
           {!editing && (
             <div className="border border-dashed border-border rounded-sm p-4 bg-muted/40 space-y-2">

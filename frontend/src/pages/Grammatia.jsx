@@ -39,8 +39,8 @@ export default function Grammatia() {
 
   const toInvoice = async (g) => {
     try {
-      const { data } = await axios.post(`${API}/grammatia/${g.id}/to-invoice`);
-      toast.success(`Δημιουργήθηκε τιμολόγιο ${data.number} με το γραμμάτιο (0% ΦΠΑ)`);
+      await axios.post(`${API}/grammatia/${g.id}/to-invoice`);
+      toast.success("Δημιουργήθηκε πρόχειρο τιμολόγιο με το γραμμάτιο — ελέγξτε το ΦΠΑ και εκδώστε το από τα Τιμολόγια");
       load();
     } catch (e) {
       toast.error(errMsg(e));

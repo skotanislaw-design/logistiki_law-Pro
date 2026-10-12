@@ -49,7 +49,14 @@ async def _validate_invoice_and_get_amount(invoice_id: str, firm_id: str | None 
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     if inv.get("status") == "paid":
         raise HTTPException(status_code=400, detail="Το τιμολόγιο είναι ήδη εξοφλημένο")
-    total = float(inv.get("total", 0))
+    if inv.get("status") != "issued":
+        # Πρόχειρο ή ακυρωμένο παραστατικό δεν εισπράττεται.
+        raise HTTPException(status_code=400, detail="Πληρώνονται μόνο εκδοθέντα, ανεξόφλητα τιμολόγια.")
+    # Ο πελάτης καταβάλλει το οφειλόμενο: το πληρωτέο (μετά την παρακράτηση που κρατά ο ίδιος),
+    # μείον ό,τι έχει ήδη εξοφληθεί από τον πελατολογικό του λογαριασμό. Όχι το ακαθάριστο.
+    from invoice_services import outstanding_amount
+    settings = await db.settings.find_one({"firm_id": inv.get("firm_id")}) or {}
+    total, _withheld = await outstanding_amount(inv.get("firm_id", ""), inv, settings)
     if total <= 0:
         raise HTTPException(status_code=400, detail="Μη έγκυρο ποσό τιμολογίου")
     return inv, total
@@ -162,16 +169,34 @@ async def _mark_paid(session_id: str, payment_intent_id: str = None):
     if result.modified_count > 0:
         tx = await db.payment_transactions.find_one({"session_id": session_id})
         if tx and tx.get("invoice_id"):
-            try:
-                await db.invoices.update_one(
-                    {"_id": ObjectId(tx["invoice_id"]), "firm_id": tx.get("firm_id", "legacy-default-firm"), "status": {"$ne": "paid"}},
-                    {"$set": {
-                        "status": "paid",
-                        "paid_at": datetime.now(timezone.utc).isoformat(),
-                    }},
-                )
-            except Exception:
-                pass
+            await _apply_card_payment(tx)
+
+
+async def _apply_card_payment(tx: dict) -> None:
+    """Εξοφλεί το τιμολόγιο της πληρωμής — μόνο αν είναι ακόμη ανοιχτό.
+
+    Παλιότερα το φίλτρο ήταν «οτιδήποτε εκτός από εξοφλημένο», οπότε μια πληρωμή που ολοκληρωνόταν
+    αφού το τιμολόγιο είχε ακυρωθεί (πιστωτικό) το έκανε «εξοφλημένο» και χαλούσε ένα ακυρωμένο
+    παραστατικό. Αν το τιμολόγιο δεν είναι ανοιχτό, τα χρήματα έχουν ήδη εισπραχθεί: ειδοποιείται
+    το γραφείο για να αποφασίσει (επιστροφή, ή σύνδεση με άλλο παραστατικό).
+    """
+    from invoice_services import mark_paid
+    firm_id = tx.get("firm_id", "legacy-default-firm")
+    try:
+        if await mark_paid(firm_id, tx["invoice_id"], paid_via="stripe"):
+            return
+        invoice = await db.invoices.find_one({"_id": ObjectId(tx["invoice_id"]), "firm_id": firm_id}) or {}
+    except Exception:
+        return
+    from automation import notify, _fmt
+    status = invoice.get("status") or "άγνωστη"
+    await notify(
+        firm_id, "card_payment_unapplied", "critical",
+        f"Πληρωμή κάρτας {_fmt(tx.get('amount'))} για τιμολόγιο που δεν ήταν ανοιχτό",
+        f"Το {invoice.get('number') or 'τιμολόγιο'} είχε κατάσταση «{status}» όταν ολοκληρώθηκε η πληρωμή "
+        f"(συνεδρία {tx.get('session_id')}). Τα χρήματα έχουν εισπραχθεί: ελέγξτε αν χρειάζεται επιστροφή ή σύνδεση με άλλο παραστατικό.",
+        entity="invoice", entity_id=tx["invoice_id"], requires_action=True,
+        dedupe_key=f"card_payment_unapplied:{tx.get('session_id')}")
 
 
 @public_router.post("/api/stripe/webhook")

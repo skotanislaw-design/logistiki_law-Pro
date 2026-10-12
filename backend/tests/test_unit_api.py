@@ -42,9 +42,10 @@ def test_issue_without_aade_credentials_stays_pending_not_synced(client):
     c = client.post("/api/clients", json={"name": "Πελάτης Α", "afm": "123456783", "email": ""}).json()
     inv = client.post("/api/invoices", json={"client_id": c["id"], "date": "2026-09-01",
                                               "line_items": [{"description": "Συμβουλευτική", "quantity": 1, "unit_price": 100, "vat_rate": 24}]}).json()
-    assert inv["number"].startswith("ΤΠΥ-") and inv["total"] == 124
+    assert inv["number"] == "" and inv["total"] == 124      # το πρόχειρο δεν έχει αριθμό
     issued = client.post(f"/api/invoices/{inv['id']}/issue").json()
     assert issued["status"] == "issued"
+    assert issued["number"].startswith("ΤΠΥ-")               # ο αριθμός δίνεται στην έκδοση
     assert issued["mydata_status"] == "pending"      # no fake «synced» MOCK mark any more
     assert issued["mydata_mark"] is None
     # client has no email → autopilot raised a decision instead of failing the request

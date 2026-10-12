@@ -6,6 +6,7 @@ from db import db
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from models import Case
+from tax_utils import athens_today
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -18,8 +19,9 @@ def _now():
 
 
 async def _next_case_number(firm_id: str):
-    count = await db.cases.count_documents({"firm_id": firm_id})
-    return f"ΥΠΘ-{date.today().year}-{count + 1:04d}"
+    from numbering import next_in_series
+    year = athens_today().year
+    return await next_in_series(db.cases, f"case-{firm_id}-{year}", firm_id, "ΥΠΘ", year)
 
 
 async def log_case_event(case_id: str, event: str, user: dict | None = None):

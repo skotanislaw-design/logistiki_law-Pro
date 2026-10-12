@@ -203,6 +203,55 @@ async def seed_admin():
         await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
 
 
+EXPENSE_MARK_INDEX = "uniq_firm_mydata_mark"
+
+
+async def ensure_expense_mark_index() -> None:
+    """Μοναδικότητα (firm_id, mydata_mark) μόνο για έξοδα που ΕΧΟΥΝ MARK.
+
+    Το προηγούμενο index ήταν `unique + sparse` πάνω σε σύνθετο κλειδί. Στη MongoDB ένα
+    σύνθετο sparse index καταχωρεί κάθε έγγραφο που έχει *έστω ένα* από τα πεδία — εδώ το
+    `firm_id` υπάρχει πάντα — άρα το έξοδο χωρίς MARK μετρούσε ως (firm, null) και το δεύτερο
+    χειροκίνητο έξοδο του ίδιου γραφείου αποτύγχανε με HTTP 500. Το partial index
+    καταχωρεί μόνο τα έγγραφα με MARK τύπου string.
+
+    Δεν ρίχνει την εκκίνηση: αν η δημιουργία αποτύχει (π.χ. υπάρχοντα διπλά MARK στα
+    δεδομένα) καταγράφεται σφάλμα και ο σχετικός έλεγχος γίνεται από τον κώδικα εφαρμογής.
+    """
+    wanted_key = [("firm_id", 1), ("mydata_mark", 1)]
+    try:
+        for name, info in (await db.expenses.index_information()).items():
+            if list(info.get("key", [])) == wanted_key and not info.get("partialFilterExpression"):
+                await db.expenses.drop_index(name)
+                logger.info("expenses: αντικαταστάθηκε το index %s (sparse) από partial", name)
+        await db.expenses.create_index(
+            wanted_key,
+            name=EXPENSE_MARK_INDEX,
+            unique=True,
+            partialFilterExpression={"mydata_mark": {"$type": "string"}},
+        )
+    except Exception as e:  # noqa: BLE001 — η εκκίνηση της εφαρμογής δεν πρέπει να εξαρτάται από αυτό
+        logger.error("expenses: αποτυχία δημιουργίας του unique index για mydata_mark: %s", e)
+
+
+TRUST_ACCOUNT_INDEX = "uniq_firm_client_trust_account"
+
+
+async def ensure_trust_account_index() -> None:
+    """Ένας πελατολογικός λογαριασμός ανά πελάτη και γραφείο.
+
+    Χωρίς unique index, δύο πρώτες κινήσεις του ίδιου πελάτη την ίδια στιγμή δημιουργούσαν δύο
+    λογαριασμούς και το υπόλοιπο μοιραζόταν ανάμεσά τους. Αν υπάρχουν ήδη διπλότυποι, η
+    δημιουργία αποτυγχάνει: καταγράφεται σφάλμα και χρειάζεται χειροκίνητη συγχώνευση.
+    """
+    try:
+        await db.trust_accounts.create_index(
+            [("firm_id", 1), ("client_id", 1)], name=TRUST_ACCOUNT_INDEX, unique=True)
+    except Exception as e:  # noqa: BLE001 — η εκκίνηση δεν πρέπει να εξαρτάται από αυτό
+        logger.error("trust_accounts: αποτυχία δημιουργίας του unique index (firm_id, client_id) — "
+                     "ελέγξτε για διπλούς λογαριασμούς του ίδιου πελάτη: %s", e)
+
+
 @app.on_event("startup")
 async def startup_event():
     # Existing deployments were single-tenant. Keep their records together
@@ -253,7 +302,8 @@ async def startup_event():
     await db.vat_periods.create_index([("firm_id", 1), ("period", 1)], unique=True)
     await db.inbox_processed.create_index([("firm_id", 1), ("key", 1)], unique=True)
     # Ένα παραστατικό ΑΑΔΕ γίνεται έξοδο μία φορά, ακόμη κι αν το RequestDocs το επιστρέψει ξανά.
-    await db.expenses.create_index([("firm_id", 1), ("mydata_mark", 1)], unique=True, sparse=True)
+    await ensure_expense_mark_index()
+    await ensure_trust_account_index()
     await db.outbox.create_index([("status", 1), ("next_attempt_at", 1)])
     await db.outbox.create_index([("firm_id", 1), ("dedupe_key", 1)])
     await db.case_tracker_events.create_index([("fetched_at", -1)])
