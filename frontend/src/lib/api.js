@@ -1,4 +1,5 @@
 import axios from "axios";
+import { formatDate } from "@/lib/utils";
 
 export const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -20,13 +21,7 @@ export function errMsg(e) {
 export const money = (v) =>
   new Intl.NumberFormat("el-GR", { style: "currency", currency: "EUR" }).format(v || 0);
 
-export const dateFmt = (v) => {
-  if (!v) return "-";
-  try {
-    return new Date(v).toLocaleDateString("el-GR");
-  } catch {
-    return v;
-  }
-};
+// Ημερομηνία ή σφραγίδα του server ως ΗΗ/ΜΜ/ΕΕΕΕ ώρας Ελλάδας, ανεξάρτητα από τη ζώνη της συσκευής.
+export const dateFmt = formatDate;
 
 export default axios;

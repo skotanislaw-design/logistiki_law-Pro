@@ -4,6 +4,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, Re
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Trophy, ChartPieSlice } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { yearAthens } from "@/lib/utils";
 
 const GOLD_TONES = ["#c9a227", "#e5c15a", "#8a6f1e", "#f4d97a", "#a8871f", "#deb944"];
 
@@ -19,7 +20,7 @@ export default function Analytics() {
       <div>
         <div className="lux-overline mb-1.5">Nomos One · Επιχειρηματική Ευφυΐα</div>
         <h1 className="font-brand text-4xl font-bold tracking-wide">Κερδοφορία & Ανάλυση</h1>
-        <p className="text-sm text-muted-foreground mt-1">Έτος {new Date().getFullYear()} — από {dateFmt(data.period.start)} έως σήμερα</p>
+        <p className="text-sm text-muted-foreground mt-1">Έτος {String(data.period?.start || "").slice(0, 4) || yearAthens()} — από {dateFmt(data.period.start)} έως σήμερα</p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

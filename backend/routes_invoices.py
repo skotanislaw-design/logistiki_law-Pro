@@ -46,10 +46,12 @@ TRUNCATED_HEADER = "X-Closed-Truncated"
 async def list_invoices(response: Response, user: dict = Depends(get_current_user)):
     """Τα τιμολόγια του γραφείου, καθένα με το `outstanding`: ό,τι απομένει να εισπραχθεί (μετά την παρακράτηση και
     όσα εξοφλήθηκαν από πελατολογικό). Υπολογίζεται εδώ και δεν αποθηκεύεται — βλ. invoice_services.invoice_balances.
+    Τα εξοφλημένα με το χέρι τιμολόγια που δεν έχουν συνδεθεί με κατάθεση φέρουν και το `bank_link_due`: το ποσό με
+    το οποίο μπορεί να συνδεθεί μια κατάθεση (βλ. invoice_services.bank_link_dues).
 
     Όλα τα πρόχειρα και όλα τα εκδοθέντα, συν τα τελευταία `CLOSED_LIST_LIMIT` εξοφλημένα/ακυρωμένα. Αν υπάρχουν
     παλαιότερα εξοφλημένα που δεν περιλαμβάνονται, η απάντηση φέρει την κεφαλίδα `X-Closed-Truncated: 1`."""
-    from invoice_services import invoice_balances
+    from invoice_services import bank_link_dues, invoice_balances
     open_docs = await fetch_all(db.invoices.find(tenant_query(user, {"status": {"$in": ["draft", "issued"]}})))
     closed = await db.invoices.find(tenant_query(user, {"status": {"$nin": ["draft", "issued"]}})) \
         .sort("created_at", -1).limit(CLOSED_LIST_LIMIT + 1).to_list(CLOSED_LIST_LIMIT + 1)
@@ -59,10 +61,13 @@ async def list_invoices(response: Response, user: dict = Depends(get_current_use
     docs = sorted(open_docs + closed, key=lambda d: d.get("created_at") or "", reverse=True)
     settings = await db.settings.find_one(tenant_query(user, {})) or {}
     balances = await invoice_balances(firm_id_for(user), [d for d in docs if d.get("status") == "issued"], settings)
+    link_dues = await bank_link_dues(firm_id_for(user), docs, settings)
     rows = []
     for d in docs:
         row = jsonable_encoder(Invoice.from_mongo(d))
         row["outstanding"] = balances.get(str(d["_id"]), (0.0, 0.0))[1]
+        if str(d["_id"]) in link_dues:
+            row["bank_link_due"] = link_dues[str(d["_id"])]
         rows.append(row)
     return rows
 

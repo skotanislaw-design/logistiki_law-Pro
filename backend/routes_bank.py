@@ -462,7 +462,7 @@ async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, acce
     if result["status"] == "refused":
         detail = result["message"]
         if result["reason"] == "amount_mismatch":
-            detail += " Αν η διαφορά είναι αποδεκτή (π.χ. προμήθεια τράπεζας), επιβεβαιώστε ρητά με accept_difference=true."
+            detail += " Αν η διαφορά είναι αποδεκτή (π.χ. προμήθεια τράπεζας), πρέπει να την αποδεχτείτε ρητά (παράμετρος accept_difference)."
         raise HTTPException(status_code=REFUSAL_STATUS.get(result["reason"], 409), detail=detail)
 
     await close_tx_notifications(firm_id_for(user), tx["_id"], "already_settled", user["email"])

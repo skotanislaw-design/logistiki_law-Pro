@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import axios, { API, dateFmt, errMsg } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -8,6 +8,7 @@ import {
   Plus, Trash, Play, Pause, CheckCircle, ClockCounterClockwise, Gavel, CalendarX, ArrowSquareOut,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { formatTime } from "@/lib/utils";
 
 const STATUS = {
   scheduled: { label: "Προγραμματισμένο", variant: "secondary" },
@@ -23,13 +24,19 @@ export default function Pinakia() {
   const [showForm, setShowForm] = useState(false);
   const [manualNumber, setManualNumber] = useState("");
 
+  // Η λίστα ανανεώνεται κάθε 15″. Με ασταθή σύνδεση (αίθουσα δικαστηρίου) μια ειδοποίηση ανά δεκαπέντε δευτερόλεπτα
+  // θα κάλυπτε την οθόνη· η αποτυχία ανακοινώνεται μία φορά ανά σειρά αποτυχιών και ξανά μόλις κάποια ανανέωση πετύχει.
+  const loadFailed = useRef(false);
+
   const load = useCallback(async () => {
     try {
       const { data } = await axios.get(`${API}/hearings`);
+      loadFailed.current = false;
       setHearings(data);
       setSelected((prev) => (prev ? data.find((h) => h.id === prev.id) || data[0] || null : data[0] || null));
     } catch (e) {
-      toast.error(errMsg(e));
+      if (!loadFailed.current) toast.error(errMsg(e));
+      loadFailed.current = true;
     }
   }, []);
 
@@ -184,7 +191,7 @@ export default function Pinakia() {
                 {[...(selected.events || [])].reverse().map((ev, i) => (
                   <div key={i} className="flex items-start gap-3 py-2 border-b border-border/40 last:border-0">
                     <ClockCounterClockwise size={14} className="text-[hsl(var(--gold))] mt-0.5 shrink-0" />
-                    <div className="text-sm">{ev.event}<span className="block text-[11px] text-muted-foreground">{new Date(ev.at).toLocaleTimeString("el-GR")} · {dateFmt(ev.at)}</span></div>
+                    <div className="text-sm">{ev.event}<span className="block text-[11px] text-muted-foreground">{formatTime(ev.at)} · {dateFmt(ev.at)}</span></div>
                   </div>
                 ))}
               </div>

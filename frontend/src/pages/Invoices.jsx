@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
-import { invoiceLabel, todayAthens, unpaidTotal } from "@/lib/utils";
+import { daysSince, invoiceLabel, todayAthens, unpaidTotal } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -255,17 +255,10 @@ export default function Invoices() {
 
   const unpaidList = invoices.filter((i) => i.status === "issued");
   const unpaidSum = unpaidTotal(invoices);
-  const overdue30 = unpaidList.filter((i) => {
-    if (!i.date) return false;
-    const diff = (new Date() - new Date(i.date)) / (1000 * 60 * 60 * 24);
-    return diff >= 30;
-  }).length;
+  const overdue30 = unpaidList.filter((i) => i.date && daysSince(i.date) >= 30).length;
   const filteredInvoices = filter === "unpaid" ? unpaidList : (filter === "paid" ? invoices.filter((i) => i.status === "paid") : invoices);
 
-  const daysOverdue = (dateStr) => {
-    if (!dateStr) return 0;
-    return Math.max(0, Math.floor((new Date() - new Date(dateStr)) / (1000 * 60 * 60 * 24)));
-  };
+  const daysOverdue = (dateStr) => Math.max(0, daysSince(dateStr));
 
   return (
     <div className="space-y-8" data-testid="invoices-page">

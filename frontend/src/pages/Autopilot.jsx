@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/context/AuthContext";
 import { Robot, CheckCircle, WarningCircle, Info, XCircle, Play, EnvelopeSimple, ArrowsClockwise, FilePdf } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { formatDateTime } from "@/lib/utils";
 
 const LEVEL = {
   info: { icon: Info, cls: "text-muted-foreground" },
@@ -414,7 +415,7 @@ export default function Autopilot() {
                     <td className="p-3">{r.label}</td>
                     <td className="p-3 text-center"><Badge variant={r.status === "ok" ? "default" : r.status === "error" ? "destructive" : "secondary"}>{r.status}</Badge></td>
                     <td className="p-3 font-mono text-xs text-muted-foreground">{r.error || Object.entries(r.stats || {}).map(([k, v]) => `${k}=${v}`).join("  ")}</td>
-                    <td className="p-3 text-xs text-muted-foreground">{new Date(r.started_at).toLocaleString("el-GR")}</td>
+                    <td className="p-3 text-xs text-muted-foreground">{formatDateTime(r.started_at)}</td>
                   </tr>
                 ))}
               </tbody>

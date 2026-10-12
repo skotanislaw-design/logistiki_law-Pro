@@ -1,5 +1,5 @@
 import { money, dateFmt } from "@/lib/api";
-import { invoiceLabel } from "@/lib/utils";
+import { ATHENS_TZ, invoiceLabel } from "@/lib/utils";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer } from "recharts";
 import { Lightbulb, CalendarCheck } from "@phosphor-icons/react";
 
@@ -20,7 +20,7 @@ function Kpi({ label, value, tone = "default", testid, sub }) {
 }
 
 export function OneScreenDashboard({ data }) {
-  const today = new Date().toLocaleDateString("el-GR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  const today = new Date().toLocaleDateString("el-GR", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: ATHENS_TZ });
   return (
     <div className="space-y-5" data-testid="one-screen-dashboard">
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 stagger">

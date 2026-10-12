@@ -10,7 +10,15 @@ import { DownloadSimple, UploadSimple, Database, ShieldCheck } from "@phosphor-i
 import { TwoFactorSettings } from "@/components/TwoFactorSettings";
 import { BankConnection } from "@/components/BankConnection";
 import { toast } from "sonner";
-import { WITHHOLDING_CATEGORIES } from "@/lib/withholding";
+import { MAX_WITHHOLDING_PERCENT, WITHHOLDING_CATEGORIES, parseRatePercent, percentToRate } from "@/lib/withholding";
+import { todayAthens } from "@/lib/utils";
+
+// Μια επαναφορά «ολοκληρώθηκε» ακόμη κι όταν κάποια έγγραφα δεν επανήλθαν ή γραμμές του ελεγκτικού ίχνους διαφέρουν από το
+// αντίγραφο. Τότε ο διαχειριστής πρέπει να το δει ως προειδοποίηση, όχι ως επιτυχία.
+const differingRows = (result) => Object.values(result?.differing || {}).reduce((sum, n) => sum + (Number(n) || 0), 0);
+const restoreNeedsAttention = (result) => (result?.failed || 0) > 0 || differingRows(result) > 0;
+
+const RATE_ERROR = `Δώστε ποσοστό παρακράτησης από 0 έως ${MAX_WITHHOLDING_PERCENT} (π.χ. 20 ή 12,5). Οι ρυθμίσεις δεν αποθηκεύονται μέχρι να διορθωθεί.`;
 
 export default function Settings() {
   const [form, setForm] = useState(null);
@@ -33,7 +41,7 @@ export default function Settings() {
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `nomos-one-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+      a.download = `nomos-one-backup-${todayAthens()}.zip`;
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
       toast.success("Το backup κατέβηκε επιτυχώς");
@@ -53,8 +61,7 @@ export default function Settings() {
       fd.append("file", file);
       const { data } = await axios.post(`${API}/backup/import`, fd, { headers: { "Content-Type": "multipart/form-data" } });
       setBackupResult(data);
-      const needsAttention = (data.failed || 0) > 0 || Object.keys(data.differing || {}).length > 0;
-      (needsAttention ? toast.warning : toast.success)(data.message);
+      (restoreNeedsAttention(data) ? toast.warning : toast.success)(data.message);
     } catch (e) { toast.error(errMsg(e)); }
     finally { setImportingBackup(false); }
   };
@@ -114,6 +121,7 @@ export default function Settings() {
     try {
       const { data } = await axios.put(`${API}/settings`, form);
       setForm(data);
+      setRateText(null);
       toast.success("Οι ρυθμίσεις αποθηκεύτηκαν");
     } catch (e) {
       toast.error(errMsg(e));
@@ -128,13 +136,14 @@ export default function Settings() {
 
   const changeWithholdingRate = (text) => {
     setRateText(text);
-    const n = Number(text.replace(",", "."));
-    if (text.trim() !== "" && Number.isFinite(n)) setForm({ ...form, withholding_rate: n / 100 });
+    const percent = parseRatePercent(text);
+    if (percent !== null) setForm({ ...form, withholding_rate: percentToRate(percent) });
   };
 
   if (!form) return <div className="text-muted-foreground">Φόρτωση...</div>;
 
   const ratePercent = rateText ?? String(Math.round((form.withholding_rate ?? 0) * 10000) / 100);
+  const rateInvalid = rateText !== null && parseRatePercent(rateText) === null;
 
   return (
     <div className="space-y-6 max-w-2xl" data-testid="settings-page">
@@ -214,10 +223,15 @@ export default function Settings() {
           </div>
           <div>
             <Label>Ποσοστό παρακράτησης (%)</Label>
-            <Input type="number" min="0" max="50" step="0.01" value={ratePercent} className="mt-1.5"
+            <Input type="number" min="0" max={MAX_WITHHOLDING_PERCENT} step="0.01" value={ratePercent} className="mt-1.5"
+              aria-invalid={rateInvalid || undefined} aria-describedby={rateInvalid ? "settings-withholding-rate-error" : undefined}
               onChange={(e) => changeWithholdingRate(e.target.value)} data-testid="settings-withholding-rate" />
           </div>
         </div>
+        {rateInvalid && (
+          <p id="settings-withholding-rate-error" role="alert" className="text-xs text-[hsl(var(--destructive))]"
+            data-testid="settings-withholding-rate-error">{RATE_ERROR}</p>
+        )}
         {form.withholding_category === "2" && (
           <p className="text-xs text-[hsl(var(--warning))]" data-testid="settings-withholding-legacy">
             Η κατηγορία «2» (δικαιώματα) δεν αφορά αμοιβές υπηρεσιών· τα νέα γραφεία ξεκινούν με «3». Δεν έχει αλλάξει αυτόματα —
@@ -296,7 +310,7 @@ export default function Settings() {
         <p className="text-[11px] text-muted-foreground/70">Αποθηκεύστε πρώτα τις ρυθμίσεις και μετά πατήστε «Δοκιμή σύνδεσης ΑΑΔΕ».</p>
       </div>
 
-      <Button onClick={handleSubmit} data-testid="save-settings-button">Αποθήκευση Ρυθμίσεων</Button>
+      <Button onClick={handleSubmit} disabled={rateInvalid} data-testid="save-settings-button">Αποθήκευση Ρυθμίσεων</Button>
 
       <div className="lux-card p-6 space-y-4">
         <div className="flex items-center gap-2">
@@ -337,8 +351,25 @@ export default function Settings() {
           <h3 className="font-heading text-lg font-medium">Backup & Επαναφορά</h3>
         </div>
         <p className="text-sm text-muted-foreground">
-          Πλήρες αντίγραφο ασφαλείας των δεδομένων σας σε αρχείο ZIP — περιλαμβάνει και το ελεγκτικό ίχνος, τις τραπεζικές κινήσεις και τις περιόδους ΦΠΑ· δεν περιλαμβάνει κωδικούς χρηστών. Προτείνεται εβδομαδιαία λήψη και αποθήκευση σε δεύτερο μέσο.
+          Πλήρες αντίγραφο ασφαλείας των δεδομένων σας σε αρχείο ZIP — περιλαμβάνει και το ελεγκτικό ίχνος, τις τραπεζικές κινήσεις και τις περιόδους ΦΠΑ. Προτείνεται εβδομαδιαία λήψη και αποθήκευση σε δεύτερο μέσο.
         </p>
+        <div className="text-xs text-muted-foreground rounded-xl border border-border/60 p-3 space-y-1" data-testid="backup-caveats">
+          <div className="font-medium text-foreground">Τι δεν περιλαμβάνεται στο αντίγραφο</div>
+          <ul className="list-disc pl-4 space-y-0.5">
+            <li>
+              <span className="text-foreground">Αρχεία που έχουν ανέβει</span> (φωτογραφίες αποδείξεων εξόδων, έγγραφα): βρίσκονται στον φάκελο
+              αποθήκευσης της εγκατάστασης και χρειάζονται δικό τους αντίγραφο.
+            </li>
+            <li>
+              <span className="text-foreground">Χρήστες, κωδικοί πρόσβασης και σύνδεσμοι της πύλης πελατών</span>: δεν μεταφέρονται σε αρχείο.
+              Μετά από επαναφορά οι πελάτες χρειάζονται νέες προσκλήσεις.
+            </li>
+            <li>
+              <span className="text-foreground">Μυστικά των ρυθμίσεων</span> (κωδικός SMTP, κλειδί ΑΑΔΕ, GoCardless): είναι κρυπτογραφημένα και
+              διαβάζονται μόνο με το ίδιο SECRETS_KEY της εγκατάστασης. Κρατήστε το κλειδί ασφαλές και ξεχωριστά από το αντίγραφο.
+            </li>
+          </ul>
+        </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={exportBackup} disabled={exportingBackup} data-testid="export-backup-button">
             <DownloadSimple size={16} className="mr-1.5" /> {exportingBackup ? "Δημιουργία..." : "Λήψη Backup (.zip)"}
@@ -350,8 +381,20 @@ export default function Settings() {
           </Button>
         </div>
         {backupResult && (
-          <div className="text-sm p-3 rounded-xl bg-[hsl(var(--success))]/5 border border-[hsl(var(--success))]/25" data-testid="backup-result">
-            <div className="text-[hsl(var(--success))]">✓ {backupResult.message}</div>
+          <div role={restoreNeedsAttention(backupResult) ? "alert" : "status"}
+            className={`text-sm p-3 rounded-xl border ${restoreNeedsAttention(backupResult)
+              ? "bg-[hsl(var(--warning))]/5 border-[hsl(var(--warning))]/40"
+              : "bg-[hsl(var(--success))]/5 border-[hsl(var(--success))]/25"}`}
+            data-testid="backup-result" data-attention={restoreNeedsAttention(backupResult) ? "true" : "false"}>
+            {restoreNeedsAttention(backupResult) ? (
+              <div className="text-[hsl(var(--warning))] font-medium" data-testid="backup-attention">
+                ⚠ Η επαναφορά ολοκληρώθηκε, αλλά χρειάζεται έλεγχο.
+                {(backupResult.failed || 0) > 0 && ` Έγγραφα που δεν επαναφέρθηκαν: ${backupResult.failed}.`}
+                {differingRows(backupResult) > 0 && ` Γραμμές ελεγκτικού ίχνους που διαφέρουν από το αντίγραφο: ${differingRows(backupResult)}.`}
+              </div>
+            ) : (
+              <div className="text-[hsl(var(--success))]">✓ {backupResult.message}</div>
+            )}
             {(backupResult.notes || []).map((note) => (
               <div key={note} className="text-xs text-muted-foreground mt-1" data-testid="backup-note">{note}</div>
             ))}

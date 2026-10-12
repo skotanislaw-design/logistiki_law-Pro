@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Signature, Eraser, CheckCircle, Info } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { formatDateTime } from "@/lib/utils";
 
 function SignatureCanvas({ onCapture }) {
   const canvasRef = useRef(null);
@@ -146,7 +147,7 @@ export default function Signatures() {
                 <TableCell>{s.document_title || "—"}</TableCell>
                 <TableCell>{s.signer_name}</TableCell>
                 <TableCell><span className="text-xs">{s.signer_role}</span></TableCell>
-                <TableCell className="text-xs font-mono">{new Date(s.signed_at).toLocaleString("el-GR")}</TableCell>
+                <TableCell className="text-xs font-mono">{formatDateTime(s.signed_at)}</TableCell>
                 <TableCell className="text-xs font-mono text-muted-foreground">{s.signature_hash?.slice(0, 12)}…</TableCell>
                 <TableCell className="text-right">
                   <Button size="sm" variant="outline" onClick={() => verify(s.id)} data-testid={`verify-sig-${s.id}`}>

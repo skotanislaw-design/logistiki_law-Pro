@@ -6,10 +6,11 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { FilePdf, CreditCard, Briefcase, WarningCircle, CheckCircle, Scales, Spinner, XCircle } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { formatDate } from "@/lib/utils";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
 const money = (v) => `${(v || 0).toFixed(2).replace(".", ",")} €`;
-const dateFmt = (s) => s ? new Date(s).toLocaleDateString("el-GR") : "—";
+const dateFmt = (s) => (s ? formatDate(s) : "—");
 const STATUS = { issued: "Ανεξόφλητο", paid: "Πληρωμένο", cancelled: "Ακυρωμένο" };
 const STATUS_STYLE = { issued: "text-[hsl(var(--gold))]", paid: "text-[hsl(var(--success))]", cancelled: "text-muted-foreground" };
 

@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Sparkle, FileDoc, FilePdf } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { todayAthens } from "@/lib/utils";
 
 const GREEK_MONTHS = ["", "Ιανουαρίου", "Φεβρουαρίου", "Μαρτίου", "Απριλίου", "Μαΐου", "Ιουνίου", "Ιουλίου", "Αυγούστου", "Σεπτεμβρίου", "Οκτωβρίου", "Νοεμβρίου", "Δεκεμβρίου"];
 
@@ -50,7 +51,8 @@ export default function Documents() {
     }
   };
 
-  const today = new Date();
+  // Η ημερομηνία της επιστολής είναι η σημερινή στην Αθήνα — όπως ακριβώς θα τυπωθεί στο Word/PDF του server.
+  const [letterYear, letterMonth, letterDay] = todayAthens().split("-").map(Number);
 
   return (
     <div className="space-y-8" data-testid="documents-page">
@@ -108,7 +110,7 @@ export default function Documents() {
           <div className="bg-white text-black rounded-[2px] h-full p-8 overflow-y-auto max-h-[720px]" data-testid="documents-preview">
             <img src="/letterhead-logo.png" alt="letterhead" className="w-40 mx-auto mb-3" />
             <div className="h-px bg-[#c9a227] mb-6" />
-            <p className="text-right text-xs text-gray-500 mb-4">Αθήνα, {today.getDate()} {GREEK_MONTHS[today.getMonth() + 1]} {today.getFullYear()}</p>
+            <p className="text-right text-xs text-gray-500 mb-4">Αθήνα, {letterDay} {GREEK_MONTHS[letterMonth]} {letterYear}</p>
             {form.recipient && <p className="text-sm font-semibold text-[#0a0f1e] mb-2">Προς: {form.recipient}</p>}
             {form.subject && <p className="text-sm font-bold text-[#0a0f1e] mb-4">Θέμα: {form.subject}</p>}
             <div className="text-[13px] leading-relaxed text-gray-800 whitespace-pre-line text-justify min-h-[180px]">

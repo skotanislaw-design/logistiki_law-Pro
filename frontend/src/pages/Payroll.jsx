@@ -10,6 +10,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Plus, Play, FileText, PencilSimple, Trash, Eye } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { monthAthens } from "@/lib/utils";
 
 function emptyForm() {
   return { name: "", afm: "", amka: "", position: "Δικηγόρος", gross_salary: 1500, dependents: 0, hire_date: "", active: true };
@@ -21,7 +22,7 @@ export default function Payroll() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm());
-  const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
+  const [period, setPeriod] = useState(monthAthens());
   const [viewingRun, setViewingRun] = useState(null);
 
   const load = () => {

@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import axios, { API, dateFmt, errMsg } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Play, Pause, CheckCircle, Warning, Gavel, Timer, ArrowLeft, ArrowClockwise, Bell } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { formatTime, todayAthens } from "@/lib/utils";
 
 const STATUS_ICON = {
   scheduled: { icon: Timer, color: "text-muted-foreground", label: "Προγραμματισμένο" },
@@ -20,6 +21,9 @@ export default function PocketPinakia() {
   const [refreshing, setRefreshing] = useState(false);
   const [tick, setTick] = useState(0);
 
+  // Ανανεώνεται κάθε 30″: η αποτυχία ανακοινώνεται μία φορά ανά σειρά αποτυχιών, όχι σε κάθε κύκλο.
+  const loadFailed = useRef(false);
+
   const load = async () => {
     setRefreshing(true);
     try {
@@ -27,11 +31,15 @@ export default function PocketPinakia() {
         axios.get(`${API}/hearings`),
         axios.get(`${API}/hearings/alerts/list`),
       ]);
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayAthens();
       const relevant = h.data.filter((x) => x.date >= today || (x.status && !["completed", "postponed"].includes(x.status)));
       setHearings(relevant.sort((a, b) => (a.date || "").localeCompare(b.date || "")));
       setAlerts(a.data);
-    } catch (e) { toast.error(errMsg(e)); }
+      loadFailed.current = false;
+    } catch (e) {
+      if (!loadFailed.current) toast.error(errMsg(e));
+      loadFailed.current = true;
+    }
     finally { setRefreshing(false); }
   };
 
@@ -69,7 +77,7 @@ export default function PocketPinakia() {
         <h1 className="font-brand text-lg font-bold flex items-center gap-1.5">
           <Gavel size={18} className="text-[hsl(var(--gold))]" /> Πινάκιο Τσέπης
         </h1>
-        <Button size="icon" variant="ghost" onClick={load} disabled={refreshing}>
+        <Button size="icon" variant="ghost" onClick={load} disabled={refreshing} title="Ανανέωση" aria-label="Ανανέωση" data-testid="pocket-refresh">
           <ArrowClockwise size={16} className={refreshing ? "animate-spin" : ""} />
         </Button>
       </div>
@@ -161,7 +169,7 @@ export default function PocketPinakia() {
                   <summary className="cursor-pointer text-muted-foreground">Ιστορικό ({h.events.length})</summary>
                   <ul className="mt-2 space-y-1 text-muted-foreground">
                     {h.events.slice(-5).reverse().map((ev, i) => (
-                      <li key={i}>· {new Date(ev.at).toLocaleTimeString("el-GR", { hour: "2-digit", minute: "2-digit" })} — {ev.event}</li>
+                      <li key={i}>· {formatTime(ev.at, { hour: "2-digit", minute: "2-digit" })} — {ev.event}</li>
                     ))}
                   </ul>
                 </details>

@@ -674,6 +674,40 @@ async def _claimed_by_other_deposit(firm_id: str, invoice_id: str, tx_id) -> boo
     return other is not None
 
 
+# Τρόποι εξόφλησης με τους οποίους μια κατάθεση μπορεί ακόμη να συνδεθεί με εξοφλημένο τιμολόγιο: ο χρήστης το σημείωσε
+# εξοφλημένο με το χέρι (ή παλιό τιμολόγιο χωρίς καταγραφή τρόπου). Stripe και πελατολογικός λογαριασμός είναι άλλα κανάλια·
+# τα bank_* έχουν ήδη δική τους κατάθεση.
+LINKABLE_PAID_VIA = ("", "manual")
+
+
+def is_linkable_paid(invoice: dict) -> bool:
+    """Εξοφλημένο με το χέρι και χωρίς πιστωτικό: μια κατάθεση μπορεί να συνδεθεί μαζί του (βλ. `apply_bank_payment`)."""
+    return (invoice.get("status") == "paid" and not invoice.get("credit_note_id")
+            and (invoice.get("paid_via") or "") in LINKABLE_PAID_VIA)
+
+
+async def bank_link_dues(firm_id: str, invoices: list[dict], settings: dict) -> dict[str, float]:
+    """{id: ποσό} για τα εξοφλημένα με το χέρι τιμολόγια της λίστας που δεν τα έχει ήδη αναλάβει άλλη κατάθεση.
+
+    Το ποσό είναι αυτό που πρέπει να έχει η κατάθεση για να συνδεθεί χωρίς διαφορά: το ίδιο που συγκρίνει η
+    `apply_bank_payment` (πληρωτέο μείον ό,τι εξοφλήθηκε από πελατολογικό). Η οθόνη της Τράπεζας το χρησιμοποιεί για να
+    προσφέρει και αυτά τα τιμολόγια στη συμφωνία· ο τελικός έλεγχος γίνεται πάντα στον server.
+    """
+    candidates = [inv for inv in invoices if is_linkable_paid(inv)]
+    if not candidates:
+        return {}
+    claimed = set(await db.bank_transactions.distinct("matched_invoice_id", firm_query(firm_id, {
+        "match_status": {"$in": ["auto_confirmed", "manual_matched"]},
+        "matched_invoice_id": {"$in": [str(inv["_id"]) for inv in candidates]},
+    })))
+    free = [inv for inv in candidates if str(inv["_id"]) not in claimed]
+    balances = await invoice_balances(firm_id, free, settings)
+    return {
+        str(inv["_id"]): round(max(balances[str(inv["_id"])][0] - round(float(inv.get("trust_applied") or 0), 2), 0.0), 2)
+        for inv in free
+    }
+
+
 async def apply_bank_payment(firm_id: str, tx: dict, invoice_id, *, settings: dict, paid_via: str,
                              status_on_success: str, accept_difference: bool = False,
                              dry_run: bool = False) -> dict:

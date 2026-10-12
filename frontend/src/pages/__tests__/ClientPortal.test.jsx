@@ -48,6 +48,19 @@ describe("Πύλη πελάτη", () => {
     expect(screen.getAllByText(/1240,00 €/).length).toBeGreaterThan(0);
   });
 
+  it("οι ημερομηνίες του φακέλου δεν μετατοπίζονται ημέρα, όποια κι αν είναι η ζώνη της συσκευής", async () => {
+    // Το vitest τρέχει σε ζώνη UTC−11: ένα απλό `new Date("2026-09-10").toLocaleDateString()` θα έγραφε 9/9/2026.
+    server.use(http.get(`${API}/portal/${TOKEN}`, () => HttpResponse.json({
+      ...PAYLOAD,
+      cases: [{ id: "c1", number: "Α-1", title: "Υπόθεση", court: "Πλημμελειοδικείο", status: "active",
+                next_action: "Δικάσιμος", next_action_date: "2026-11-02" }],
+    })));
+    renderPortal();
+    expect(await screen.findByText("ΤΠΥ-2026-0001")).toBeInTheDocument();
+    expect(screen.getByText("10/9/2026")).toBeInTheDocument();
+    expect(screen.getByText(/Δικάσιμος/)).toHaveTextContent("· 2/11/2026");
+  });
+
   it("εξηγεί τον ληγμένο σύνδεσμο αντί να αφήνει λευκή σελίδα", async () => {
     server.use(
       http.get(`${API}/portal/${TOKEN}`, () =>
