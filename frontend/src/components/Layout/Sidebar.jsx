@@ -4,7 +4,7 @@ import {
   SquaresFour, FileText, Receipt, ChartLineUp, Users, Calculator,
   CalendarCheck, GearSix, SignOut, CaretLeft, CaretRight, Scales, Sparkle, Files,
   Briefcase, Scroll, Ticket, Gavel, Monitor, Vault, ShieldCheck, ChartPieSlice, Wallet, Signature,
-  MagnifyingGlass, ScanSmiley, PencilRuler, Robot,
+  MagnifyingGlass, ScanSmiley, PencilRuler, Robot, Bank,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
 import { useViewMode } from "@/context/ViewModeContext";
@@ -42,6 +42,7 @@ const NAV_GROUPS = [
     items: [
       { to: "/invoices", label: "Τιμολόγια", icon: FileText, testid: "nav-invoices" },
       { to: "/expenses", label: "Έξοδα", icon: Receipt, testid: "nav-expenses" },
+      { to: "/bank", label: "Τράπεζα", icon: Bank, testid: "nav-bank" },
       { to: "/trust", label: "Πελατολ. Λογ/σμοί", icon: Vault, testid: "nav-trust" },
       { to: "/vat", label: "ΦΠΑ", icon: ChartLineUp, testid: "nav-vat" },
       { to: "/payroll", label: "Μισθοδοσία", icon: Calculator, testid: "nav-payroll" },

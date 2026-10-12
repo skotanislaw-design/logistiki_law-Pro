@@ -9,6 +9,7 @@ const TITLES = {
   "/invoices": "Τιμολόγια",
   "/expenses": "Έξοδα",
   "/vat": "ΦΠΑ",
+  "/bank": "Τράπεζα",
   "/mydata": "myDATA",
   "/payroll": "Μισθοδοσία",
   "/clients": "Πελάτες",

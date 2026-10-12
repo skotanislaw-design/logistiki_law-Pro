@@ -35,6 +35,7 @@ import Ocr from "@/pages/Ocr";
 import LegalSearch from "@/pages/LegalSearch";
 import PocketPinakia from "@/pages/PocketPinakia";
 import Autopilot from "@/pages/Autopilot";
+import Bank from "@/pages/Bank";
 
 function Protected({ children }) {
   return (
@@ -58,6 +59,7 @@ function App() {
             <Route path="/expenses" element={<Protected><Expenses /></Protected>} />
             <Route path="/clients" element={<Protected><Clients /></Protected>} />
             <Route path="/vat" element={<Protected><Vat /></Protected>} />
+            <Route path="/bank" element={<Protected><Bank /></Protected>} />
             <Route path="/mydata" element={<Protected><MyData /></Protected>} />
             <Route path="/payroll" element={<Protected><Payroll /></Protected>} />
             <Route path="/tax-calendar" element={<Protected><TaxCalendar /></Protected>} />
