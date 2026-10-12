@@ -141,7 +141,8 @@ async def test_full_cycle_sends_emails_reminders_and_reconciles(monkeypatch):
     stale_draft = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0003", "client_id": client_id, "client_name": "Παπαδόπουλος",
                                                 "status": "draft", "total": 50.0, "date": old, "created_at": "2026-01-01T00:00:00+00:00", "line_items": []})
     hi = await db.bank_transactions.insert_one({"firm_id": FIRM, "amount": 620.0, "date": today.isoformat(), "description": "ΠΑΠΑΔΟΠΟΥΛΟΣ",
-                                                "match_status": "auto_matched", "match_confidence": 95, "matched_invoice_id": str(overdue.inserted_id),
+                                                "match_status": "auto_matched", "match_confidence": 95, "match_ambiguous": False,
+                                                "matched_invoice_id": str(overdue.inserted_id),
                                                 "matched_invoice_number": "ΤΠΥ-2026-0002"})
     lo = await db.bank_transactions.insert_one({"firm_id": FIRM, "amount": 124.0, "date": today.isoformat(), "description": "?",
                                                 "match_status": "auto_matched", "match_confidence": 60, "matched_invoice_id": str(issued_unsent.inserted_id),

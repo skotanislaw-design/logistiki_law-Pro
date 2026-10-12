@@ -807,7 +807,7 @@ def test_a_cancelled_invoice_gets_no_credit_note(client, office):
     assert _run(db.invoices.count_documents({"credit_note_for": inv["id"]})) == 0
 
 
-def test_effective_invoice_prices_legacy_invoices_like_the_transmission_and_keeps_frozen_ones():
+def test_effective_invoice_prices_legacy_invoices_like_the_transmission_and_keeps_frozen_ones(monkeypatch):
     import invoice_services as svc
 
     async def scenario():
@@ -817,6 +817,17 @@ def test_effective_invoice_prices_legacy_invoices_like_the_transmission_and_keep
         assert effective["withholding_amount"] == 200.0 and "withholding_amount" not in legacy
         frozen = {**legacy, "withholding_amount": 0.0}                          # παγωμένη: οι ρυθμίσεις δεν την αλλάζουν
         assert (await svc.effective_invoice("f", frozen, settings))["withholding_amount"] == 0.0
+
+        # Το παγωμένο παραστατικό επιστρέφεται όπως είναι: χωρίς επανυπολογισμό (η τιμή με περισσότερα από 2
+        # δεκαδικά δεν στρογγυλεύεται, ένα έγγραφο χωρίς σύνολα δεν σκάει) και χωρίς ερώτημα για τον πελάτη.
+        async def no_lookup(*_a, **_k):
+            raise AssertionError("το παγωμένο παραστατικό δεν χρειάζεται τον πελάτη")
+
+        monkeypatch.setattr(svc, "load_client", no_lookup)
+        three_decimals = {**legacy, "withholding_amount": 200.005}
+        assert await svc.effective_invoice("f", three_decimals, settings) is three_decimals
+        no_totals = {"firm_id": "f", "status": "issued", "total": None, "subtotal": None, "withholding_amount": 5.0}
+        assert await svc.effective_invoice("f", no_totals, settings) is no_totals
 
     _run(scenario())
 
@@ -1822,3 +1833,1095 @@ def test_document_date_helper():
     assert pdf_utils._document_date("2026-06-15T23:30:00Z") == date(2026, 6, 16)
     assert pdf_utils._document_date(None) == athens_today()
     assert pdf_utils._document_date("δεν-είναι-ημερομηνία") == athens_today()
+
+
+# ============================== 12. Δεύτερη αναθεώρηση (ανεξάρτητος έλεγχος των διορθώσεων του γύρου) ====
+#
+# Δύο reviewers εξέτασαν μόνο τις αλλαγές των παραπάνω διορθώσεων και βρήκαν — με εκτέλεση κώδικα — ότι
+# μερικές έφερναν νέο πρόβλημα (διπλός αριθμός τιμολογίου μετά από χαμένη απάντηση, πύλη που έκρυβε το πιστωτικό,
+# αμφίβολη κατάθεση που κατονόμαζε τιμολόγιο εκτός υποψηφίων). Κάθε test εδώ ισχύει για ένα τέτοιο εύρημα.
+
+class _HookedCollection:
+    """Συλλογή με «άγκιστρα»: το hook(real_method, *args, **kwargs) αντικαθιστά τη μέθοδο και αποφασίζει τι κάνει."""
+
+    def __init__(self, real, hooks):
+        self._real, self._hooks = real, hooks
+
+    def __getattr__(self, name):
+        attr = getattr(self._real, name)
+        hook = self._hooks.get(name)
+        if hook is None:
+            return attr
+
+        async def call(*args, **kwargs):
+            return await hook(attr, *args, **kwargs)
+        return call
+
+
+class _HookedDb:
+    """Η βάση, με άγκιστρα σε μία συλλογή. Η mongomock δημιουργεί νέο wrapper σε κάθε `db.<συλλογή>`, οπότε η
+    αντικατάσταση μεθόδου πάνω στη συλλογή δεν έχει αποτέλεσμα — αντικαθίσταται το `db` της μονάδας."""
+
+    def __init__(self, real, collection, hooks):
+        self._real, self._collection, self._hooks = real, collection, hooks
+
+    def __getattr__(self, name):
+        attr = getattr(self._real, name)
+        return _HookedCollection(attr, self._hooks) if name == self._collection else attr
+
+
+async def _bare_draft(firm, **over):
+    from db import db
+    doc = {"firm_id": firm, "number": "", "status": "draft", "client_id": "x", "date": _today(),
+           "subtotal": 100.0, "total": 124.0, "line_items": [], **over}
+    return (await db.invoices.insert_one(doc)).inserted_id
+
+
+# ---- 12.1 Αριθμός τιμολογίου μετά από αποτυχία ή ακύρωση στο τελευταίο βήμα ----
+
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+def test_a_failure_after_the_numbered_write_never_hands_the_same_number_out_twice(monkeypatch, failure):
+    """Η τελική εγγραφή (πρόχειρο → εκδοθέν με αριθμό) μπορεί να έχει ήδη εφαρμοστεί όταν χάνεται η απάντηση ή
+    ακυρώνεται το αίτημα. Ο καθαρισμός επέστρεφε τότε τον αριθμό στη σειρά και το επόμενο τιμολόγιο έπαιρνε τον ίδιο
+    αριθμό — διπλός αριθμός σε φορολογική σειρά.
+
+    Το πρώτο τιμολόγιο της σειράς δεν δείχνει το σφάλμα: στην πρώτη χρήση του μετρητή η εφαρμογή ξανασαρώνει τους
+    εκδοθέντες αριθμούς και διορθώνει μόνη της τον μετρητή. Γι' αυτό εκδίδεται πρώτα ένα κανονικό (-0001) και
+    αποτυγχάνει το δεύτερο (-0002) — η μετάλλαξη «ο καθαρισμός επιστρέφει πάντα τον αριθμό» επιζούσε με το πρώτο."""
+    import invoice_services as svc
+    from db import db
+
+    async def scenario():
+        firm = f"firm-lost-reply-{failure.__name__}"
+        base = await svc.issue_draft(firm, await db.invoices.find_one({"_id": await _bare_draft(firm)}), {})
+        assert base["number"].endswith("-0001")
+
+        failing = await _bare_draft(firm)
+        calls = {"n": 0}
+
+        async def lost_reply(real, query, update, *args, **kwargs):
+            calls["n"] += 1
+            result = await real(query, update, *args, **kwargs)
+            if calls["n"] == 2:                      # 1η κλήση: κλείδωμα · 2η: η τελική εγγραφή
+                raise failure()
+            return result
+
+        monkeypatch.setattr(svc, "db", _HookedDb(db, "invoices", {"find_one_and_update": lost_reply}))
+        with pytest.raises(failure):
+            await svc.issue_draft(firm, await db.invoices.find_one({"_id": failing}), {})
+        monkeypatch.setattr(svc, "db", db)
+
+        stored = await db.invoices.find_one({"_id": failing})
+        assert stored["status"] == "issued" and stored["number"].endswith("-0002")
+        third = await svc.issue_draft(firm, await db.invoices.find_one({"_id": await _bare_draft(firm)}), {})
+        assert third["number"].endswith("-0003")     # όχι δεύτερο -0002
+
+    _run(scenario())
+
+
+def test_when_the_state_cannot_be_read_back_the_number_is_not_returned_to_the_series(monkeypatch):
+    """Αν μετά από αποτυχία δεν μπορεί να διαβαστεί η κατάσταση του τιμολογίου, ο αριθμός δεν επιστρέφεται:
+    ένα κενό στη σειρά είναι ασφαλέστερο από ένα διπλότυπο."""
+    import invoice_services as svc
+    from db import db
+
+    async def scenario():
+        firm = "firm-unreadable-state"
+        first = await _bare_draft(firm)
+
+        async def unreadable(real, query, projection=None, *args, **kwargs):
+            if projection == {"status": 1, "number": 1}:          # η ανάγνωση του καθαρισμού
+                raise RuntimeError("η βάση δεν απαντά")
+            return await real(query, projection, *args, **kwargs)
+
+        def boom(*a, **k):
+            raise RuntimeError("σφάλμα μετά την παραχώρηση αριθμού")
+
+        monkeypatch.setattr(svc, "db", _HookedDb(db, "invoices", {"find_one": unreadable}))
+        monkeypatch.setattr(svc, "withholding_for", boom)
+        with pytest.raises(RuntimeError, match="σφάλμα μετά"):
+            await svc.issue_draft(firm, await db.invoices.find_one({"_id": first}), {})
+        monkeypatch.undo()
+
+        after = await db.invoices.find_one({"_id": first})
+        assert after["status"] == "draft" and "issue_claim" not in after       # το κλείδωμα λύθηκε κανονικά
+        ok = await svc.issue_draft(firm, after, {})
+        assert ok["number"].endswith("-0002")                                  # το -0001 έμεινε κενό, δεν ξαναδόθηκε
+
+    _run(scenario())
+
+
+def test_a_draft_credit_note_is_not_issued_once_its_original_was_cancelled(client, office):
+    """Ακύρωση και πιστωτικό ταυτόχρονα από δύο χρήστες: αν εκδιδόταν και το πιστωτικό, το ίδιο ποσό θα αναιρούνταν δύο φορές."""
+    original = _issued(client, office.alpha)
+    _set(original["id"], mydata_status="synced", mydata_mark="400001111111111")
+    credit = client.post(f"/api/invoices/{original['id']}/credit-note", json={}).json()
+    _set(original["id"], status="cancelled")                 # ακυρώθηκε στο μεταξύ από άλλον χρήστη
+    out = client.post(f"/api/invoices/{credit['id']}/issue")
+    assert out.status_code == 400 and "ακυρωθεί" in out.json()["detail"] and original["number"] in out.json()["detail"]
+    stored = _doc(credit["id"])
+    assert stored["status"] == "draft" and not stored.get("number") and "issue_claim" not in stored
+
+
+def test_a_credit_note_draft_whose_original_id_cannot_be_read_does_not_crash_the_issue(client, office):
+    """Το `credit_note_for` το γράφει πάντα ο server, αλλά ένα έγγραφο με χαλασμένη τιμή δεν πρέπει να δίνει HTTP 500
+    στην έκδοση: ο έλεγχος «το αρχικό ακυρώθηκε» απλώς δεν μπορεί να γίνει και η έκδοση συνεχίζει όπως πριν."""
+    original = _issued(client, office.alpha)
+    _set(original["id"], mydata_status="synced", mydata_mark="400001111111111")
+    credit = client.post(f"/api/invoices/{original['id']}/credit-note", json={}).json()
+    _set(credit["id"], credit_note_for="δεν-είναι-έγκυρο-id")
+    out = client.post(f"/api/invoices/{credit['id']}/issue")
+    assert out.status_code == 200, out.text
+    assert _doc(credit["id"])["status"] == "issued"
+
+
+# ---- 12.2 Τράπεζα: κατάθεση που κατονομάζει τιμολόγιο εκτός υποψηφίων ----
+
+def test_a_deposit_quoting_a_bigger_invoice_is_never_settled_on_the_smaller_one():
+    """Μια δόση που αναγράφει τον αριθμό ενός μεγαλύτερου τιμολογίου (άλλο ποσό, άρα όχι υποψήφιο) δεν πρέπει να
+    εξοφλήσει αυτόματα το διπλανό, ίδιου ποσού με την κατάθεση. Ο έλεγχος «κατονομάζεται άλλο τιμολόγιο» εξέταζε
+    μόνο τους υποψηφίους κατά ποσό."""
+    from routes_bank import match_details
+    today = athens_today()
+    small = _inv_row(1, "ΤΠΥ-2026-0001", due=124.0, name="ΑΛΦΑ ΑΕ", client_id="c1", day=today)
+    big = _inv_row(2, "ΤΠΥ-2026-0002", due=5000.0, name="ΑΛΦΑ ΑΕ", client_id="c1", day=today)
+    for pool in ([small, big], [big, small]):
+        found = match_details(_deposit(124.0, "ΑΛΦΑ ΑΕ ΔΟΣΗ ΤΠΥ-2026-0002", day=today), pool)
+        assert found["invoice"] is small and found["ambiguous"] is True and found["confidence"] <= 75
+    # μάρτυρες: όταν η αιτιολογία κατονομάζει το ίδιο το τιμολόγιο, ή κανένα, δεν υπάρχει αμφιβολία
+    named = match_details(_deposit(124.0, "ΑΛΦΑ ΑΕ ΤΠΥ-2026-0001", day=today), [small, big])
+    assert named["invoice"] is small and named["ambiguous"] is False
+    silent = match_details(_deposit(124.0, "ΑΛΦΑ ΑΕ", day=today), [small, big])
+    assert silent["invoice"] is small and silent["ambiguous"] is False
+
+
+def test_an_invoice_without_a_number_is_never_taken_as_named_by_a_description():
+    """Το κενό αλφαριθμητικό περιέχεται σε κάθε αιτιολογία: ένα τιμολόγιο χωρίς αριθμό (παλιά εγγραφή) θα «κατονομαζόταν»
+    παντού και θα έστελνε κάθε καθαρή αντιστοίχιση σε έλεγχο από άνθρωπο."""
+    from routes_bank import _number_in, match_details
+    assert _number_in({"number": ""}, "αλφα αε δοση") is False
+    assert _number_in({"number": None}, "αλφα αε δοση") is False
+    assert _number_in({}, "αλφα αε δοση") is False
+    assert _number_in({"number": "ΤΠΥ-2026-0007"}, "δοση τπυ-2026-0007") is True       # μάρτυρας: ο έλεγχος δεν χαλάει
+    today = athens_today()
+    clean = _inv_row(1, "ΤΠΥ-2026-0001", due=124.0, day=today)
+    blank = _inv_row(2, "", due=5000.0, day=today)
+    found = match_details(_deposit(124.0, "ΑΛΦΑ ΑΕ", day=today), [clean, blank])
+    assert found["invoice"] is clean and found["ambiguous"] is False
+
+
+def test_an_installment_quoting_another_invoice_goes_to_review_not_to_automatic_payment(client, office):
+    """Το ίδιο, από την εισαγωγή CSV ως το job συμφωνίας."""
+    import automation
+    from db import db
+    small = _issued(client, office.alpha, net=100.0)          # 124,00
+    big = _issued(client, office.alpha, net=5000.0)           # 6.200,00
+    out = _import(client, [(athens_today(), f"ΑΛΦΑ ΑΕ ΔΟΣΗ {big['number']}", "124,00")])
+    assert out["auto_matched"] == 1 and out["needs_review"] == 1
+    tx = _run(db.bank_transactions.find_one({}))
+    assert tx["matched_invoice_id"] == small["id"] and tx["match_ambiguous"] is True and tx["match_confidence"] <= 75
+    assert _run(automation.job_reconcile(office.firm_id, {"auto_reconcile_min_confidence": 90})) == \
+        {"confirmed": 0, "sent_for_review": 1}
+    assert _doc(small["id"])["status"] == "issued" and _doc(big["id"])["status"] == "issued"
+    assert "άλλα τιμολόγια" in _notes("reconcile_review")[0]["message"]
+
+
+# ---- 12.3 Πύλη πελάτη: το πιστωτικό συμψηφίζεται ----
+
+def _credit(client, invoice, **body):
+    """Διαβιβασμένο τιμολόγιο → εκδοθέν πιστωτικό."""
+    _set(invoice["id"], mydata_status="synced", mydata_mark="4000" + str(abs(hash(invoice["id"])))[:11].ljust(11, "0"))
+    draft = client.post(f"/api/invoices/{invoice['id']}/credit-note", json=body)
+    assert draft.status_code == 200, draft.text
+    issued = client.post(f"/api/invoices/{draft.json()['id']}/issue")
+    assert issued.status_code == 200, issued.text
+    return issued.json()
+
+
+def test_portal_total_nets_a_credit_note_against_the_invoice_it_credits(client, office):
+    """Το πιστωτικό (αρνητικό σύνολο) εμφανιζόταν με «οφειλόμενο 0» και το σύνολο της πύλης έδειχνε το πλήρες ποσό του
+    τιμολογίου που ο πελάτης δεν χρωστά πια. Το άθροισμα είναι προσημασμένο, χωρίς να πέφτει κάτω από το μηδέν."""
+    def portal(client_id):
+        token = client.post("/api/client-portal/invite", json={"client_id": client_id}).json()["token"]
+        return client.get(f"/api/portal/{token}").json()
+
+    # μερικό πιστωτικό: 1.240 − 496 (καθαρή 400 + ΦΠΑ 24%) = 744
+    inv = _issued(client, office.alpha, net=1000.0)
+    credit = _credit(client, inv, amount=400.0)
+    data = portal(office.alpha)
+    rows = {r["id"]: r for r in data["invoices"]}
+    assert (rows[inv["id"]]["outstanding"], rows[credit["id"]]["outstanding"]) == (1240.0, -496.0)
+    assert data["totals"]["unpaid_total"] == 744.0 and data["totals"]["unpaid_count"] == 2
+
+    # ολικό πιστωτικό: μηδέν
+    whole = _issued(client, office.beta, net=100.0)
+    _credit(client, whole)
+    assert portal(office.beta)["totals"]["unpaid_total"] == 0.0
+
+    # πιστωτικό για ήδη εξοφλημένο τιμολόγιο: αρνητικό σύνολο δεν εμφανίζεται ως χρέος του γραφείου προς τον πελάτη
+    paid = _issued(client, office.beta, net=200.0)
+    _credit(client, paid)
+    _set(paid["id"], status="paid")
+    assert portal(office.beta)["totals"]["unpaid_total"] == 0.0
+
+
+# ---- 12.4 Τιμολόγια με πιστωτικό δεν εισπράττονται αυτόματα ----
+
+def _with_credit_draft(client, office, amount=20.0):
+    inv = _issued(client, office.alpha)                                    # 124,00
+    _set(inv["id"], mydata_status="synced", mydata_mark="400003333333333")
+    out = client.post(f"/api/invoices/{inv['id']}/credit-note", json={"amount": amount})
+    assert out.status_code == 200, out.text
+    return inv
+
+
+def test_an_invoice_with_a_credit_note_gets_no_card_link_and_no_reminder(client, office, stripe_calls):
+    import automation
+    import invoice_services as svc
+    from routes_payments import _validate_invoice_and_get_amount
+    inv = _with_credit_draft(client, office)
+    stored, settings = _doc(inv["id"]), _settings(office.firm_id)
+    assert stored["credit_note_id"]
+
+    with pytest.raises(HTTPException) as exc:                                           # κάρτα από την πύλη
+        _run(_validate_invoice_and_get_amount(inv["id"], office.firm_id))
+    assert exc.value.status_code == 400 and "πιστωτικό" in exc.value.detail
+    assert _run(svc.build_payment_link(stored, settings)) == "" and stripe_calls == []   # σύνδεσμος πληρωμής
+
+    old = {**stored, "date": (athens_today() - timedelta(days=90)).isoformat(), "reminder_count": 0}
+    rules = {"reminder_after_days": 30}
+    assert automation.reminder_due(old, rules) is False                                  # αυτόματη υπενθύμιση
+    assert automation.reminder_due({k: v for k, v in old.items() if k != "credit_note_id"}, rules) is True
+    with pytest.raises(svc.InvoiceEmailError) as refused:                                # χειροκίνητη υπενθύμιση
+        _run(svc.send_reminder(office.firm_id, stored, settings))
+    assert "πιστωτικό" in str(refused.value)
+
+    # μάρτυρας: χωρίς πιστωτικό ο σύνδεσμος δημιουργείται κανονικά
+    plain = _issued(client, office.beta)
+    assert _run(svc.build_payment_link(_doc(plain["id"]), settings)) == "https://pay.example/cs_test_link"
+
+
+def test_the_client_account_does_not_pay_an_invoice_that_has_a_credit_note(client, office):
+    inv = _with_credit_draft(client, office)
+    assert _tx(client, office.alpha, "deposit", 100.0).status_code == 200
+    out = _tx(client, office.alpha, "apply_to_invoice", 50.0, invoice_id=inv["id"])
+    assert out.status_code == 400 and "πιστωτικό" in out.json()["detail"]
+    assert _account(client, office.alpha)["account"]["balance"] == 100.0
+    assert "trust_applied" not in _doc(inv["id"]) and _doc(inv["id"])["status"] == "issued"
+
+
+def test_a_deposit_for_an_invoice_with_a_credit_note_is_never_settled_automatically(client, office):
+    import automation
+    from db import db
+    inv = _with_credit_draft(client, office)
+    assert _import(client, [(athens_today(), f"ΑΛΦΑ ΑΕ {inv['number']}", "124,00")])["auto_matched"] == 1
+    tx = _run(db.bank_transactions.find_one({}))
+    assert tx["matched_invoice_id"] == inv["id"] and tx["match_ambiguous"] is False
+
+    manual = client.post(f"/api/bank/reconcile/{tx['_id']}?invoice_id={inv['id']}&accept_difference=true")
+    assert manual.status_code == 409 and "πιστωτικό" in manual.json()["detail"]
+    assert _run(automation.job_reconcile(office.firm_id, {"auto_reconcile_min_confidence": 90})) == \
+        {"confirmed": 0, "sent_for_review": 1}
+    assert _doc(inv["id"])["status"] == "issued"
+    released = _run(db.bank_transactions.find_one({"_id": tx["_id"]}))
+    assert released["match_status"] == "unmatched" and released["matched_invoice_id"] is None
+    card = _notes("reconcile_conflict")[0]
+    assert card["requires_action"] and "πιστωτικό" in card["message"] and "λογιστή" in card["message"]
+
+
+# ---- 12.5 Ακύρωση που ανταγωνίζεται εξόφληση ----
+
+@pytest.fixture()
+def aade_cancel(monkeypatch):
+    """Ψεύτικη ακύρωση στην ΑΑΔΕ: το `during` τρέχει όσο «περιμένουμε» την ΑΑΔΕ, δηλαδή ανταγωνίζεται την ακύρωση."""
+    import invoice_services as svc
+    box = {"during": None, "calls": 0}
+
+    async def fake_cancel(settings, mark):
+        box["calls"] += 1
+        if box["during"]:
+            await box["during"]()
+        return {"cancellation_mark": "CM-0001"}
+
+    monkeypatch.setattr(svc, "mydata_ready", lambda s: True)
+    monkeypatch.setattr(svc, "cancel_invoice", fake_cancel)
+    return box
+
+
+def _synced(client, office):
+    inv = _issued(client, office.alpha)
+    _set(inv["id"], mydata_status="synced", mydata_mark="400005555555555")
+    return inv
+
+
+@pytest.mark.parametrize("meanwhile,expected,absent", [
+    ({"status": "paid", "paid_via": "trust", "trust_applied": 124.0}, "trust_money_stranded", "cancelled_after_payment"),
+    ({"status": "paid", "paid_via": "stripe"}, "cancelled_after_payment", "trust_money_stranded"),
+    ({"status": "paid", "paid_via": "bank_auto"}, "cancelled_after_payment", "trust_money_stranded"),
+    ({"status": "paid"}, "cancelled_after_payment", "trust_money_stranded"),             # χειροκίνητη εξόφληση
+    ({"trust_applied": 60.0}, "trust_money_stranded", "cancelled_after_payment"),         # μερική εφαρμογή
+])
+def test_a_cancellation_that_loses_a_race_with_a_payment_raises_the_matching_decision_card(
+        client, office, aade_cancel, meanwhile, expected, absent):
+    """Όσο η ΑΑΔΕ απαντά, το τιμολόγιο εξοφλείται. Οι ειδοποιήσεις βγαίνουν από την κατάσταση τη στιγμή της
+    εγγραφής, όχι από την ανάγνωση πριν την κλήση — αλλιώς τα χρήματα που εισπράχθηκαν περνούσαν απαρατήρητα."""
+    import invoice_services as svc
+    from db import db
+    inv = _synced(client, office)
+    stale = _doc(inv["id"])                                  # ό,τι διάβασε το αίτημα ακύρωσης
+
+    async def payment_arrives():
+        await db.invoices.update_one({"_id": ObjectId(inv["id"])}, {"$set": meanwhile})
+
+    aade_cancel["during"] = payment_arrives
+    _run(svc.cancel_in_mydata(office.firm_id, stale, _settings(office.firm_id)))
+    final = _doc(inv["id"])
+    assert aade_cancel["calls"] == 1 and final["status"] == "cancelled" and final["mydata_status"] == "cancelled"
+    cards = _notes(expected)
+    assert len(cards) == 1 and cards[0]["level"] == "critical" and cards[0]["requires_action"]
+    assert _notes(absent) == []
+
+
+def test_a_plain_cancellation_raises_no_card(client, office, aade_cancel):
+    import invoice_services as svc
+    inv = _synced(client, office)
+    _run(svc.cancel_in_mydata(office.firm_id, _doc(inv["id"]), _settings(office.firm_id)))
+    assert _doc(inv["id"])["status"] == "cancelled" and _doc(inv["id"])["mydata_cancellation_mark"] == "CM-0001"
+    assert _notes("cancelled_after_payment") == [] and _notes("trust_money_stranded") == []
+
+
+# ---- 12.6 Ένα πρόχειρο πιστωτικό ανά τιμολόγιο ----
+
+def _synced_stale(client, office):
+    inv = _synced(client, office)
+    return inv, _doc(inv["id"])
+
+
+def test_a_second_request_with_a_stale_copy_cannot_create_a_second_credit_note(client, office):
+    import invoice_services as svc
+    from db import db
+    inv, stale = _synced_stale(client, office)
+    first = _run(svc.build_credit_note(office.firm_id, stale, "u@example.gr", "", None))
+    with pytest.raises(svc.InvoiceWorkflowError) as refused:
+        _run(svc.build_credit_note(office.firm_id, stale, "u@example.gr", "", None))      # παλιό αντίγραφο, χωρίς credit_note_id
+    assert "ήδη" in str(refused.value)
+    drafts = _run(db.invoices.find({"credit_note_for": inv["id"]}).to_list(10))
+    original = _doc(inv["id"])
+    assert len(drafts) == 1 and original["credit_note_id"] == str(first["_id"])
+    assert "credit_claim" not in original and "credit_claim_at" not in original
+
+
+def test_two_simultaneous_credit_note_requests_create_exactly_one(client, office, monkeypatch):
+    import invoice_services as svc
+    from db import db
+    inv, stale = _synced_stale(client, office)
+
+    async def slow_insert(real, *args, **kwargs):
+        await asyncio.sleep(0.02)                            # αναγκάζει τα δύο αιτήματα να αλληλοδιαπλακούν
+        return await real(*args, **kwargs)
+
+    async def scenario():
+        monkeypatch.setattr(svc, "db", _HookedDb(db, "invoices", {"insert_one": slow_insert}))
+        return await asyncio.gather(
+            svc.build_credit_note(office.firm_id, dict(stale), "a@example.gr", "", None),
+            svc.build_credit_note(office.firm_id, dict(stale), "b@example.gr", "", None), return_exceptions=True)
+
+    results = _run(scenario())
+    winners = [r for r in results if isinstance(r, dict)]
+    losers = [r for r in results if isinstance(r, svc.InvoiceWorkflowError)]
+    assert len(winners) == 1 and len(losers) == 1, results
+    drafts = _run(db.invoices.find({"credit_note_for": inv["id"]}).to_list(10))
+    assert len(drafts) == 1 and _doc(inv["id"])["credit_note_id"] == str(winners[0]["_id"])
+
+
+def test_a_credit_note_that_fails_midway_leaves_no_draft_and_no_lock(client, office, monkeypatch):
+    import invoice_services as svc
+    from db import db
+    inv, stale = _synced_stale(client, office)
+
+    async def broken_insert(real, *args, **kwargs):
+        raise RuntimeError("η βάση διακόπηκε")
+
+    monkeypatch.setattr(svc, "db", _HookedDb(db, "invoices", {"insert_one": broken_insert}))
+    with pytest.raises(RuntimeError):
+        _run(svc.build_credit_note(office.firm_id, stale, "u@example.gr", "", None))
+    monkeypatch.setattr(svc, "db", db)
+    original = _doc(inv["id"])
+    assert not original.get("credit_note_id") and "credit_claim" not in original
+    assert _run(db.invoices.count_documents({"credit_note_for": inv["id"]})) == 0
+    retry = _run(svc.build_credit_note(office.firm_id, stale, "u@example.gr", "", None))      # ξανά, κανονικά
+    assert _doc(inv["id"])["credit_note_id"] == str(retry["_id"])
+
+
+def test_a_credit_note_whose_lock_was_lost_is_removed_instead_of_left_orphaned(client, office, monkeypatch):
+    """Αν το κλείδωμα χαθεί πριν τη σύνδεση (έληξε και το πήρε άλλο αίτημα), το πρόχειρο που μόλις μπήκε δεν πρέπει
+    να μείνει ορφανό: θα μπορούσε να εκδοθεί και να πιστώσει το τιμολόγιο χωρίς να το ξέρει το ίδιο το τιμολόγιο."""
+    import invoice_services as svc
+    from db import db
+    inv, stale = _synced_stale(client, office)
+
+    async def steal_lock(real, query, update, *args, **kwargs):
+        if "credit_note_id" in update.get("$set", {}):
+            await db.invoices.update_one({"_id": query["_id"]}, {"$set": {"credit_claim": "another-request"}})
+        return await real(query, update, *args, **kwargs)
+
+    monkeypatch.setattr(svc, "db", _HookedDb(db, "invoices", {"update_one": steal_lock}))
+    with pytest.raises(svc.InvoiceWorkflowError) as refused:
+        _run(svc.build_credit_note(office.firm_id, stale, "u@example.gr", "", None))
+    monkeypatch.setattr(svc, "db", db)
+    assert "έληξε" in str(refused.value)
+    original = _doc(inv["id"])
+    assert not original.get("credit_note_id") and original["credit_claim"] == "another-request"   # ξένο κλείδωμα: δεν πειράζεται
+    assert _run(db.invoices.count_documents({"credit_note_for": inv["id"]})) == 0
+
+
+def test_a_cancelled_credit_note_request_leaves_no_orphan_draft_and_no_lock_even_if_the_insert_was_applied(
+        client, office, monkeypatch):
+    """Η εισαγωγή του πρόχειρου μπορεί να εφαρμοστεί και να χαθεί μόνο η απάντηση (ακύρωση αιτήματος, διακοπή σύνδεσης).
+    Χωρίς καθαρισμό θα έμενε ορφανό πρόχειρο πιστωτικό — εκδόσιμο, χωρίς το αρχικό να το γνωρίζει — και κλειδωμένο το αρχικό."""
+    import invoice_services as svc
+    from db import db
+    inv, stale = _synced_stale(client, office)
+
+    async def lost_reply(real, doc, *args, **kwargs):
+        await real(doc, *args, **kwargs)
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(svc, "db", _HookedDb(db, "invoices", {"insert_one": lost_reply}))
+    with pytest.raises(asyncio.CancelledError):
+        _run(svc.build_credit_note(office.firm_id, stale, "u@example.gr", "", None))
+    monkeypatch.setattr(svc, "db", db)
+    original = _doc(inv["id"])
+    assert not original.get("credit_note_id") and "credit_claim" not in original
+    assert _run(db.invoices.count_documents({"credit_note_for": inv["id"]})) == 0          # ούτε ορφανό πρόχειρο
+
+
+def test_a_credit_note_whose_link_was_written_is_kept_even_if_the_reply_is_lost(client, office, monkeypatch):
+    """Η σύνδεση του αρχικού με το πρόχειρο μπορεί να εφαρμοστεί και να χαθεί μόνο η απάντηση: το πρόχειρο τότε ΜΕΝΕΙ
+    (το αρχικό δείχνει σε αυτό). Αν διαγραφόταν, το αρχικό θα έδειχνε σε πιστωτικό που δεν υπάρχει και δεν θα
+    μπορούσε να πιστωθεί ξανά."""
+    import invoice_services as svc
+    from db import db
+    inv, stale = _synced_stale(client, office)
+
+    async def lost_reply(real, query, update, *args, **kwargs):
+        result = await real(query, update, *args, **kwargs)
+        if "credit_note_id" in update.get("$set", {}):
+            raise asyncio.CancelledError()
+        return result
+
+    monkeypatch.setattr(svc, "db", _HookedDb(db, "invoices", {"update_one": lost_reply}))
+    with pytest.raises(asyncio.CancelledError):
+        _run(svc.build_credit_note(office.firm_id, stale, "u@example.gr", "", None))
+    monkeypatch.setattr(svc, "db", db)
+    original = _doc(inv["id"])
+    drafts = _run(db.invoices.find({"credit_note_for": inv["id"]}).to_list(5))
+    assert len(drafts) == 1 and original["credit_note_id"] == str(drafts[0]["_id"])
+    assert "credit_claim" not in original
+
+
+def test_a_second_cancellation_while_the_credit_note_cleanup_runs_still_releases_the_lock(client, office, monkeypatch):
+    """Όπως στην έκδοση: ο καθαρισμός (αφαίρεση πρόχειρου, λύση κλειδώματος) ολοκληρώνεται ακόμη κι αν το αίτημα
+    ακυρωθεί ΞΑΝΑ όσο τρέχει — αλλιώς το αρχικό έμενε κλειδωμένο για όσο διαρκεί το TTL."""
+    import invoice_services as svc
+    from db import db
+    inv, stale = _synced_stale(client, office)
+
+    async def scenario():
+        entered, cleanup_started = asyncio.Event(), asyncio.Event()
+
+        async def hang_on_insert(real, doc, *args, **kwargs):
+            entered.set()
+            await asyncio.sleep(30)                          # το αίτημα «κολλάει» εδώ μέχρι να ακυρωθεί
+            return await real(doc, *args, **kwargs)
+
+        async def slow_unlock(real, query, update, *args, **kwargs):
+            cleanup_started.set()
+            await asyncio.sleep(0.05)                        # παράθυρο για τη δεύτερη ακύρωση
+            return await real(query, update, *args, **kwargs)
+
+        monkeypatch.setattr(svc, "db", _HookedDb(db, "invoices", {"insert_one": hang_on_insert, "update_one": slow_unlock}))
+        task = asyncio.ensure_future(svc.build_credit_note(office.firm_id, stale, "u@example.gr", "", None))
+        await entered.wait()
+        task.cancel()                                        # 1η ακύρωση: μέσα στην εισαγωγή
+        await cleanup_started.wait()
+        task.cancel()                                        # 2η ακύρωση: ενώ τρέχει ο καθαρισμός
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.3)                             # ο προφυλαγμένος καθαρισμός ολοκληρώνεται μόνος του
+        monkeypatch.setattr(svc, "db", db)
+        original = await db.invoices.find_one({"_id": ObjectId(inv["id"])})
+        assert "credit_claim" not in original and not original.get("credit_note_id")
+        assert await db.invoices.count_documents({"credit_note_for": inv["id"]}) == 0
+
+    _run(scenario())
+
+
+def test_a_live_credit_lock_blocks_a_new_request_but_an_expired_one_does_not(client, office):
+    import invoice_services as svc
+    inv, stale = _synced_stale(client, office)
+    now = datetime.now(timezone.utc)
+    _set(inv["id"], credit_claim="busy", credit_claim_at=now.isoformat())
+    with pytest.raises(svc.InvoiceWorkflowError):
+        _run(svc.build_credit_note(office.firm_id, stale, "u@example.gr", "", None))
+    expired = now - timedelta(seconds=svc.CREDIT_CLAIM_TTL_SECONDS + 5)
+    _set(inv["id"], credit_claim="dead-process", credit_claim_at=expired.isoformat())
+    credit = _run(svc.build_credit_note(office.firm_id, stale, "u@example.gr", "", None))
+    assert _doc(inv["id"])["credit_note_id"] == str(credit["_id"]) and "credit_claim" not in _doc(inv["id"])
+
+
+def test_a_credit_note_is_not_created_for_an_invoice_cancelled_after_it_was_read(client, office):
+    import invoice_services as svc
+    from db import db
+    inv, stale = _synced_stale(client, office)
+    _set(inv["id"], status="cancelled")                      # ακυρώθηκε αφότου διάβασε το αίτημα το τιμολόγιο
+    with pytest.raises(svc.InvoiceWorkflowError) as refused:
+        _run(svc.build_credit_note(office.firm_id, stale, "u@example.gr", "", None))
+    assert "άλλαξε" in str(refused.value)
+    original = _doc(inv["id"])
+    assert not original.get("credit_note_id") and "credit_claim" not in original
+    assert _run(db.invoices.count_documents({"credit_note_for": inv["id"]})) == 0
+
+
+# ---- 12.7 Διαγραφή και επεξεργασία πρόχειρων που ανταγωνίζονται την έκδοση ----
+
+def test_delete_cannot_remove_a_draft_that_was_issued_in_the_meantime(client, office, monkeypatch):
+    """Ανάμεσα στον έλεγχο «είναι πρόχειρο» και στη διαγραφή, το τιμολόγιο μπορούσε να εκδοθεί (με αριθμό)·
+    η διαγραφή το έσβηνε και άφηνε κενό στη φορολογική σειρά."""
+    import routes_invoices
+    from db import db
+    draft = _draft(client, office.alpha)
+
+    async def issued_first(real, query, *args, **kwargs):
+        await db.invoices.update_one({"_id": query["_id"]}, {"$set": {"status": "issued", "number": "ΤΠΥ-2026-0001"}})
+        return await real(query, *args, **kwargs)
+
+    monkeypatch.setattr(routes_invoices, "db", _HookedDb(db, "invoices", {"delete_one": issued_first}))
+    out = client.delete(f"/api/invoices/{draft['id']}")
+    assert out.status_code == 409 and "εκδόθηκε" in out.json()["detail"]
+    stored = _doc(draft["id"])
+    assert stored is not None and stored["status"] == "issued" and stored["number"] == "ΤΠΥ-2026-0001"
+
+
+def test_delete_is_refused_while_the_draft_is_being_issued_but_not_after_the_lock_expires(client, office):
+    import invoice_services as svc
+    draft = _draft(client, office.alpha)
+    now = datetime.now(timezone.utc)
+    _set(draft["id"], issue_claim="busy", issue_claim_at=now.isoformat())
+    out = client.delete(f"/api/invoices/{draft['id']}")
+    assert out.status_code == 409 and _doc(draft["id"]) is not None
+    _set(draft["id"], issue_claim_at=(now - timedelta(seconds=svc.ISSUE_CLAIM_TTL_SECONDS + 5)).isoformat())
+    assert client.delete(f"/api/invoices/{draft['id']}").status_code == 200 and _doc(draft["id"]) is None
+
+
+def test_deleting_a_draft_credit_note_frees_its_original(client, office):
+    """Έλεγχος-μάρτυρας: η διαγραφή που επιτρέπεται εξακολουθεί να αποδεσμεύει το αρχικό τιμολόγιο."""
+    original = _issued(client, office.alpha)
+    _set(original["id"], mydata_status="synced", mydata_mark="400006666666666")
+    credit = client.post(f"/api/invoices/{original['id']}/credit-note", json={}).json()
+    assert _doc(original["id"])["credit_note_id"] == credit["id"]
+    assert client.delete(f"/api/invoices/{credit['id']}").status_code == 200
+    assert not _doc(original["id"]).get("credit_note_id")
+    assert client.post(f"/api/invoices/{original['id']}/credit-note", json={}).status_code == 200
+
+
+def test_grammatio_edit_cannot_overwrite_one_issued_in_the_meantime(client, office, monkeypatch):
+    import routes_grammatia
+    from db import db
+    gid = _gram(client, office.alpha)["id"]
+    monkeypatch.setattr(routes_grammatia, "db", _RacyDb(db, "grammatia", {"status": "issued", "portal_ref": "OLO-FIRST"}))
+    out = client.put(f"/api/grammatia/{gid}", json={
+        "court_type": "Μονομελές Πρωτοδικείο", "procedure": "Τακτική διαδικασία", "client_id": office.alpha,
+        "client_name": "ΑΛΦΑ ΑΕ", "reference_amount": 50.0, "contributions_amount": 10.0, "vat_amount": 12.0})
+    assert out.status_code == 409 and "εκδόθηκε" in out.json()["detail"]
+    stored = _run(db.grammatia.find_one({"_id": ObjectId(gid)}))
+    assert stored["reference_amount"] == 100.0 and stored["status"] == "issued" and stored["portal_ref"] == "OLO-FIRST"
+
+
+def test_a_draft_credit_note_keeps_the_client_of_its_original(client, office):
+    original = _issued(client, office.alpha)
+    _set(original["id"], mydata_status="synced", mydata_mark="400007777777777")
+    credit = client.post(f"/api/invoices/{original['id']}/credit-note", json={}).json()
+    moved = client.put(f"/api/invoices/{credit['id']}", json=_body(office.beta, -50.0))
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["client_id"] == office.alpha and moved.json()["client_name"] == "ΑΛΦΑ ΑΕ"
+    assert _doc(credit["id"])["client_id"] == office.alpha
+    # μάρτυρας: ένα συνηθισμένο πρόχειρο αλλάζει πελάτη κανονικά
+    plain = _draft(client, office.alpha)
+    other = client.put(f"/api/invoices/{plain['id']}", json=_body(office.beta, 100.0))
+    assert other.status_code == 200 and other.json()["client_id"] == office.beta
+
+
+# ---- 12.8 «Επαναφορά σε ανεξόφλητο» ----
+
+@pytest.mark.parametrize("paid_via,fragment", [
+    ("trust", "πελατολογικό"), ("stripe", "κάρτα"), ("bank_auto", "τραπεζική"), ("bank_manual", "τραπεζική")])
+def test_a_payment_that_went_through_another_ledger_is_not_undone_from_the_invoice_list(client, office, paid_via, fragment):
+    """Η «επαναφορά» άφηνε το τιμολόγιο ανοιχτό ενώ η είσπραξη έμενε καταγεγραμμένη σε πελατολογικό, κάρτα ή τράπεζα:
+    υπενθυμίσεις για ποσό που έχει ήδη καταβληθεί και δεύτερη πληρωμή."""
+    inv = _issued(client, office.alpha)
+    _set(inv["id"], status="paid", paid_via=paid_via)
+    out = client.post(f"/api/invoices/{inv['id']}/mark-unpaid")
+    assert out.status_code == 409 and fragment in out.json()["detail"] and "λογιστή" in out.json()["detail"]
+    assert _doc(inv["id"])["status"] == "paid"
+
+
+def test_trust_money_applied_to_an_invoice_blocks_the_reversal_even_without_a_recorded_channel(client, office):
+    inv = _issued(client, office.alpha)
+    _set(inv["id"], status="paid", trust_applied=50.0)                 # παλιά εγγραφή: χωρίς paid_via
+    out = client.post(f"/api/invoices/{inv['id']}/mark-unpaid")
+    assert out.status_code == 409 and "πελατολογικό" in out.json()["detail"] and _doc(inv["id"])["status"] == "paid"
+
+
+def test_a_manual_payment_can_be_reversed_but_not_if_the_invoice_changed_meanwhile(client, office, monkeypatch):
+    import routes_invoices
+    from db import db
+    inv = _issued(client, office.alpha)
+    assert client.post(f"/api/invoices/{inv['id']}/mark-paid").status_code == 200
+    back = client.post(f"/api/invoices/{inv['id']}/mark-unpaid")
+    assert back.status_code == 200 and back.json()["status"] == "issued" and back.json()["paid_at"] is None
+
+    other = _issued(client, office.alpha)
+    assert client.post(f"/api/invoices/{other['id']}/mark-paid").status_code == 200
+
+    async def cancelled_first(real, query, *args, **kwargs):
+        await db.invoices.update_one({"_id": query["_id"]}, {"$set": {"status": "cancelled"}})
+        return await real(query, *args, **kwargs)
+
+    monkeypatch.setattr(routes_invoices, "db", _HookedDb(db, "invoices", {"update_one": cancelled_first}))
+    out = client.post(f"/api/invoices/{other['id']}/mark-unpaid")
+    assert out.status_code == 409 and "άλλαξε" in out.json()["detail"]
+    assert _doc(other["id"])["status"] == "cancelled"                  # δεν «ανασταίνεται» ακυρωμένο παραστατικό
+
+
+# ---- 12.9 Τράπεζα: παλιές προτάσεις, κάρτες χωρίς ποσό αναφοράς, μη-πεπερασμένα ποσά ----
+
+def test_a_legacy_suggestion_without_the_ambiguity_flag_is_never_settled_automatically(client, office):
+    """Πρόταση από παλιά έκδοση δεν έχει το `match_ambiguous`. Αν ο worker ξεκινήσει πριν από το API που τη σημαίνει,
+    ο κύκλος συμφωνίας δεν πρέπει να την εξοφλήσει: το απόν πεδίο θεωρείται «αμφίβολη» παντού."""
+    import automation
+    from db import db
+    inv = _issued(client, office.alpha)
+    _run(db.bank_transactions.insert_one({
+        "firm_id": office.firm_id, "date": _today(), "description": f"ΑΛΦΑ ΑΕ {inv['number']}", "amount": 124.0,
+        "external_id": "legacy-x", "match_status": "auto_matched", "match_confidence": 100,
+        "matched_invoice_id": inv["id"], "matched_invoice_number": inv["number"]}))          # χωρίς match_ambiguous
+    assert _run(automation.job_reconcile(office.firm_id, {"auto_reconcile_min_confidence": 90})) == \
+        {"confirmed": 0, "sent_for_review": 1}
+    assert _doc(inv["id"])["status"] == "issued"
+    assert "άλλα τιμολόγια" in _notes("reconcile_review")[0]["message"]
+    bulk = client.post("/api/bank/confirm-auto-matches").json()                              # και η μαζική επιβεβαίωση
+    assert bulk["confirmed"] == 0 and [i["reason"] for i in bulk["skipped_items"]] == ["ambiguous"]
+    assert _doc(inv["id"])["status"] == "issued"
+
+
+def test_the_worker_flags_legacy_suggestions_when_it_starts_before_the_api():
+    import invoice_services
+    import server
+    import worker
+    from db import db
+    assert server.flag_unchecked_bank_suggestions is invoice_services.flag_unchecked_bank_suggestions
+    _run(db.bank_transactions.insert_many([
+        {"firm_id": "f", "external_id": "legacy", "match_status": "auto_matched", "amount": 1.0},
+        {"firm_id": "f", "external_id": "checked", "match_status": "auto_matched", "amount": 1.0, "match_ambiguous": False}]))
+    _run(worker._ensure_indexes())
+    flags = {d["external_id"]: d["match_ambiguous"] for d in _run(db.bank_transactions.find({}).to_list(10))}
+    assert flags == {"legacy": True, "checked": False}
+
+
+def test_confirming_a_card_that_recorded_no_amount_is_refused_when_the_difference_is_large(client, office):
+    """Κάρτα από παλιά έκδοση δεν έχει το οφειλόμενο που είδε ο άνθρωπος. Μικρή διαφορά (< 1 €) περνά όπως πάντα·
+    μεγάλη δεν εξοφλείται με ένα «Ναι» που αφορούσε άλλο ποσό."""
+    import automation
+    from db import db
+    inv = _issued(client, office.alpha)                           # 124,00
+    tx, card = _review_card_for(client, office, inv, "ΑΛΦΑ ΑΕ", "123,50")
+    _run(db.bank_transactions.update_one({"_id": tx["_id"]}, {"$unset": {"review_due": ""}}))
+    _set(inv["id"], trust_applied=100.0)                          # οφείλονται 24,00 — η κατάθεση 123,50
+    with pytest.raises(automation.SettlementRefused) as refused:
+        _resolve(card, "confirm")
+    assert refused.value.reason == "due_unverified"
+    message = refused.value.message
+    assert "123,50 €" in message and "24,00 €" in message and "99,50 €" in message
+    for label in ("Όχι, άλλο τιμολόγιο", "Αγνόησε την κίνηση"):
+        assert f"«{label}»" in message and label in {a["label"] for a in _card(card["_id"])["actions"]}
+    assert _card(card["_id"]).get("resolved_at") is None and _doc(inv["id"])["status"] == "issued"
+
+    _set(inv["id"], trust_applied=0.0)                            # διαφορά 0,50 € < 1 €: δεκτή, καταγράφεται
+    assert _resolve(card, "confirm") == {"resolution": "confirmed"}
+    assert _doc(inv["id"])["status"] == "paid"
+    assert _run(db.bank_transactions.find_one({"_id": tx["_id"]}))["amount_difference"] == -0.5
+
+
+def test_a_card_difference_of_exactly_one_euro_is_not_small(client, office):
+    import automation
+    from db import db
+    inv = _issued(client, office.alpha)
+    tx, card = _review_card_for(client, office, inv, "ΑΛΦΑ ΑΕ", "123,50")
+    _run(db.bank_transactions.update_one({"_id": tx["_id"]}, {"$unset": {"review_due": ""}, "$set": {"amount": 123.0}}))
+    with pytest.raises(automation.SettlementRefused) as refused:                 # 124,00 − 123,00 = 1,00 €
+        _resolve(card, "confirm")
+    assert refused.value.reason == "due_unverified"
+    _run(db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"amount": 123.01}}))   # 0,99 €
+    assert _resolve(card, "confirm") == {"resolution": "confirmed"}
+
+
+@pytest.mark.parametrize("cell", ["nan", "NaN", "inf", "-inf", "Infinity", "1e999"])
+def test_non_finite_amounts_in_a_statement_are_read_as_zero_and_never_stored(client, office, cell):
+    """`float("nan")` και `float("inf")` δεν αποτυγχάνουν: μια κατάθεση «nan» έμπαινε στη βάση και κατέστρεφε τις συγκρίσεις."""
+    import math
+    import routes_bank
+    from db import db
+    assert routes_bank._parse_amount(cell) == 0.0
+    _issued(client, office.alpha)
+    out = _import(client, [(athens_today(), "ΑΛΦΑ ΑΕ ΕΙΣΠΡΑΞΗ", cell)])
+    assert out["auto_matched"] == 0
+    assert all(math.isfinite(t["amount"]) for t in _run(db.bank_transactions.find({}).to_list(10)))
+
+
+def test_amount_parsing_still_reads_greek_and_english_formats():
+    import routes_bank
+    assert routes_bank._parse_amount("1.234,56") == 1234.56 and routes_bank._parse_amount("1,234.56") == 1234.56
+    assert routes_bank._parse_amount("124,00 €") == 124.0 and routes_bank._parse_amount("-") == 0.0
+    assert routes_bank._parse_amount("") == 0.0 and routes_bank._parse_amount(None) == 0.0
+
+
+def test_ignoring_or_reconciling_a_deposit_by_an_uppercase_id_still_closes_its_cards(client, office):
+    """Το id που στέλνει ο client μπορεί να έχει άλλη γραφή των ίδιων δεκαεξαδικών· η ειδοποίηση φέρει την κανονική."""
+    from db import db
+    inv = _issued(client, office.alpha)
+    tx, card = _review_card_for(client, office, inv, "ΑΛΦΑ ΑΕ", "123,50")
+    upper = str(tx["_id"]).upper()
+    if upper == str(tx["_id"]):
+        pytest.skip("το id δεν έχει γράμματα")
+    assert client.post(f"/api/bank/reconcile/{upper}?ignore=true").status_code == 200
+    assert _card(card["_id"])["resolution"] == "ignored"
+
+    _run(db.notifications.delete_many({}))
+    _run(db.bank_transactions.delete_many({}))
+    other = _issued(client, office.beta)
+    tx2, card2 = _review_card_for(client, office, other, "ΒΗΤΑ ΕΠΕ", "123,50")
+    ok = client.post(f"/api/bank/reconcile/{str(tx2['_id']).upper()}?invoice_id={other['id']}&accept_difference=true")
+    assert ok.status_code == 200, ok.text
+    assert _card(card2["_id"])["resolution"] == "already_settled"
+
+
+def test_automatic_settlement_closes_the_review_card_it_makes_obsolete(client, office):
+    """Η κίνηση είχε πάει για έλεγχο (π.χ. χαμηλή βεβαιότητα)· όταν στη συνέχεια εξοφλείται αυτόματα, η κάρτα με το
+    «Ναι, εξοφλήθηκε» δεν πρέπει να μένει ανοιχτή πάνω σε κίνηση που έχει ήδη συμφωνηθεί."""
+    import automation
+    from db import db
+    inv = _issued(client, office.alpha)
+    tx, card = _review_card_for(client, office, inv, "ΑΛΦΑ ΑΕ", "123,50")
+    _run(db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {
+        "amount": 124.0, "match_confidence": 100, "match_ambiguous": False}}))
+    assert _run(automation.job_reconcile(office.firm_id, {"auto_reconcile_min_confidence": 90}))["confirmed"] == 1
+    closed = _card(card["_id"])
+    assert closed["resolution"] == "already_settled" and closed["resolved_by"] == "autopilot"
+    assert _doc(inv["id"])["status"] == "paid" and _doc(inv["id"])["paid_via"] == "bank_auto"
+    assert len(_notes("reconciled")) == 1
+
+
+@pytest.mark.parametrize("thousandths", range(123994, 124007))
+def test_suggestion_and_settlement_agree_on_what_an_exact_amount_is(client, office, thousandths):
+    """Η πρόταση και η εξόφληση στρογγυλοποιούσαν διαφορετικά ένα ποσό με 3 δεκαδικά: η πρώτη το έβλεπε «ακριβές»
+    και η δεύτερη «με διαφορά» (ή αντίστροφα). Χαρακτηριστικό είναι το 124,005: η στρογγυλοποίηση «μισού προς τα
+    πάνω» δίνει 12401 λεπτά, η στρογγυλοποίηση float 12400. Η πρώτη εκδοχή του test διέτρεχε 12,395–12,405 αντί για
+    123,995–124,005 και δεν διέκρινε ποτέ τη μετάλλαξη· την πρόσεξε ο έλεγχος ισχύος."""
+    import invoice_services as svc
+    import routes_bank
+    inv = _issued(client, office.alpha)                           # οφείλονται 124,00
+    amount = thousandths / 1000
+    suggested = routes_bank.match_details(
+        _deposit(amount, "ΑΛΦΑ ΑΕ"), [_inv_row(inv["id"], inv["number"], due=124.0)])["exact"]
+    check = _run(svc.apply_bank_payment(
+        office.firm_id, {"_id": ObjectId(), "amount": amount, "match_status": "unmatched"}, inv["id"],
+        settings={}, paid_via="bank_manual", status_on_success="manual_matched", dry_run=True))
+    settled_exact = check["status"] == "ok" and check["difference"] == 0.0
+    assert suggested == settled_exact, (amount, suggested, check)
+
+
+def test_each_failed_undo_gets_its_own_card_even_for_the_same_account_and_amount(client, office, monkeypatch):
+    """Το κλειδί της ειδοποίησης περιείχε το id του ledger — που είναι άγνωστο όταν η αποτυχία έρχεται πριν γραφτεί.
+    Δύο διαφορετικά περιστατικά του ίδιου ποσού συγχωνεύονταν σε μία κάρτα και το δεύτερο περνούσε απαρατήρητο."""
+    import routes_trust
+    from db import db
+    assert _tx(client, office.alpha, "deposit", 500.0).status_code == 200
+    real = routes_trust._cas_update
+    calls = {"n": 0}
+
+    async def undo_fails(collection, query, compute, attempts=8):
+        calls["n"] += 1
+        if calls["n"] % 2 == 0:                                   # 1 = η κίνηση, 2 = η αναίρεσή της
+            raise RuntimeError("η βάση δεν απάντησε στην αναίρεση")
+        return await real(collection, query, compute, attempts)
+
+    async def no_ledger(real_insert, *args, **kwargs):
+        raise RuntimeError("δεν γράφτηκε το ledger")
+
+    monkeypatch.setattr(routes_trust, "_cas_update", undo_fails)
+    monkeypatch.setattr(routes_trust, "db", _HookedDb(db, "trust_transactions", {"insert_one": no_ledger}))
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="ledger"):
+            _tx(client, office.alpha, "withdrawal", 50.0)
+    monkeypatch.undo()
+    cards = _notes("trust_needs_review")
+    assert len(cards) == 2 and len({c["dedupe_key"] for c in cards}) == 2
+    assert all(c["requires_action"] and c["level"] == "critical" for c in cards)
+
+
+# ---- 12.10 Ημερομηνία και έτος σειράς: Αθήνα, όχι UTC/ώρα server ----
+
+def _frozen_new_year(monkeypatch):
+    """Στην Αθήνα είναι ήδη Πρωτοχρονιά (00:30), ενώ το UTC και ο server είναι ακόμη στην παραμονή."""
+    import tax_utils
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2038, 12, 31, 22, 30, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(tax_utils, "datetime", FakeDateTime)
+    assert athens_today() == date(2039, 1, 1)
+    return "2039-01-01"
+
+
+def test_issue_accepts_a_draft_dated_today_in_athens_while_utc_is_still_yesterday(client, office, monkeypatch):
+    day = _frozen_new_year(monkeypatch)
+    out = client.post(f"/api/invoices/{_draft(client, office.alpha, when=day)['id']}/issue")
+    assert out.status_code == 200, out.text
+    assert out.json()["number"] == "ΤΠΥ-2039-0001" and out.json()["date"] == day
+    refused = client.post(f"/api/invoices/{_draft(client, office.alpha, when='2039-01-02')['id']}/issue")
+    assert refused.status_code == 400 and "μελλοντική" in refused.json()["detail"]
+
+
+def test_a_credit_note_created_after_midnight_in_athens_carries_the_athens_date(client, office, monkeypatch):
+    day = _frozen_new_year(monkeypatch)
+    original = _issued(client, office.alpha, when=day)
+    _set(original["id"], mydata_status="synced", mydata_mark="400008888888888")
+    credit = client.post(f"/api/invoices/{original['id']}/credit-note", json={})
+    assert credit.status_code == 200, credit.text
+    assert credit.json()["date"] == day
+
+
+def test_a_grammatio_gets_the_athens_year_and_its_invoice_the_athens_date(client, office, monkeypatch):
+    day = _frozen_new_year(monkeypatch)
+    gram = _gram(client, office.alpha)
+    assert gram["number"] == "ΓΡΠ-2039-0001"
+    assert client.post(f"/api/grammatia/{gram['id']}/issue", json={}).status_code == 200
+    invoice = client.post(f"/api/grammatia/{gram['id']}/to-invoice")
+    assert invoice.status_code == 200, invoice.text
+    assert invoice.json()["date"] == day
+
+
+def test_paravola_and_cases_get_the_athens_year(client, office, monkeypatch):
+    _frozen_new_year(monkeypatch)
+    paravolo = client.post("/api/paravola", json={"category": "Λοιπά παράβολα", "amount": 5.0})
+    assert paravolo.status_code == 200 and paravolo.json()["number"] == "ΠΡΒ-2039-0001"
+    case = client.post("/api/cases", json={"title": "Δοκιμαστική υπόθεση", "client_id": office.alpha})
+    assert case.status_code == 200, case.text
+    assert case.json()["number"] == "ΥΠΘ-2039-0001"
+
+
+def test_a_copilot_draft_carries_the_athens_date(client, office, monkeypatch):
+    import routes_copilot
+    day = _frozen_new_year(monkeypatch)
+    created, _reply = _run(routes_copilot._execute_create_invoice(
+        {"client_name": "ΑΛΦΑ", "amount": 100.0, "description": "Γνωμοδότηση"}, office.user))
+    assert created is not None and created.date == day and created.status == "draft"
+
+
+def test_the_default_series_year_is_the_athens_year(client, office, monkeypatch):
+    import invoice_services as svc
+    _frozen_new_year(monkeypatch)
+    assert _run(svc.next_invoice_number(office.firm_id)) == "ΤΠΥ-2039-0001"
+
+
+def test_the_client_account_future_date_check_uses_the_athens_day(client, office, monkeypatch):
+    day = _frozen_new_year(monkeypatch)
+    assert _tx(client, office.alpha, "deposit", 50.0, date=day).status_code == 200
+    tomorrow = _tx(client, office.alpha, "deposit", 50.0, date="2039-01-02")
+    assert tomorrow.status_code == 400
+
+
+# ---- 12.11 Επιζήσασες μεταλλάξεις των reviewers: killers ----
+
+def test_a_second_cancellation_while_the_issue_cleanup_runs_does_not_leave_the_draft_locked(monkeypatch):
+    """Η αποδέσμευση του κλειδώματος και του αριθμού ολοκληρώνεται (asyncio.shield) ακόμη κι αν το αίτημα ακυρωθεί
+    ΞΑΝΑ όσο τρέχει ο καθαρισμός — αλλιώς το πρόχειρο έμενε κλειδωμένο για όσο διαρκεί το TTL."""
+    import invoice_services as svc
+    from db import db
+
+    async def scenario():
+        firm = "firm-double-cancel"
+        draft_id = await _bare_draft(firm)
+        entered, release_started = asyncio.Event(), asyncio.Event()
+
+        async def hang_on_final_write(real, query, update, *args, **kwargs):
+            if update.get("$set", {}).get("status") == "issued":
+                entered.set()
+                await asyncio.sleep(30)                          # το αίτημα «κολλάει» εδώ μέχρι να ακυρωθεί
+            return await real(query, update, *args, **kwargs)
+
+        async def slow_release(real, query, update, *args, **kwargs):
+            release_started.set()
+            await asyncio.sleep(0.05)                            # παράθυρο για τη δεύτερη ακύρωση
+            return await real(query, update, *args, **kwargs)
+
+        monkeypatch.setattr(svc, "db", _HookedDb(db, "invoices", {
+            "find_one_and_update": hang_on_final_write, "update_one": slow_release}))
+        task = asyncio.ensure_future(svc.issue_draft(firm, await db.invoices.find_one({"_id": draft_id}), {}))
+        await entered.wait()
+        task.cancel()                                            # 1η ακύρωση: μέσα στην τελική εγγραφή
+        await release_started.wait()
+        task.cancel()                                            # 2η ακύρωση: ενώ τρέχει ο καθαρισμός
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.3)                                 # ο προφυλαγμένος καθαρισμός ολοκληρώνεται μόνος του
+        monkeypatch.setattr(svc, "db", db)
+        after = await db.invoices.find_one({"_id": draft_id})
+        assert after["status"] == "draft" and "issue_claim" not in after and not after.get("number")
+        again = await svc.issue_draft(firm, after, {})
+        assert again["number"].endswith("-0001")                 # ούτε ο αριθμός «κάηκε»
+
+    _run(scenario())
+
+
+@pytest.mark.asyncio
+async def test_a_second_cancellation_while_a_client_account_payment_is_undone_leaves_nothing_half_applied(monkeypatch):
+    import routes_trust
+    from db import db
+    from models import TrustTransaction
+    firm = "firm-double-cancel-trust"
+    cid = str((await db.clients.insert_one({"firm_id": firm, "name": "Πελάτης", "afm": "123456783"})).inserted_id)
+    inv = await db.invoices.insert_one({"firm_id": firm, "number": "ΤΠΥ-2026-0001", "client_id": cid, "client_name": "Π",
+                                        "status": "issued", "total": 124.0, "date": _today(), "line_items": []})
+    user = {"email": "u@example.gr", "firm_id": firm}
+    await routes_trust.create_transaction(
+        routes_trust.TransactionPayload(client_id=cid, type="deposit", amount=200.0, date=_today()), user)
+    real = routes_trust._cas_update
+
+    async def slow(collection, query, compute, attempts=8):
+        await asyncio.sleep(0.05)
+        return await real(collection, query, compute, attempts)
+
+    holder = {}
+
+    def cancelled(self, *a, **k):
+        asyncio.get_event_loop().call_later(0.02, holder["task"].cancel)     # η 2η ακύρωση πέφτει μέσα στην αναίρεση
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(routes_trust, "_cas_update", slow)
+    monkeypatch.setattr(TrustTransaction, "to_mongo", cancelled)
+    holder["task"] = asyncio.ensure_future(routes_trust.create_transaction(routes_trust.TransactionPayload(
+        client_id=cid, type="apply_to_invoice", amount=124.0, date=_today(), invoice_id=str(inv.inserted_id)), user))
+    await asyncio.gather(holder["task"], return_exceptions=True)
+    await asyncio.sleep(0.5)                                                  # ο προφυλαγμένος καθαρισμός ολοκληρώνεται
+    monkeypatch.undo()
+    account = await db.trust_accounts.find_one({"firm_id": firm, "client_id": cid})
+    assert account["balance"] == 200.0 and account["total_withdrawals"] == 0.0
+    assert not (await db.invoices.find_one({"_id": inv.inserted_id})).get("trust_applied")
+
+
+def _bank_row(office, inv, **over):
+    from db import db
+    from models import BankTransaction
+    base = dict(firm_id=office.firm_id, date=_today(), description="x", amount=124.0, matched_invoice_id=inv["id"],
+                matched_invoice_number=inv["number"], match_status="auto_matched", match_confidence=80,
+                external_id=f"e{ObjectId()}")
+    base.update(over)
+    return _run(db.bank_transactions.insert_one(BankTransaction(**base).to_mongo())).inserted_id
+
+
+def test_the_amount_a_human_saw_on_a_review_card_survives_later_autopilot_cycles(client, office):
+    """Το `review_due` γράφεται μία φορά, όταν δημιουργείται η κάρτα. Αν ο κύκλος των 15 λεπτών το ανανέωνε, η
+    άρνηση «άλλαξε το οφειλόμενο» δεν θα ενεργοποιούνταν ποτέ."""
+    import automation
+    from db import db
+    inv = _issued(client, office.alpha)                                        # οφείλονται 124
+    tx_id = _bank_row(office, inv, match_ambiguous=True)                       # αμφίβολη → κάρτα ελέγχου
+    settings = _settings(office.firm_id)
+    _run(automation.job_reconcile(office.firm_id, settings))
+    assert _run(db.bank_transactions.find_one({"_id": tx_id}))["review_due"] == 124.0
+    assert _tx(client, office.alpha, "deposit", 200.0).status_code == 200
+    assert _tx(client, office.alpha, "apply_to_invoice", 84.0, invoice_id=inv["id"]).status_code == 200   # τώρα οφείλονται 40
+    _run(automation.job_reconcile(office.firm_id, settings))                   # ο επόμενος κύκλος
+    assert _run(db.bank_transactions.find_one({"_id": tx_id}))["review_due"] == 124.0
+    assert len(_notes("reconcile_review")) == 1                                # και καμία δεύτερη κάρτα
+    card = _notes("reconcile_review")[0]
+    with pytest.raises(automation.SettlementRefused) as refused:
+        _resolve(card, "confirm")
+    assert refused.value.reason == "due_changed" and _doc(inv["id"])["status"] == "issued"
+
+
+def test_settling_the_same_deposit_twice_from_a_stale_copy_is_idempotent(client, office):
+    import invoice_services as svc
+    from db import db
+    inv = _issued(client, office.alpha)
+    tx_id = _bank_row(office, inv)
+    stale = _run(db.bank_transactions.find_one({"_id": tx_id}))
+    kwargs = dict(settings={}, paid_via="bank_manual", status_on_success="manual_matched")
+    first = _run(svc.apply_bank_payment(office.firm_id, dict(stale), inv["id"], **kwargs))
+    second = _run(svc.apply_bank_payment(office.firm_id, dict(stale), inv["id"], **kwargs))
+    assert (first["status"], second["status"]) == ("paid", "linked")           # η ίδια κατάθεση δεν «διπλοπληρώνεται»
+
+
+def test_a_deposit_that_loses_the_race_to_another_deposit_is_refused(client, office, monkeypatch):
+    import invoice_services as svc
+    from db import db
+    inv = _issued(client, office.alpha)
+    first = _bank_row(office, inv, external_id="first")
+    second = _bank_row(office, inv, external_id="second")
+    oid = ObjectId(inv["id"])
+
+    async def racing_mark_paid(firm_id, invoice_id, paid_via="manual"):
+        await db.invoices.update_one({"_id": oid}, {"$set": {"status": "paid", "paid_via": "bank_auto"}})
+        await db.bank_transactions.update_one({"_id": first}, {"$set": {"match_status": "auto_confirmed"}})
+        return False                                           # ο ανταγωνιστής πρόλαβε τη μετάβαση issued → paid
+
+    monkeypatch.setattr(svc, "mark_paid", racing_mark_paid)
+    out = _run(svc.apply_bank_payment(
+        office.firm_id, _run(db.bank_transactions.find_one({"_id": second})), inv["id"],
+        settings={}, paid_via="bank_auto", status_on_success="auto_confirmed"))
+    assert out["status"] == "refused" and out["reason"] == "already_paid", out
+    assert _run(db.bank_transactions.find_one({"_id": second}))["match_status"] == "auto_matched"
+
+
+def test_two_failed_undos_for_different_clients_raise_two_cards(client, office, monkeypatch):
+    import routes_trust
+    from db import db
+    real = routes_trust._cas_update
+    for client_id in (office.alpha, office.beta):
+        inv = _issued(client, client_id)
+        assert _tx(client, client_id, "deposit", 200.0).status_code == 200
+        seen = {"n": 0}
+
+        async def failing_undo(collection, query, compute, attempts=8, _seen=seen):
+            if collection.name == "invoices":
+                _seen["n"] += 1
+                if _seen["n"] >= 2:
+                    raise RuntimeError("η βάση δεν απάντησε στην αναίρεση")
+            return await real(collection, query, compute, attempts)
+
+        async def boom(*a, **k):
+            raise RuntimeError("η βάση δεν απάντησε στο κλείσιμο")
+
+        monkeypatch.setattr(routes_trust, "_cas_update", failing_undo)
+        monkeypatch.setattr(routes_trust, "mark_paid", boom)
+        with pytest.raises(RuntimeError):
+            _tx(client, client_id, "apply_to_invoice", 124.0, invoice_id=inv["id"])
+        monkeypatch.undo()
+    cards = _notes("trust_needs_review")
+    assert len(cards) == 2 and len({c["dedupe_key"] for c in cards}) == 2
+
+
+def test_a_client_cannot_inject_issue_lock_fields_through_an_edit(client, office):
+    """Αν το PUT δεχόταν `issue_claim_at` στο μέλλον, το πρόχειρο θα φαινόταν «υπό έκδοση» για πάντα."""
+    draft = _draft(client, office.alpha)
+    body = {**_body(office.alpha, 100.0), "issue_claim_at": "2099-01-01T00:00:00+00:00", "issue_claim": "x",
+            "credit_claim": "y", "credit_claim_at": "2099-01-01T00:00:00+00:00"}
+    assert client.put(f"/api/invoices/{draft['id']}", json=body).status_code == 200
+    stored = _doc(draft["id"])
+    for field in ("issue_claim", "issue_claim_at", "credit_claim", "credit_claim_at"):
+        assert field not in stored, field
+    assert client.post(f"/api/invoices/{draft['id']}/issue").status_code == 200

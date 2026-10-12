@@ -30,6 +30,10 @@ async def _ensure_indexes():
     await db.outbox.create_index([("status", 1), ("next_attempt_at", 1)])
     await db.outbox.create_index([("firm_id", 1), ("dedupe_key", 1)])
     await db.automation_runs.create_index([("firm_id", 1), ("job", 1), ("started_at", -1)])
+    # Παλιές προτάσεις τράπεζας (χωρίς `match_ambiguous`) δεν πρέπει ποτέ να εξοφληθούν αυτόματα:
+    # ο worker μπορεί να ξεκινήσει πριν από το API που τις σημαίνει.
+    from invoice_services import flag_unchecked_bank_suggestions
+    await flag_unchecked_bank_suggestions()
 
 
 async def run_forever(interval_minutes: int):

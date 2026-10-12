@@ -20,6 +20,7 @@ import asyncio
 import logging
 import math
 import re
+import uuid
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal, Optional
@@ -287,6 +288,11 @@ async def create_transaction(payload: TransactionPayload, user: dict = Depends(g
         if payload.type == "apply_to_invoice":
             if invoice.get("status") != "issued":
                 raise HTTPException(status_code=400, detail="Εξοφλούνται μόνο εκδοθέντα, ανεξόφλητα τιμολόγια.")
+            if invoice.get("credit_note_id"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Για το τιμολόγιο{label} υπάρχει πιστωτικό· ο συμψηφισμός γίνεται από τον λογιστή, όχι με "
+                           "εξόφληση από τον πελατολογικό λογαριασμό.")
             settings = await db.settings.find_one(tenant_query(user)) or {}
             payable_value, _ = await payable_amount(firm_id, invoice, settings)
             payable = _dec(payable_value)
@@ -307,6 +313,7 @@ async def create_transaction(payload: TransactionPayload, user: dict = Depends(g
     # Σειρά: λογαριασμός → τιμολόγιο → ledger → κλείσιμο τιμολογίου. Αν δεν χωρέσει το ποσό στον
     # λογαριασμό, το τιμολόγιο δεν έχει ακόμη πειραχτεί· αν κάτι αποτύχει αργότερα, αναιρούνται όλα.
     state = {"moved": False, "claimed": False, "ledger_id": None}
+    incident = uuid.uuid4().hex            # κάθε περιστατικό έχει δικό του κλειδί: δύο αποτυχίες με ίδιο ποσό δεν συγχωνεύονται
 
     async def undo() -> bool:
         """Αναιρεί ό,τι έχει γίνει ως τώρα. False = η αναίρεση απέτυχε και θέλει χειροκίνητο έλεγχο."""
@@ -335,7 +342,7 @@ async def create_transaction(payload: TransactionPayload, user: dict = Depends(g
                 firm_id, f"Κίνηση πελατολογικού {amount:.2f} € που δεν αναιρέθηκε πλήρως",
                 f"Μια κίνηση ({payload.type}) για τον «{account.client_name}» απέτυχε στη μέση και η αυτόματη αναίρεση δεν "
                 f"ολοκληρώθηκε. Ελέγξτε το υπόλοιπο του λογαριασμού, το ledger και το τιμολόγιο{label} πριν συνεχίσετε.",
-                str(invoice["_id"]) if invoice else "", f"trust_undo:{acc_id}:{state['ledger_id']}:{amount}")
+                str(invoice["_id"]) if invoice else "", f"trust_undo:{acc_id}:{incident}")
         return ok
 
     try:

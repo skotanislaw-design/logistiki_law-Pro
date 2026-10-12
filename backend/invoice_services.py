@@ -205,6 +205,8 @@ async def build_payment_link(invoice: dict, settings: dict) -> str:
         if not api_key or api_key.endswith("_emergent"):
             return ""
         _stripe.api_key = api_key
+        if invoice.get("credit_note_id"):
+            return ""                       # υπάρχει πιστωτικό: το ποσό πληρωμής δεν είναι πια το οφειλόμενο του τιμολογίου
         total, _withheld = await outstanding_amount(invoice.get("firm_id", ""), invoice, settings)
         if total <= 0:
             return ""
@@ -259,6 +261,11 @@ async def send_reminder(firm_id: str, invoice: dict, settings: dict, client: dic
         raise InvoiceEmailError("Το τιμολόγιο είναι ήδη εξοφλημένο — δεν χρειάζεται υπενθύμιση.")
     if invoice.get("status") != "issued":
         raise InvoiceEmailError("Μόνο εκδοθέντα τιμολόγια μπορούν να λάβουν υπενθύμιση. Εκδώστε πρώτα το τιμολόγιο.")
+    if invoice.get("credit_note_id"):
+        # Η υπενθύμιση αναγράφει το οφειλόμενο του τιμολογίου· με πιστωτικό (ολικό ή μερικό) το ποσό αυτό δεν
+        # ισχύει πια και ο πελάτης θα έβλεπε χρέωση που δεν οφείλει.
+        raise InvoiceEmailError("Για το τιμολόγιο υπάρχει πιστωτικό — το ποσό που οφείλεται το ορίζει ο λογιστής· "
+                                "δεν στέλνεται υπενθύμιση εξόφλησης.")
     client = client or await load_client(firm_id, invoice)
     if not client or not client.get("email"):
         raise InvoiceEmailError("Ο πελάτης δεν έχει καταχωρημένο email. Προσθέστε email στην καρτέλα του πελάτη.")
@@ -304,10 +311,19 @@ async def mark_paid(firm_id: str, invoice_id, paid_via: str = "manual") -> bool:
 
 
 def to_cents(value) -> int:
-    """Ποσό σε ακέραια λεπτά. Οι συγκρίσεις ποσών γίνονται σε λεπτά, όχι σε float: 100,01 − 100,00 δίνει
+    """Ποσό σε ακέραια λεπτά. Οι συγκρίσεις ποσών γίνονται σε λεπτά, όχι σε float: 1240,01 − 1240,00 δίνει
     0,009999999999990905, δηλαδή «μικρότερο από 1 λεπτό» ενώ είναι ακριβώς ένα λεπτό διαφορά."""
     from decimal import Decimal, ROUND_HALF_UP
     return int((Decimal(str(value if value is not None else 0)) * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+def deposit_cents(value) -> int:
+    """Ποσό κατάθεσης σε λεπτά, με την ίδια κανονικοποίηση παντού (πρόταση αντιστοίχισης και εξόφληση).
+
+    Πρώτα στρογγυλοποίηση στα 2 δεκαδικά, μετά μετατροπή σε λεπτά: αλλιώς μια γραμμή extrait με 3
+    δεκαδικά (100,005) μπορούσε να φαίνεται «ακριβής» στην πρόταση και «διαφορετική» στην εξόφληση.
+    """
+    return to_cents(round(float(value or 0), 2))
 
 
 def _eur(v) -> str:
@@ -335,6 +351,31 @@ async def close_tx_notifications(firm_id: str, tx_id, resolution: str, by: str =
                              "type": {"$in": ["reconcile_review", "reconcile_conflict"]}}),
         {"$set": {"resolved_at": _now(), "resolved_by": by, "resolution": resolution, "read": True}})
     return result.modified_count
+
+
+async def flag_unchecked_bank_suggestions() -> int:
+    """Παλιές, μη επιβεβαιωμένες προτάσεις τράπεζας δεν έχουν περάσει τον έλεγχο μονοσημαντότητας.
+
+    Οι κινήσεις που προτάθηκαν πριν από τον γύρο 4 δεν έχουν το πεδίο `match_ambiguous`, δηλαδή
+    δεν ξέρουμε αν υπήρχε και δεύτερο τιμολόγιο του ίδιου πελάτη με το ίδιο ποσό. Σημαίνονται ως
+    «όχι μονοσήμαντες»: δεν εξοφλούνται αυτόματα ούτε μαζικά — τις επιβεβαιώνει ένας άνθρωπος.
+    Idempotent· δεν αγγίζει επιβεβαιωμένες κινήσεις ούτε νέες προτάσεις (που φέρουν το πεδίο).
+
+    Τρέχει στην εκκίνηση του API **και** του worker: ο worker μπορεί να ξεκινήσει πρώτος, και ο
+    κύκλος συμφωνίας δεν πρέπει ποτέ να δει παλιά πρόταση ως «μονοσήμαντη». Επιπλέον όλοι οι
+    αναγνώστες του πεδίου θεωρούν το απόν πεδίο ως «αμφίβολη» (`tx.get("match_ambiguous", True)`),
+    ώστε να μη χρειάζεται να προλάβει η σήμανση.
+    """
+    try:
+        result = await db.bank_transactions.update_many(
+            {"match_status": "auto_matched", "match_ambiguous": {"$exists": False}},
+            {"$set": {"match_ambiguous": True}})
+        if result.modified_count:
+            logger.warning("bank_transactions: %d παλιές προτάσεις σημάνθηκαν για ατομικό έλεγχο", result.modified_count)
+        return result.modified_count
+    except Exception as e:  # noqa: BLE001 — η εκκίνηση δεν πρέπει να εξαρτάται από αυτό
+        logger.error("bank_transactions: αποτυχία σήμανσης παλιών προτάσεων: %s", e)
+        return 0
 
 
 async def _claimed_by_other_deposit(firm_id: str, invoice_id: str, tx_id) -> bool:
@@ -385,6 +426,9 @@ async def apply_bank_payment(firm_id: str, tx: dict, invoice_id, *, settings: di
     status = invoice.get("status")
     if status not in ("issued", "paid"):
         return refuse("invoice_not_open", f"Το τιμολόγιο {number} δεν είναι ανοιχτό (κατάσταση: {status}) και δεν μπορεί να εξοφληθεί.")
+    if invoice.get("credit_note_id"):
+        return refuse("has_credit_note", f"Για το τιμολόγιο {number} υπάρχει πιστωτικό: η κατάθεση {_eur(amount)} πρέπει να "
+                                         "συμψηφιστεί από τον λογιστή (ολικό ή μερικό πιστωτικό), όχι να εξοφλήσει αυτόματα το τιμολόγιο.")
 
     def already_paid_message() -> str:
         return (f"Το τιμολόγιο {number} έχει ήδη εξοφληθεί. Η κατάθεση {_eur(amount)} μπορεί να είναι διπλοπληρωμή "
@@ -397,7 +441,7 @@ async def apply_bank_payment(firm_id: str, tx: dict, invoice_id, *, settings: di
 
     due, _withheld = await outstanding_amount(firm_id, invoice, settings)
     difference = round(amount - due, 2)
-    exact = to_cents(amount) == to_cents(due)
+    exact = deposit_cents(amount) == to_cents(due)
     if not exact and not accept_difference:
         return refuse(
             "amount_mismatch",
@@ -534,6 +578,19 @@ async def issue_draft(firm_id: str, doc: dict, settings: dict) -> dict:
         elif total <= 0:
             raise InvoiceWorkflowError("Το σύνολο του τιμολογίου πρέπει να είναι θετικό για να εκδοθεί.")
 
+        if doc.get("credit_note_for"):
+            # Το αρχικό μπορεί να ακυρώθηκε αφότου φτιάχτηκε το πρόχειρο πιστωτικό (π.χ. ακύρωση και πιστωτικό
+            # ταυτόχρονα από δύο χρήστες): πιστωτικό πάνω σε ακυρωμένο τιμολόγιο θα αναιρούσε το ίδιο ποσό δύο φορές.
+            try:
+                original = await db.invoices.find_one(
+                    firm_query(firm_id, {"_id": ObjectId(doc["credit_note_for"])}), {"status": 1, "number": 1})
+            except Exception:  # noqa: BLE001 — άκυρο id: το πιστωτικό δεν δένεται με υπαρκτό τιμολόγιο
+                original = None
+            if original is not None and original.get("status") == "cancelled":
+                raise InvoiceWorkflowError(
+                    f"Το αρχικό τιμολόγιο {original.get('number') or '(χωρίς αριθμό)'} έχει ακυρωθεί· το πιστωτικό "
+                    "δεν χρειάζεται. Διαγράψτε το πρόχειρο πιστωτικό.")
+
         try:
             inv_date = _date.fromisoformat((doc.get("date") or "")[:10])
         except ValueError:
@@ -581,8 +638,20 @@ async def issue_draft(firm_id: str, doc: dict, settings: dict) -> dict:
         # Και σε ακύρωση του αιτήματος (CancelledError): η αποδέσμευση ολοκληρώνεται ούτως ή άλλως.
         async def cleanup():
             await _release_issue_claim(firm_id, doc["_id"], token)
-            if allocated:
-                await release_invoice_number(firm_id, allocated)
+            if not allocated:
+                return
+            # Η τελική εγγραφή μπορεί να έχει ήδη εφαρμοστεί και να απέτυχε μόνο η αναμονή της (ακύρωση
+            # αιτήματος, διακοπή σύνδεσης): ο αριθμός τότε ανήκει στο εκδοθέν παραστατικό. Αν επιστρεφόταν, ο
+            # επόμενος θα έπαιρνε τον ίδιο αριθμό — διπλός αριθμός σε φορολογική σειρά. Ένα κενό είναι
+            # ασφαλέστερο από ένα διπλότυπο, γι' αυτό αν η κατάσταση δεν μπορεί να διαβαστεί, δεν επιστρέφεται.
+            try:
+                current = await db.invoices.find_one(firm_query(firm_id, {"_id": doc["_id"]}), {"status": 1, "number": 1})
+            except Exception:  # noqa: BLE001
+                logger.warning("Δεν επιστράφηκε ο αριθμός %s: δεν διαβάστηκε η κατάσταση του τιμολογίου", allocated)
+                return
+            if current is not None and current.get("status") != "draft" and current.get("number") == allocated:
+                return
+            await release_invoice_number(firm_id, allocated)
         await asyncio.shield(cleanup())
         raise
 
@@ -647,9 +716,62 @@ async def cancel_in_mydata(firm_id: str, invoice: dict, settings: dict) -> dict:
             "mydata_cancellation_mark": result["cancellation_mark"],
             "mydata_cancelled_at": _now(),
         })
-    await db.invoices.update_one(firm_query(firm_id, {"_id": invoice["_id"]}), {"$set": update})
-    await _warn_trust_money(firm_id, invoice, "Ακυρώθηκε")
+    # Όσο περιμέναμε την ΑΑΔΕ το τιμολόγιο μπορεί να άλλαξε (π.χ. να εξοφλήθηκε από πελατολογικό). Η ακύρωση
+    # στην ΑΑΔΕ έχει ήδη γίνει και πρέπει να καταγραφεί· ό,τι εισπράχθηκε στο μεταξύ όμως δεν πρέπει να περάσει
+    # απαρατήρητο, γι' αυτό οι ειδοποιήσεις βγαίνουν από την κατάσταση **τη στιγμή της εγγραφής**, όχι από την
+    # ανάγνωση που έγινε πριν την κλήση.
+    from pymongo import ReturnDocument
+    before = await db.invoices.find_one_and_update(
+        firm_query(firm_id, {"_id": invoice["_id"]}), {"$set": update}, return_document=ReturnDocument.BEFORE)
+    current = before or invoice
+    await _warn_trust_money(firm_id, current, "Ακυρώθηκε")
+    if current.get("status") == "paid" and current.get("paid_via") != "trust":
+        await _warn_paid_then_cancelled(firm_id, current)
     return update
+
+
+async def _warn_paid_then_cancelled(firm_id: str, invoice: dict) -> None:
+    """Ειδοποίηση: το τιμολόγιο ακυρώθηκε στην ΑΑΔΕ τη στιγμή που εξοφλούνταν από άλλο κανάλι."""
+    from automation import notify
+    number = invoice.get("number") or "τιμολόγιο"
+    try:
+        await notify(
+            firm_id, "cancelled_after_payment", "critical",
+            f"Ακυρώθηκε το {number} ενώ εξοφλήθηκε στο μεταξύ",
+            f"Το {number} ακυρώθηκε στην ΑΑΔΕ τη στιγμή που εξοφλούνταν (τρόπος: {invoice.get('paid_via') or 'άγνωστος'}). "
+            "Ελέγξτε αν ο πελάτης πλήρωσε και αποφασίστε για επιστροφή ή συμψηφισμό.",
+            entity="invoice", entity_id=str(invoice["_id"]), requires_action=True,
+            dedupe_key=f"cancelled_after_payment:{invoice['_id']}")
+    except Exception:  # noqa: BLE001 — η ειδοποίηση δεν πρέπει να μπλοκάρει την ακύρωση
+        logger.exception("Δεν καταχωρήθηκε ειδοποίηση για το %s", number)
+
+
+CREDIT_CLAIM_TTL_SECONDS = 120
+
+
+async def _claim_for_credit_note(firm_id: str, invoice_id) -> str | None:
+    """Κλειδώνει ατομικά το αρχικό τιμολόγιο ώστε να δημιουργηθεί **ένα** πιστωτικό. None = δεν χωρά.
+
+    Δύο ταυτόχρονα αιτήματα (διπλό κλικ, δύο χρήστες) έβλεπαν και τα δύο «δεν έχει πιστωτικό»,
+    έφτιαχναν από ένα πρόχειρο, και το δεύτερο έγραφε πάνω στο `credit_note_id` του πρώτου: το πρώτο
+    πρόχειρο έμενε ορφανό και, αν εκδιδόταν, πίστωνε το ίδιο τιμολόγιο δεύτερη φορά. Το κλείδωμα
+    λήγει μόνο του (TTL) αν η διεργασία πεθάνει στη μέση.
+    """
+    import uuid
+    from datetime import timedelta
+    from pymongo import ReturnDocument
+    token = uuid.uuid4().hex
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=CREDIT_CLAIM_TTL_SECONDS)).isoformat()
+    claimed = await db.invoices.find_one_and_update(
+        {"$and": [
+            {"_id": invoice_id, "firm_id": firm_id},
+            {"$or": [{"credit_note_id": {"$exists": False}}, {"credit_note_id": None}, {"credit_note_id": ""}]},
+            {"$or": [{"credit_claim_at": {"$exists": False}}, {"credit_claim_at": None}, {"credit_claim_at": {"$lt": cutoff}}]},
+        ]},
+        {"$set": {"credit_claim": token, "credit_claim_at": _now()}},
+        return_document=ReturnDocument.AFTER,
+    )
+    return token if claimed else None
 
 
 async def build_credit_note(firm_id: str, invoice: dict, user_email: str,
@@ -720,10 +842,50 @@ async def build_credit_note(firm_id: str, invoice: dict, user_email: str,
     credit.vat_breakdown = totals["vat_breakdown"]
     # Χωρίς αριθμό μέχρι την έκδοση (σειρά ΠΙΣ) — ένα πρόχειρο πιστωτικό που θα διαγραφεί
     # δεν πρέπει να αφήνει κενό στη σειρά.
-    result = await db.invoices.insert_one(credit.to_mongo())
-    await db.invoices.update_one(
-        firm_query(firm_id, {"_id": invoice["_id"]}),
-        {"$set": {"credit_note_id": str(result.inserted_id)}},
-    )
+    #
+    # Σειρά: κλείδωμα του αρχικού → έλεγχος στο φρέσκο έγγραφο → εισαγωγή πρόχειρου → σύνδεση.
+    # Αν κάτι αποτύχει (ή ακυρωθεί το αίτημα) αφαιρείται το πρόχειρο και λύνεται το κλείδωμα.
+    token = await _claim_for_credit_note(firm_id, invoice["_id"])
+    if token is None:
+        raise InvoiceWorkflowError(
+            "Για αυτό το τιμολόγιο εκδίδεται ήδη πιστωτικό (ή έχει ήδη εκδοθεί). Ανανεώστε τη σελίδα και ελέγξτε.")
+    # Το id του πρόχειρου ορίζεται πριν την εισαγωγή: αν η εγγραφή εφαρμοστεί και χαθεί μόνο η απάντηση (ακύρωση
+    # αιτήματος, διακοπή σύνδεσης), ο καθαρισμός πρέπει να ξέρει ποιο έγγραφο να αφαιρέσει.
+    credit_doc = credit.to_mongo()
+    credit_doc["_id"] = inserted_id = ObjectId()
+    insert_attempted = False
+
+    async def cleanup() -> None:
+        try:
+            if insert_attempted:
+                current = await db.invoices.find_one(firm_query(firm_id, {"_id": invoice["_id"]}), {"credit_note_id": 1})
+                if current is not None and current.get("credit_note_id") == str(inserted_id):
+                    return                       # η σύνδεση πρόλαβε να γραφτεί: το πρόχειρο μένει
+                await db.invoices.delete_one(firm_query(firm_id, {"_id": inserted_id, "status": "draft"}))
+        except Exception:  # noqa: BLE001
+            logger.warning("Δεν αφαιρέθηκε το ημιτελές πρόχειρο πιστωτικό του %s", invoice.get("number"))
+        finally:
+            try:
+                await db.invoices.update_one(
+                    firm_query(firm_id, {"_id": invoice["_id"], "credit_claim": token}),
+                    {"$unset": {"credit_claim": "", "credit_claim_at": ""}})
+            except Exception:  # noqa: BLE001 — λήγει μόνο του μετά το TTL
+                logger.warning("Δεν λύθηκε το κλείδωμα πιστωτικού του %s", invoice.get("number"))
+
+    try:
+        fresh = await db.invoices.find_one(firm_query(firm_id, {"_id": invoice["_id"]}))
+        if (not fresh or fresh.get("status") == "cancelled" or fresh.get("mydata_status") != "synced"
+                or not fresh.get("mydata_mark")):
+            raise InvoiceWorkflowError("Το τιμολόγιο άλλαξε στο μεταξύ (ακυρώθηκε ή δεν είναι πια διαβιβασμένο) — δεν δημιουργήθηκε πιστωτικό.")
+        insert_attempted = True
+        await db.invoices.insert_one(credit_doc)
+        linked = await db.invoices.update_one(
+            firm_query(firm_id, {"_id": invoice["_id"], "credit_claim": token}),
+            {"$set": {"credit_note_id": str(inserted_id)}, "$unset": {"credit_claim": "", "credit_claim_at": ""}})
+        if linked.matched_count == 0:
+            raise InvoiceWorkflowError("Το κλείδωμα του πιστωτικού έληξε πριν ολοκληρωθεί — δεν δημιουργήθηκε πιστωτικό. Δοκιμάστε ξανά.")
+    except BaseException:
+        await asyncio.shield(cleanup())
+        raise
     await _warn_trust_money(firm_id, invoice, "Εκδίδεται πιστωτικό για")
-    return await db.invoices.find_one(firm_query(firm_id, {"_id": result.inserted_id}))
+    return await db.invoices.find_one(firm_query(firm_id, {"_id": inserted_id}))

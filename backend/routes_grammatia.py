@@ -104,7 +104,12 @@ async def update_grammatio(gid: str, payload: Grammatio, user: dict = Depends(ge
     _validate_amounts(payload)
     data = payload.model_dump(exclude={"id", "number", "created_at", "created_by", "status", "issued_at", "invoice_id", "firm_id"})
     data["total"] = round(payload.reference_amount + payload.contributions_amount + payload.vat_amount, 2)
-    await db.grammatia.update_one(tenant_query(user, {"_id": ObjectId(gid)}), {"$set": data})
+    # Το φίλτρο κατάστασης είναι αναγκαίο: ανάμεσα στην ανάγνωση και στη γραφή το γραμμάτιο μπορεί να
+    # εκδόθηκε (και να πήγε στο portal ή να τιμολογήθηκε), και η γραφή θα άλλαζε τα ποσά ενός εκδοθέντος.
+    updated = await db.grammatia.update_one(
+        tenant_query(user, {"_id": ObjectId(gid), "status": "draft"}), {"$set": data})
+    if updated.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Το γραμμάτιο εκδόθηκε στο μεταξύ — δεν τροποποιείται πια.")
     doc = await db.grammatia.find_one(tenant_query(user, {"_id": ObjectId(gid)}))
     return Grammatio.from_mongo(doc)
 

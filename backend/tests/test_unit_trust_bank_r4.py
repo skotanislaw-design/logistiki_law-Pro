@@ -611,7 +611,7 @@ def test_duplicate_deposits_are_sent_to_the_inbox_not_absorbed(client, office):
         _run(db.bank_transactions.insert_one({
             "firm_id": office.firm_id, "date": _today(), "description": f"ΑΛΦΑ {n}", "amount": 124.0,
             "external_id": f"dup-{n}", "match_status": "auto_matched", "match_confidence": 95,
-            "matched_invoice_id": inv["id"], "matched_invoice_number": inv["number"]}))
+            "match_ambiguous": False, "matched_invoice_id": inv["id"], "matched_invoice_number": inv["number"]}))
     assert _reconcile_job(office.firm_id) == {"confirmed": 1, "sent_for_review": 1}
     first, second = _bank_txs()
     assert first["match_status"] == "auto_confirmed"
@@ -633,7 +633,7 @@ def test_inbox_confirmation_follows_the_same_rules(client, office):
     inv = _issued(client, office.alpha)
     _run(db.bank_transactions.insert_one({
         "firm_id": office.firm_id, "date": _today(), "description": "ΑΛΦΑ", "amount": 124.0, "external_id": "inbox-1",
-        "match_status": "auto_matched", "match_confidence": 70, "matched_invoice_id": inv["id"],
+        "match_status": "auto_matched", "match_confidence": 70, "match_ambiguous": False, "matched_invoice_id": inv["id"],
         "matched_invoice_number": inv["number"]}))
     assert _reconcile_job(office.firm_id) == {"confirmed": 0, "sent_for_review": 1}
     note = _notifications("reconcile_review")[0]
@@ -654,7 +654,7 @@ def test_inbox_confirmation_accepts_a_difference_and_records_it(client, office):
     inv = _issued(client, office.alpha)
     _run(db.bank_transactions.insert_one({
         "firm_id": office.firm_id, "date": _today(), "description": "ΑΛΦΑ", "amount": 123.5, "external_id": "inbox-2",
-        "match_status": "auto_matched", "match_confidence": 80, "matched_invoice_id": inv["id"],
+        "match_status": "auto_matched", "match_confidence": 80, "match_ambiguous": False, "matched_invoice_id": inv["id"],
         "matched_invoice_number": inv["number"]}))
     _reconcile_job(office.firm_id)
     note = _notifications("reconcile_review")[0]
@@ -669,7 +669,7 @@ def test_stale_notification_does_not_touch_an_already_settled_movement(client, o
     inv = _issued(client, office.alpha)
     tx_id = _run(db.bank_transactions.insert_one({
         "firm_id": office.firm_id, "date": _today(), "description": "ΑΛΦΑ", "amount": 124.0, "external_id": "stale-1",
-        "match_status": "auto_matched", "match_confidence": 70, "matched_invoice_id": inv["id"],
+        "match_status": "auto_matched", "match_confidence": 70, "match_ambiguous": False, "matched_invoice_id": inv["id"],
         "matched_invoice_number": inv["number"]})).inserted_id
     _reconcile_job(office.firm_id)
     note = _notifications("reconcile_review")[0]
@@ -685,7 +685,8 @@ def test_bulk_confirmation_takes_only_the_safe_ones(client, office):
     exact = _issued(client, office.alpha)
     off = _issued(client, office.beta)
     ambiguous = _issued(client, office.alpha, net=200.0)
-    base = {"firm_id": office.firm_id, "date": _today(), "match_status": "auto_matched", "match_confidence": 70}
+    base = {"firm_id": office.firm_id, "date": _today(), "match_status": "auto_matched", "match_confidence": 70,
+            "match_ambiguous": False}
     _run(db.bank_transactions.insert_many([
         {**base, "description": "α", "amount": 124.0, "external_id": "b1", "matched_invoice_id": exact["id"], "matched_invoice_number": exact["number"]},
         {**base, "description": "β", "amount": 123.0, "external_id": "b2", "matched_invoice_id": off["id"], "matched_invoice_number": off["number"]},

@@ -55,6 +55,9 @@ async def _validate_invoice_and_get_amount(invoice_id: str, firm_id: str | None 
     if inv.get("status") != "issued":
         # Πρόχειρο ή ακυρωμένο παραστατικό δεν εισπράττεται.
         raise HTTPException(status_code=400, detail="Πληρώνονται μόνο εκδοθέντα, ανεξόφλητα τιμολόγια.")
+    if inv.get("credit_note_id"):
+        # Το οφειλόμενο δεν συμψηφίζεται με το πιστωτικό (ολικό ή μερικό): το ποσό το ορίζει το γραφείο.
+        raise HTTPException(status_code=400, detail="Για το τιμολόγιο υπάρχει πιστωτικό· επικοινωνήστε με το γραφείο για το ποσό που οφείλεται.")
     # Ο πελάτης καταβάλλει το οφειλόμενο: το πληρωτέο (μετά την παρακράτηση που κρατά ο ίδιος),
     # μείον ό,τι έχει ήδη εξοφληθεί από τον πελατολογικό του λογαριασμό. Όχι το ακαθάριστο.
     from invoice_services import outstanding_amount

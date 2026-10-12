@@ -4,6 +4,7 @@ Auto-matches κάθε κίνηση με ανοιχτό τιμολόγιο βάσ
 """
 import csv
 import io
+import math
 import re
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -16,7 +17,7 @@ from auth import get_current_user, require_admin
 from pydantic import BaseModel
 from tenant import tenant_query, firm_id_for
 from invoice_services import (
-    apply_bank_payment, close_tx_notifications, firm_query, load_client, outstanding_amount, to_cents,
+    apply_bank_payment, close_tx_notifications, deposit_cents, firm_query, load_client, outstanding_amount, to_cents,
 )
 
 router = APIRouter(prefix="/bank", tags=["bank"])
@@ -38,9 +39,12 @@ def _parse_amount(s: str) -> float:
     elif "," in s:
         s = s.replace(",", ".")
     try:
-        return float(s)
+        value = float(s)
     except ValueError:
         return 0.0
+    # «nan» και «inf» αναγνωρίζονται από το float() αλλά δεν είναι ποσά: μια κατάθεση «nan» περνούσε
+    # στη βάση και τα σκορ/τα αθροίσματα γίνονταν ασύγκριτα.
+    return value if math.isfinite(value) else 0.0
 
 
 def _parse_date(s: str) -> str:
@@ -181,6 +185,12 @@ def _due(inv: dict) -> float:
     return float(inv.get("total") or 0)
 
 
+def _number_in(inv: dict, tx_desc: str) -> bool:
+    """Αναγράφεται ο αριθμός του τιμολογίου στην αιτιολογία της κατάθεσης;"""
+    number = (inv.get("number", "") or "").lower()
+    return bool(number and number in tx_desc)
+
+
 def match_details(tx: dict, invoices: list[dict]) -> dict:
     """Το τιμολόγιο που πιθανότατα εξοφλεί η κατάθεση και πόσο σίγουρη είναι η πρόταση.
 
@@ -199,7 +209,7 @@ def match_details(tx: dict, invoices: list[dict]) -> dict:
     tx_desc = (tx.get("description", "") + " " + tx.get("reference", "")).lower()
     candidates = []
     for inv in invoices:
-        difference_cents = abs(to_cents(_due(inv)) - to_cents(tx["amount"]))
+        difference_cents = abs(to_cents(_due(inv)) - deposit_cents(tx["amount"]))
         if difference_cents == 0:
             score, exact = 50, True
         elif difference_cents < 100:
@@ -232,8 +242,7 @@ def match_details(tx: dict, invoices: list[dict]) -> dict:
                 score += int(ratio * 10)
 
         # Αριθμός τιμολογίου στην αιτιολογία
-        inv_num = (inv.get("number", "") or "").lower()
-        numbered = bool(inv_num and inv_num in tx_desc)
+        numbered = _number_in(inv, tx_desc)
         if numbered:
             score += 20
 
@@ -260,7 +269,10 @@ def match_details(tx: dict, invoices: list[dict]) -> dict:
     # Η αιτιολογία κατονομάζει τον αριθμό ΑΛΛΟΥ πιθανού τιμολογίου από αυτό που προκρίνεται (π.χ. τρίτος πληρώνει
     # το τιμολόγιο ενός πελάτη και το όνομά του ταιριάζει με άλλο τιμολόγιο του ίδιου ποσού). Το όνομα και η
     # πρόσφατη ημερομηνία δεν αρκούν για να παρακαμφθεί ρητός αριθμός — χρειάζεται άνθρωπος.
-    named_elsewhere = bool(not best["numbered"] and any(r["numbered"] for r in rivals))
+    # Ελέγχονται ΟΛΑ τα ανοιχτά τιμολόγια, όχι μόνο όσα ταιριάζουν στο ποσό: μια δόση που αναγράφει τον αριθμό
+    # ενός μεγαλύτερου τιμολογίου δεν πρέπει να εξοφλήσει αυτόματα το διπλανό, ίδιου ποσού με την κατάθεση.
+    named_elsewhere = bool(not best["numbered"] and any(
+        _number_in(i, tx_desc) for i in invoices if i is not best["inv"]))
     ambiguous = bool(close) or same_client_same_amount or named_elsewhere
     confidence = best["score"]
     if ambiguous or not best["exact"]:
@@ -436,7 +448,7 @@ async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, acce
             {"$set": {"match_status": "ignored", "matched_invoice_id": None, "matched_invoice_number": None,
                       "match_ambiguous": False}},
         )
-        await close_tx_notifications(firm_id_for(user), tx_id, "ignored", user["email"])
+        await close_tx_notifications(firm_id_for(user), tx["_id"], "ignored", user["email"])
         return {"message": "Η κίνηση σημειώθηκε ως αγνοητέα"}
 
     if not invoice_id:
@@ -452,7 +464,7 @@ async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, acce
             detail += " Αν η διαφορά είναι αποδεκτή (π.χ. προμήθεια τράπεζας), επιβεβαιώστε ρητά με accept_difference=true."
         raise HTTPException(status_code=REFUSAL_STATUS.get(result["reason"], 409), detail=detail)
 
-    await close_tx_notifications(firm_id_for(user), tx_id, "already_settled", user["email"])
+    await close_tx_notifications(firm_id_for(user), tx["_id"], "already_settled", user["email"])
     message = ("Συνδέθηκε και το τιμολόγιο σημειώθηκε ως εξοφλημένο." if result["status"] == "paid"
                else "Η κατάθεση συνδέθηκε με το τιμολόγιο, που ήταν ήδη σημειωμένο ως εξοφλημένο.")
     if result["difference"]:
@@ -474,7 +486,7 @@ async def confirm_auto_matches(user: dict = Depends(get_current_user)):
     async for tx in db.bank_transactions.find(tenant_query(user, {"match_status": "auto_matched"})):
         if not tx.get("matched_invoice_id"):
             continue
-        if tx.get("match_ambiguous"):
+        if tx.get("match_ambiguous", True):          # απόν πεδίο (παλιά εγγραφή) = αμφίβολη
             skipped.append({"id": str(tx["_id"]), "reason": "ambiguous",
                             "message": "Ταιριάζουν περισσότερα από ένα τιμολόγια — επιλέξτε ατομικά."})
             continue

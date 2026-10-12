@@ -171,6 +171,15 @@ async def resolve_notification(firm_id: str, notification_id: str, user_email: s
                 if check["status"] == "refused":
                     raise SettlementRefused(check["reason"], check["message"])
                 seen_due = tx.get("review_due")
+                if seen_due is None and abs(check["difference"]) >= 1:
+                    # Κάρτα που δημιουργήθηκε πριν καταγράφεται το οφειλόμενο (ή χωρίς αυτό): δεν ξέρουμε
+                    # ποιο ποσό είδε ο άνθρωπος. Μικρές διαφορές (< 1 €) περνούν όπως πάντα· μεγάλες όχι.
+                    raise SettlementRefused(
+                        "due_unverified",
+                        f"Η κατάθεση ({_fmt(tx.get('amount'))}) διαφέρει από το τρέχον οφειλόμενο του τιμολογίου "
+                        f"({_fmt(check['due'])}) κατά {_fmt(abs(check['difference']))}, και η ειδοποίηση δεν έχει "
+                        "καταγεγραμμένο το ποσό που είχατε δει — δεν εξοφλήθηκε τίποτα. Επιλέξτε «Όχι, άλλο "
+                        "τιμολόγιο» ή «Αγνόησε την κίνηση» και ελέγξτε την κατάθεση με τον λογιστή.")
                 if seen_due is not None and to_cents(check["due"]) != to_cents(seen_due):
                     raise SettlementRefused(
                         "due_changed",
@@ -255,6 +264,8 @@ async def record_run(firm_id: str, job: str, func, *args, **kwargs) -> dict:
 def reminder_due(invoice: dict, settings: dict, today: _date | None = None) -> bool:
     if invoice.get("status") != "issued":
         return False
+    if invoice.get("credit_note_id"):
+        return False        # υπάρχει πιστωτικό: το ποσό που οφείλεται δεν είναι πια το ποσό του τιμολογίου
     today = today or _date.today()
     try:
         issued = _date.fromisoformat((invoice.get("date") or "")[:10])
@@ -453,13 +464,18 @@ async def job_reconcile(firm_id: str, settings: dict) -> dict:
         inv_id = tx.get("matched_invoice_id")
         if not inv_id:
             continue
-        confident = bool(threshold) and int(tx.get("match_confidence") or 0) >= threshold and not tx.get("match_ambiguous")
+        # Χωρίς σήμανση (παλιά εγγραφή) η πρόταση θεωρείται αμφίβολη — βλ. flag_unchecked_bank_suggestions.
+        ambiguous = bool(tx.get("match_ambiguous", True))
+        confident = bool(threshold) and int(tx.get("match_confidence") or 0) >= threshold and not ambiguous
         result = await apply_bank_payment(
             firm_id, tx, inv_id, settings=settings, paid_via="bank_auto",
             status_on_success="auto_confirmed", dry_run=not confident)
 
         if confident and result["status"] in ("paid", "linked"):
             confirmed += 1
+            # Αν η κίνηση είχε πάει νωρίτερα για έλεγχο (π.χ. χαμηλότερη βεβαιότητα, άλλο οφειλόμενο, αλλαγή
+            # ορίου), η κάρτα έμενε ανοιχτή με «Ναι, εξοφλήθηκε» πάνω σε κίνηση που έχει πια εξοφληθεί.
+            await close_tx_notifications(firm_id, tx["_id"], "already_settled", "autopilot")
             await notify(firm_id, "reconciled", "success", f"Εξοφλήθηκε το {tx.get('matched_invoice_number')}",
                          f"Κατάθεση {_fmt(tx.get('amount'))} στις {tx.get('date')} — «{(tx.get('description') or '')[:60]}» (βεβαιότητα {tx.get('match_confidence')}%)"
                          + ("" if result["status"] == "paid" else " — το τιμολόγιο ήταν ήδη εξοφλημένο"),
@@ -485,7 +501,7 @@ async def job_reconcile(firm_id: str, settings: dict) -> dict:
             continue
 
         if not tx.get("review_notified"):
-            if tx.get("match_ambiguous"):
+            if ambiguous:
                 why = "Ταιριάζουν και άλλα τιμολόγια με το ίδιο ποσό — επιλέξτε ποιο εξοφλείται."
             elif result["status"] == "refused":          # amount_mismatch
                 why = result["message"]

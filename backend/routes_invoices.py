@@ -158,6 +158,9 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
     _validate_invoice_payload(payload)
     if is_credit_note:
         payload.invoice_type = existing.get("invoice_type", "")
+        # Το πιστωτικό δένεται με τον πελάτη του αρχικού: δεν αλλάζει πελάτη (θα πίστωνε άλλον πελάτη
+        # με το MARK ξένου τιμολογίου). Ό,τι client_id κι αν σταλεί, κρατιέται αυτό του πρόχειρου.
+        payload.client_id = existing.get("client_id") or payload.client_id
     # Η κατάσταση έκδοσης/διαβίβασης δεν έρχεται ποτέ από τον client.
     payload.status = existing.get("status", "draft")
     payload.mydata_status = existing.get("mydata_status", "not_sent")
@@ -193,13 +196,14 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
     result = await db.invoices.update_one(
         tenant_query(user, {"_id": invoice_oid, "status": "draft", **not_being_issued()}), {"$set": data})
     if result.matched_count == 0:
-        raise HTTPException(status_code=409, detail="Το τιμολόγιο εκδόθηκε ή εκδίδεται αυτή τη στιγμή — δεν τροποποιείται.")
+        raise HTTPException(status_code=409, detail="Το τιμολόγιο εκδόθηκε, εκδίδεται αυτή τη στιγμή ή δεν υπάρχει πια — δεν τροποποιείται.")
     doc = await db.invoices.find_one(tenant_query(user, {"_id": invoice_oid}))
     return Invoice.from_mongo(doc)
 
 
 @router.delete("/{invoice_id}")
 async def delete_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
+    from invoice_services import not_being_issued
     try:
         invoice_oid = ObjectId(invoice_id)
     except Exception:
@@ -214,7 +218,12 @@ async def delete_invoice(invoice_id: str, user: dict = Depends(get_current_user)
             status_code=400,
             detail="Εκδοθέν τιμολόγιο δεν διαγράφεται. Χρησιμοποιήστε ακύρωση ή πιστωτικό τιμολόγιο.",
         )
-    await db.invoices.delete_one(tenant_query(user, {"_id": invoice_oid}))
+    # Το φίλτρο είναι αναγκαίο: ανάμεσα στον έλεγχο και τη διαγραφή το πρόχειρο μπορεί να εκδόθηκε (ή να
+    # εκδίδεται τώρα)· η διαγραφή θα έσβηνε εκδοθέν παραστατικό με αριθμό και θα άφηνε κενό στη σειρά.
+    deleted = await db.invoices.delete_one(
+        tenant_query(user, {"_id": invoice_oid, "status": "draft", **not_being_issued()}))
+    if deleted.deleted_count == 0:
+        raise HTTPException(status_code=409, detail="Το τιμολόγιο εκδόθηκε, εκδίδεται αυτή τη στιγμή ή έχει ήδη διαγραφεί — δεν διαγράφεται.")
     # Αποδέσμευση: αλλιώς το αρχικό τιμολόγιο θα έμενε με «έχει ήδη πιστωτικό» και το γραμμάτιο με
     # «έχει ήδη ενσωματωθεί» για παραστατικό που δεν υπάρχει πια, και δεν θα μπορούσαν να ξαναγίνουν.
     original_id = existing.get("credit_note_for")
@@ -384,6 +393,14 @@ async def mark_invoice_paid(invoice_id: str, user: dict = Depends(get_current_us
     return Invoice.from_mongo(doc)
 
 
+REVERSAL_REFUSED_CHANNELS = {
+    "trust": "από πελατολογικό λογαριασμό",
+    "stripe": "με κάρτα",
+    "bank_auto": "με τραπεζική κατάθεση",
+    "bank_manual": "με τραπεζική κατάθεση",
+}
+
+
 @router.post("/{invoice_id}/mark-unpaid")
 async def mark_invoice_unpaid(invoice_id: str, user: dict = Depends(get_current_user)):
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
@@ -391,10 +408,22 @@ async def mark_invoice_unpaid(invoice_id: str, user: dict = Depends(get_current_
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     if doc.get("status") != "paid":
         raise HTTPException(status_code=400, detail="Το τιμολόγιο δεν είναι σε κατάσταση εξοφλημένο.")
-    await db.invoices.update_one(
-        tenant_query(user, {"_id": ObjectId(invoice_id)}),
+    channel = REVERSAL_REFUSED_CHANNELS.get(doc.get("paid_via") or "")
+    if channel is None and float(doc.get("trust_applied") or 0) > 0:
+        channel = REVERSAL_REFUSED_CHANNELS["trust"]
+    if channel:
+        # Το ποσό έχει περάσει από άλλο βιβλίο (πελατολογικός λογαριασμός, κάρτα, τραπεζική κίνηση) που
+        # δεν αναιρείται από εδώ· η «επαναφορά» θα άφηνε το τιμολόγιο ανοιχτό ενώ η είσπραξη μένει καταγεγραμμένη.
+        raise HTTPException(
+            status_code=409,
+            detail=f"Το τιμολόγιο εξοφλήθηκε {channel}. Η εξόφληση δεν αναιρείται από εδώ· διορθώστε πρώτα την "
+                   "αντίστοιχη κίνηση ή συνεννοηθείτε με τον λογιστή.")
+    result = await db.invoices.update_one(
+        tenant_query(user, {"_id": ObjectId(invoice_id), "status": "paid"}),
         {"$set": {"status": "issued", "paid_at": None}},
     )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Η κατάσταση του τιμολογίου άλλαξε στο μεταξύ — ανανεώστε και ξαναδοκιμάστε.")
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     return Invoice.from_mongo(doc)
 

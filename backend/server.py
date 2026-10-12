@@ -44,6 +44,7 @@ from routes_portal_chat import router as portal_chat_router, public_router as po
 from routes_automation import router as automation_router
 from routes_audit import router as audit_router
 from ai_runtime import AIUnavailable
+from invoice_services import flag_unchecked_bank_suggestions  # noqa: F401 — επίσης: τρέχει στην εκκίνηση
 
 app = FastAPI(title="Logistiki Pro API")
 api_router = APIRouter(prefix="/api")
@@ -253,26 +254,6 @@ async def ensure_trust_account_index() -> None:
     except Exception as e:  # noqa: BLE001 — η εκκίνηση δεν πρέπει να εξαρτάται από αυτό
         logger.error("trust_accounts: αποτυχία δημιουργίας του unique index (firm_id, client_id) — "
                      "ελέγξτε για διπλούς λογαριασμούς του ίδιου πελάτη: %s", e)
-
-
-async def flag_unchecked_bank_suggestions() -> int:
-    """Παλιές, μη επιβεβαιωμένες προτάσεις τράπεζας δεν έχουν περάσει τον έλεγχο μονοσημαντότητας.
-
-    Οι κινήσεις που προτάθηκαν πριν από τον γύρο 4 δεν έχουν το πεδίο `match_ambiguous`, δηλαδή
-    δεν ξέρουμε αν υπήρχε και δεύτερο τιμολόγιο του ίδιου πελάτη με το ίδιο ποσό. Σημαίνονται ως
-    «όχι μονοσήμαντες»: δεν εξοφλούνται αυτόματα ούτε μαζικά — τις επιβεβαιώνει ένας άνθρωπος.
-    Idempotent· δεν αγγίζει επιβεβαιωμένες κινήσεις ούτε νέες προτάσεις (που φέρουν το πεδίο).
-    """
-    try:
-        result = await db.bank_transactions.update_many(
-            {"match_status": "auto_matched", "match_ambiguous": {"$exists": False}},
-            {"$set": {"match_ambiguous": True}})
-        if result.modified_count:
-            logger.warning("bank_transactions: %d παλιές προτάσεις σημάνθηκαν για ατομικό έλεγχο", result.modified_count)
-        return result.modified_count
-    except Exception as e:  # noqa: BLE001 — η εκκίνηση δεν πρέπει να εξαρτάται από αυτό
-        logger.error("bank_transactions: αποτυχία σήμανσης παλιών προτάσεων: %s", e)
-        return 0
 
 
 @app.on_event("startup")
