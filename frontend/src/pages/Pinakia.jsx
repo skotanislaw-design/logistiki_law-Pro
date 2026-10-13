@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import axios, { API, dateFmt, errMsg } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { HearingFormDialog } from "@/components/HearingFormDialog";
+import { StaleNotice } from "@/components/StaleNotice";
 import {
   Plus, Trash, Play, Pause, CheckCircle, ClockCounterClockwise, Gavel, CalendarX, ArrowSquareOut,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { useLiveLoad } from "@/lib/useLiveLoad";
 import { formatTime } from "@/lib/utils";
 
 const STATUS = {
@@ -24,34 +26,29 @@ export default function Pinakia() {
   const [showForm, setShowForm] = useState(false);
   const [manualNumber, setManualNumber] = useState("");
 
-  // Η λίστα ανανεώνεται κάθε 15″. Με ασταθή σύνδεση (αίθουσα δικαστηρίου) μια ειδοποίηση ανά δεκαπέντε δευτερόλεπτα
-  // θα κάλυπτε την οθόνη· η αποτυχία ανακοινώνεται μία φορά ανά σειρά αποτυχιών και ξανά μόλις κάποια ανανέωση πετύχει.
-  const loadFailed = useRef(false);
-
-  const load = useCallback(async () => {
-    try {
-      const { data } = await axios.get(`${API}/hearings`);
-      loadFailed.current = false;
+  // Η λίστα ανανεώνεται κάθε 15″ (και μόλις η σελίδα γίνει ξανά ορατή). Με ασταθή σύνδεση (αίθουσα δικαστηρίου) μια ειδοποίηση
+  // ανά δεκαπέντε δευτερόλεπτα θα κάλυπτε την οθόνη· η αποτυχία ανακοινώνεται μία φορά ανά σειρά αποτυχιών, αλλά φαίνεται
+  // ΜΟΝΙΜΑ ως ένδειξη «δεν ενημερώθηκε από …», και μια παλιότερη απάντηση δεν αντικαθιστά νεότερη (βλ. useLiveLoad).
+  const { load, loaded, failed, lastOkAt } = useLiveLoad({
+    intervalMs: 15000,
+    fetch: async () => (await axios.get(`${API}/hearings`)).data,
+    apply: (data) => {
       setHearings(data);
       setSelected((prev) => (prev ? data.find((h) => h.id === prev.id) || data[0] || null : data[0] || null));
-    } catch (e) {
-      if (!loadFailed.current) toast.error(errMsg(e));
-      loadFailed.current = true;
-    }
-  }, []);
+    },
+  });
 
-  useEffect(() => { load(); }, [load]);
-  useEffect(() => {
-    const t = setInterval(load, 15000);
-    return () => clearInterval(t);
-  }, [load]);
-
+  // Επιστρέφει true μόνο αν ο server δέχτηκε την αλλαγή. Όταν την αρνείται (π.χ. το νούμερο είχε αλλάξει από άλλη συσκευή) η
+  // οθόνη ήταν ξεπερασμένη: φέρνουμε αμέσως την τρέχουσα εικόνα.
   const liveUpdate = async (h, payload) => {
     try {
       await axios.post(`${API}/hearings/${h.id}/live-update`, payload);
       load();
+      return true;
     } catch (e) {
       toast.error(errMsg(e));
+      if (e.response) load({ announce: true });
+      return false;
     }
   };
 
@@ -87,10 +84,16 @@ export default function Pinakia() {
         </div>
       </div>
 
+      <StaleNotice failed={failed} loaded={loaded} lastOkAt={lastOkAt} subject="τα πινάκια" testId="pinakia-stale" onRetry={() => load({ announce: true })} />
+
       <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6 items-start">
         <div className="space-y-3 stagger">
-          {hearings.length === 0 && (
-            <div className="lux-card p-8 text-center text-muted-foreground text-sm">Δεν υπάρχουν καταχωρημένα πινάκια</div>
+          {/* Άδεια λίστα δηλώνεται μόνο αφού φορτώσει επιτυχώς· πριν από αυτό (ή αν η φόρτωση απέτυχε) δεν γνωρίζουμε αν υπάρχουν πινάκια. */}
+          {hearings.length === 0 && loaded && (
+            <div className="lux-card p-8 text-center text-muted-foreground text-sm" data-testid="pinakia-empty">Δεν υπάρχουν καταχωρημένα πινάκια</div>
+          )}
+          {hearings.length === 0 && !loaded && !failed && (
+            <div className="lux-card p-8 text-center text-muted-foreground text-sm" data-testid="pinakia-loading">Φόρτωση πινακίων…</div>
           )}
           {hearings.map((h) => (
             <button
@@ -147,13 +150,13 @@ export default function Pinakia() {
 
               <div className="flex flex-wrap gap-2">
                 {selected.status === "scheduled" && (
-                  <Button size="sm" onClick={() => liveUpdate(selected, { status: "in_progress", current_number: selected.current_number || 1 })} data-testid="start-hearing-button">
+                  <Button size="sm" onClick={() => liveUpdate(selected, { status: "in_progress", current_number: selected.current_number || 1, expected_current: selected.current_number || 0 })} data-testid="start-hearing-button">
                     <Play size={15} className="mr-1.5" /> Έναρξη Συνεδρίασης
                   </Button>
                 )}
                 {selected.status === "in_progress" && (
                   <>
-                    <Button size="sm" variant="outline" onClick={() => liveUpdate(selected, { current_number: (selected.current_number || 0) + 1 })} data-testid="advance-number-button">
+                    <Button size="sm" variant="outline" onClick={() => liveUpdate(selected, { current_number: (selected.current_number || 0) + 1, expected_current: selected.current_number || 0 })} data-testid="advance-number-button">
                       +1 Επόμενο Νούμερο
                     </Button>
                     <Button size="sm" variant="outline" onClick={() => liveUpdate(selected, { status: "interrupted" })} data-testid="interrupt-button">

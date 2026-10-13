@@ -7,11 +7,14 @@ import { fileURLToPath } from "url";
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
+import { hostileZone } from "./src/test/hostileZone.mjs";
+
 // Η εφαρμογή δείχνει και υπολογίζει ημερομηνίες **Ελλάδας** (βλ. src/lib/utils.js), όποια κι αν είναι η ζώνη της συσκευής.
 // Αν οι δοκιμές έτρεχαν στη ζώνη του μηχανήματος που τις εκτελεί (Αθήνα, ή UTC στο CI), κάθε οθόνη που διάβαζε
-// `new Date().getDate()`/`toISOString()` θα περνούσε χωρίς να φανεί. Γι' αυτό το μηχάνημα των δοκιμών ορίζεται σε ζώνη
-// μακριά από την Ελλάδα (UTC−11)· η ζώνη μπορεί να αλλάξει με NOMOS_TEST_TZ (π.χ. Pacific/Kiritimati, UTC+14).
-process.env.TZ = process.env.NOMOS_TEST_TZ || "Pacific/Pago_Pago";
+// `new Date().getDate()`/`toISOString()` θα περνούσε χωρίς να φανεί. Γι' αυτό το μηχάνημα των δοκιμών μπαίνει σε ζώνη που
+// ΑΥΤΗ τη στιγμή έχει άλλη ημερομηνία από την Ελλάδα (UTC+14 ή UTC−11 — βλ. src/test/hostileZone.mjs)· η ζώνη μπορεί να
+// οριστεί ρητά με NOMOS_TEST_TZ.
+process.env.TZ = hostileZone();
 
 export default defineConfig({
   plugins: [react()],

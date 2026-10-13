@@ -29,13 +29,28 @@ export function yearAthens() {
   return Number(todayAthens().slice(0, 4));
 }
 
+// Ποσό σε ευρώ με την ελληνική μορφή («1.234,50 €»): ΜΙΑ συνάρτηση για όλες τις οθόνες, ώστε το ίδιο ποσό να γράφεται παντού
+// με τον ίδιο τρόπο (η πύλη πελάτη τύπωνε «1234,50 €» και η σελίδα πληρωμής «124.50 €»).
+export const money = (v) =>
+  new Intl.NumberFormat("el-GR", { style: "currency", currency: "EUR" }).format(v || 0);
+
+// Ημερομηνία με ώρα ΧΩΡΙΣ ζώνη («2026-10-11T22:30:00»): η JavaScript την διαβάζει ως ώρα της συσκευής, ενώ ο server (και το
+// backend: tax_utils.athens_date_of) την εννοεί UTC. Ο server γράφει σήμερα πάντα ρητή ζώνη (+00:00)· σφραγίδες χωρίς ζώνη
+// υπάρχουν μόνο σε παλιά ή εισαγόμενα δεδομένα, και πρέπει να δείχνουν την ίδια ώρα σε κάθε συσκευή.
+const ZONE_LESS_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+function zoneLessAsUtc(value) {
+  if (typeof value !== "string") return value;
+  const text = value.trim();
+  return ZONE_LESS_DATETIME.test(text) ? `${text.replace(" ", "T")}Z` : value;
+}
+
 // Ημερομηνία ή σφραγίδα του server ως ΗΗ/ΜΜ/ΕΕΕΕ **ώρας Ελλάδας**. Οι σφραγίδες του server είναι UTC (`…+00:00`)·
 // στη ζώνη της συσκευής μια κίνηση στις 00:30 της 1ης Ιανουαρίου Ελλάδας θα εμφανιζόταν ως 31 Δεκεμβρίου. Οι απλές
 // ημερομηνίες (ΕΕΕΕ-ΜΜ-ΗΗ) διαβάζονται ως μεσάνυχτα UTC, δηλαδή 02:00/03:00 στην Ελλάδα — η ίδια ημέρα. Ό,τι δεν
 // διαβάζεται ως ημερομηνία επιστρέφεται όπως είναι (ποτέ «Invalid Date»).
 function inAthens(value, render) {
   if (value === null || value === undefined || value === "") return "-";
-  const parsed = new Date(value);
+  const parsed = new Date(zoneLessAsUtc(value));
   if (Number.isNaN(parsed.getTime())) return String(value);
   return render(parsed);
 }

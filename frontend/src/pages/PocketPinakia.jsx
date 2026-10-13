@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import axios, { API, dateFmt, errMsg } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { StaleNotice } from "@/components/StaleNotice";
 import { Play, Pause, CheckCircle, Warning, Gavel, Timer, ArrowLeft, ArrowClockwise, Bell } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { useLiveLoad } from "@/lib/useLiveLoad";
 import { formatTime, todayAthens } from "@/lib/utils";
 
 const STATUS_ICON = {
@@ -18,50 +20,41 @@ const STATUS_ICON = {
 export default function PocketPinakia() {
   const [hearings, setHearings] = useState([]);
   const [alerts, setAlerts] = useState([]);
-  const [refreshing, setRefreshing] = useState(false);
-  const [tick, setTick] = useState(0);
 
-  // Ανανεώνεται κάθε 30″: η αποτυχία ανακοινώνεται μία φορά ανά σειρά αποτυχιών, όχι σε κάθε κύκλο.
-  const loadFailed = useRef(false);
-
-  const load = async () => {
-    setRefreshing(true);
-    try {
-      const [h, a] = await Promise.all([
-        axios.get(`${API}/hearings`),
-        axios.get(`${API}/hearings/alerts/list`),
-      ]);
+  // Ανανεώνεται κάθε 30″ (και μόλις η σελίδα γίνει ξανά ορατή). Η αποτυχία δεν κρύβεται: φαίνεται μόνιμη ένδειξη «δεν
+  // ενημερώθηκε από …» και μια απάντηση παλιότερη από αυτήν που εμφανίζεται δεν την αντικαθιστά (βλ. useLiveLoad).
+  const { load, refreshing, loaded, failed, lastOkAt } = useLiveLoad({
+    intervalMs: 30000,
+    fetch: () => Promise.all([axios.get(`${API}/hearings`), axios.get(`${API}/hearings/alerts/list`)]),
+    apply: ([h, a]) => {
       const today = todayAthens();
       const relevant = h.data.filter((x) => x.date >= today || (x.status && !["completed", "postponed"].includes(x.status)));
-      setHearings(relevant.sort((a, b) => (a.date || "").localeCompare(b.date || "")));
+      setHearings(relevant.sort((x, y) => (x.date || "").localeCompare(y.date || "")));
       setAlerts(a.data);
-      loadFailed.current = false;
-    } catch (e) {
-      if (!loadFailed.current) toast.error(errMsg(e));
-      loadFailed.current = true;
-    }
-    finally { setRefreshing(false); }
-  };
+    },
+  });
 
-  useEffect(() => { load(); }, []);
-  useEffect(() => {
-    const t = setInterval(() => setTick((v) => v + 1), 30000);
-    return () => clearInterval(t);
-  }, []);
-  useEffect(() => { if (tick > 0) load(); }, [tick]);
-
+  // Επιστρέφει true μόνο αν ο server δέχτηκε την αλλαγή. Όταν την αρνείται (π.χ. το νούμερο είχε αλλάξει από άλλη συσκευή) η
+  // οθόνη ήταν ξεπερασμένη: φέρνουμε αμέσως την τρέχουσα εικόνα.
   const liveUpdate = async (hid, payload) => {
     try {
       await axios.post(`${API}/hearings/${hid}/live-update`, payload);
       toast.success("Καταχωρήθηκε");
       load();
-    } catch (e) { toast.error(errMsg(e)); }
+      return true;
+    } catch (e) {
+      toast.error(errMsg(e));
+      if (e.response) load({ announce: true });
+      return false;
+    }
   };
 
+  // Το «+1» στέλνει και το νούμερο που βλέπει ο χρήστης: αν στο μεταξύ άλλαξε, ο server αρνείται αντί να το γυρίσει πίσω.
   const incrementCurrent = async (h) => {
-    const next = (h.current_number || 0) + 1;
-    await liveUpdate(h.id, { current_number: next });
-    if (h.pinakio_number - next === 1) {
+    const shown = h.current_number || 0;
+    const next = shown + 1;
+    const applied = await liveUpdate(h.id, { current_number: next, expected_current: shown });
+    if (applied && h.pinakio_number - next === 1) {
       try { navigator.vibrate?.([100, 50, 100]); } catch { /* η δόνηση είναι προαιρετική */ }
     }
   };
@@ -77,12 +70,13 @@ export default function PocketPinakia() {
         <h1 className="font-brand text-lg font-bold flex items-center gap-1.5">
           <Gavel size={18} className="text-[hsl(var(--gold))]" /> Πινάκιο Τσέπης
         </h1>
-        <Button size="icon" variant="ghost" onClick={load} disabled={refreshing} title="Ανανέωση" aria-label="Ανανέωση" data-testid="pocket-refresh">
+        <Button size="icon" variant="ghost" onClick={() => load({ announce: true })} disabled={refreshing} title="Ανανέωση" aria-label="Ανανέωση" data-testid="pocket-refresh">
           <ArrowClockwise size={16} className={refreshing ? "animate-spin" : ""} />
         </Button>
       </div>
 
       <div className="p-4 space-y-4 pb-24">
+        <StaleNotice failed={failed} loaded={loaded} lastOkAt={lastOkAt} subject="τα πινάκια" testId="pocket-stale" onRetry={() => load({ announce: true })} />
         {alerts.length > 0 && (
           <div className="space-y-2" data-testid="pocket-alerts">
             {alerts.map((a) => (
@@ -99,10 +93,15 @@ export default function PocketPinakia() {
         )}
 
         {hearings.length === 0 ? (
-          <div className="lux-card p-8 text-center text-muted-foreground">
-            <Gavel size={40} className="mx-auto text-[hsl(var(--gold))]/30 mb-3" />
-            <p>Δεν υπάρχουν σημερινά ή επερχόμενα πινάκια.</p>
-          </div>
+          // Άδεια λίστα δηλώνεται μόνο αφού φορτώσει επιτυχώς· πριν από αυτό (ή αν η φόρτωση απέτυχε) δεν γνωρίζουμε αν υπάρχουν πινάκια.
+          loaded ? (
+            <div className="lux-card p-8 text-center text-muted-foreground" data-testid="pocket-empty">
+              <Gavel size={40} className="mx-auto text-[hsl(var(--gold))]/30 mb-3" />
+              <p>Δεν υπάρχουν σημερινά ή επερχόμενα πινάκια.</p>
+            </div>
+          ) : !failed && (
+            <div className="lux-card p-8 text-center text-muted-foreground" data-testid="pocket-loading">Φόρτωση πινακίων…</div>
+          )
         ) : hearings.map((h) => {
           const S = STATUS_ICON[h.status] || STATUS_ICON.scheduled;
           const remaining = (h.pinakio_number || 0) - (h.current_number || 0);

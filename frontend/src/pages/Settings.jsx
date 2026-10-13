@@ -13,10 +13,27 @@ import { toast } from "sonner";
 import { MAX_WITHHOLDING_PERCENT, WITHHOLDING_CATEGORIES, parseRatePercent, percentToRate } from "@/lib/withholding";
 import { todayAthens } from "@/lib/utils";
 
-// Μια επαναφορά «ολοκληρώθηκε» ακόμη κι όταν κάποια έγγραφα δεν επανήλθαν ή γραμμές του ελεγκτικού ίχνους διαφέρουν από το
-// αντίγραφο. Τότε ο διαχειριστής πρέπει να το δει ως προειδοποίηση, όχι ως επιτυχία.
-const differingRows = (result) => Object.values(result?.differing || {}).reduce((sum, n) => sum + (Number(n) || 0), 0);
-const restoreNeedsAttention = (result) => (result?.failed || 0) > 0 || differingRows(result) > 0;
+// Μια επαναφορά «ολοκληρώθηκε» ακόμη κι όταν κάποια έγγραφα δεν επανήλθαν, γραμμές του ελεγκτικού ίχνους διαφέρουν από
+// το αντίγραφο, υπάρχοντα έγγραφα κρατήθηκαν αντί να αντικατασταθούν ή οι έλεγχοι μετά την επαναφορά (αρίθμηση
+// τιμολογίων, πελατολογικοί λογαριασμοί) βρήκαν πρόβλημα. Τότε ο διαχειριστής πρέπει να το δει ως προειδοποίηση, όχι ως επιτυχία.
+const sumCounts = (counts) => Object.values(counts || {}).reduce((sum, n) => sum + (Number(n) || 0), 0);
+const differingRows = (result) => sumCounts(result?.differing);
+const keptRows = (result) => sumCounts(result?.kept);
+// `ok: false` = βρέθηκε πρόβλημα· `ok: null` = ο έλεγχος δεν ολοκληρώθηκε (πρέπει να τρέξει με το χέρι).
+const checkProblem = (check) => !!check && (check.ok === false || check.ok === null);
+const restoreNeedsAttention = (result) =>
+  (result?.failed || 0) > 0 || differingRows(result) > 0 || keptRows(result) > 0
+  || checkProblem(result?.checks?.numbering) || checkProblem(result?.checks?.trust_ledger);
+
+const RESTORE_CONFIRM_MERGE =
+  "Η επαναφορά ΠΡΟΣΘΕΤΕΙ από το αντίγραφο μόνο όσα έγγραφα λείπουν. Δεν αντικαθιστά υπάρχοντα τιμολόγια, πληρωμές, "
+  + "τραπεζικές κινήσεις, κινήσεις πελατολογικού λογαριασμού, περιόδους ΦΠΑ ή ελεγκτικό ίχνος, και οι μετρητές αρίθμησης "
+  + "δεν γυρίζουν πίσω. Για να γυρίσετε ολόκληρη τη βάση σε παλαιότερη κατάσταση, επαναφέρετε σε κενή βάση. Συνέχεια;";
+const RESTORE_CONFIRM_OVERWRITE =
+  "ΑΝΤΙΚΑΤΑΣΤΑΣΗ ΔΕΔΟΜΕΝΩΝ ΕΡΓΑΣΙΑΣ: πελάτες, υποθέσεις, δικάσιμοι, εργαζόμενοι, πρότυπα σύνταξης και ρυθμίσεις γραφείου "
+  + "που διαφέρουν από το αντίγραφο θα αντικατασταθούν από την εκδοχή του αντιγράφου και οι αλλαγές που έγιναν μετά θα "
+  + "χαθούν. Τιμολόγια, πληρωμές, τραπεζικές κινήσεις, πελατολογικοί λογαριασμοί, περίοδοι ΦΠΑ και ελεγκτικό ίχνος ΔΕΝ "
+  + "αντικαθίστανται ποτέ. Συνέχεια;";
 
 const RATE_ERROR = `Δώστε ποσοστό παρακράτησης από 0 έως ${MAX_WITHHOLDING_PERCENT} (π.χ. 20 ή 12,5). Οι ρυθμίσεις δεν αποθηκεύονται μέχρι να διορθωθεί.`;
 
@@ -29,6 +46,8 @@ export default function Settings() {
   const [importingClients, setImportingClients] = useState(false);
   const [importResult, setImportResult] = useState(null);
   const [backupResult, setBackupResult] = useState(null);
+  // Προαιρετική, ρητή επιλογή: αντικατάσταση και των υπαρχόντων δεδομένων εργασίας. Η προεπιλογή είναι «μόνο προσθήκη».
+  const [overwriteWorking, setOverwriteWorking] = useState(false);
   // Το κείμενο του ποσοστού κρατιέται χωριστά ώστε να πληκτρολογείται «12,5» χωρίς να "τρώγεται" η υποδιαστολή.
   const [rateText, setRateText] = useState(null);
   const backupFileRef = useRef();
@@ -52,18 +71,30 @@ export default function Settings() {
 
   const importBackup = async (file) => {
     if (!file) return;
-    if (!window.confirm(
-      "Η επαναφορά αντικαθιστά τα δεδομένα με ίδιο id. Το ελεγκτικό ίχνος μόνο συμπληρώνεται (δεν αντικαθίσταται ποτέ) "
-      + "και οι μετρητές αρίθμησης δεν γυρίζουν πίσω. Συνέχεια;")) return;
+    const mode = overwriteWorking ? "overwrite" : "merge";
+    if (!window.confirm(mode === "overwrite" ? RESTORE_CONFIRM_OVERWRITE : RESTORE_CONFIRM_MERGE)) return;
     setImportingBackup(true); setBackupResult(null);
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const { data } = await axios.post(`${API}/backup/import`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+      const { data } = await axios.post(`${API}/backup/import`, fd, {
+        params: { mode }, headers: { "Content-Type": "multipart/form-data" },
+      });
       setBackupResult(data);
       (restoreNeedsAttention(data) ? toast.warning : toast.success)(data.message);
+      // Η επαναφορά μπορεί να άλλαξε τις ρυθμίσεις· μια φόρμα που δείχνει ακόμη τις παλιές τιμές θα τις ξαναέγραφε
+      // πάνω στις επανελθούσες με το επόμενο «Αποθήκευση».
+      try {
+        const fresh = await axios.get(`${API}/settings`);
+        setForm(fresh.data); setRateText(null);
+      } catch (e) {
+        toast.error(`Οι ρυθμίσεις δεν ανανεώθηκαν μετά την επαναφορά — ανανεώστε τη σελίδα πριν τις αποθηκεύσετε. ${errMsg(e)}`);
+      }
     } catch (e) { toast.error(errMsg(e)); }
-    finally { setImportingBackup(false); }
+    finally {
+      setImportingBackup(false);
+      setOverwriteWorking(false);   // η αντικατάσταση ζητείται ξεχωριστά για κάθε επαναφορά, δεν μένει αναμμένη
+    }
   };
 
   const importClients = async (file) => {
@@ -326,7 +357,8 @@ export default function Settings() {
             <DownloadSimple size={16} className="mr-1.5" /> Λήψη προτύπου
           </Button>
           <input ref={clientsFileRef} type="file" accept=".csv,.xlsx,.xlsm" className="hidden"
-            onChange={(e) => importClients(e.target.files?.[0])} data-testid="import-clients-input" />
+            onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; importClients(file); }}
+            data-testid="import-clients-input" />
           <Button onClick={() => clientsFileRef.current?.click()} disabled={importingClients} data-testid="import-clients-button">
             <UploadSimple size={16} className="mr-1.5" /> {importingClients ? "Εισαγωγή..." : "Ανέβασμα αρχείου"}
           </Button>
@@ -370,14 +402,30 @@ export default function Settings() {
             </li>
           </ul>
         </div>
+        <p className="text-xs text-muted-foreground" data-testid="backup-restore-rules">
+          <span className="text-foreground">Πώς λειτουργεί η επαναφορά:</span> προσθέτει μόνο όσα έγγραφα λείπουν και δεν
+          αντικαθιστά ποτέ τιμολόγια, πληρωμές, τραπεζικές κινήσεις, πελατολογικό λογαριασμό, περιόδους ΦΠΑ και ελεγκτικό ίχνος.
+          Για να γυρίσετε ολόκληρη τη βάση σε παλαιότερη κατάσταση, επαναφέρετε σε κενή βάση.
+        </p>
+        <label className="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer" htmlFor="backup-overwrite-toggle">
+          <input id="backup-overwrite-toggle" type="checkbox" className="mt-0.5" checked={overwriteWorking}
+            onChange={(e) => setOverwriteWorking(e.target.checked)} data-testid="backup-overwrite-toggle" />
+          <span>
+            <span className="text-foreground">Αντικατάσταση δεδομένων εργασίας</span> (προαιρετικό): τα υπάρχοντα στοιχεία
+            πελατών, υποθέσεων, δικασίμων, εργαζομένων, προτύπων σύνταξης και οι ρυθμίσεις του γραφείου αντικαθίστανται από την
+            εκδοχή του αντιγράφου. Τα βιβλία (τιμολόγια, πληρωμές, τράπεζα, πελατολογικός, ΦΠΑ, ελεγκτικό ίχνος) δεν αλλάζουν ποτέ.
+          </span>
+        </label>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={exportBackup} disabled={exportingBackup} data-testid="export-backup-button">
             <DownloadSimple size={16} className="mr-1.5" /> {exportingBackup ? "Δημιουργία..." : "Λήψη Backup (.zip)"}
           </Button>
           <input ref={backupFileRef} type="file" accept=".zip" className="hidden"
-            onChange={(e) => importBackup(e.target.files?.[0])} data-testid="import-backup-input" />
+            onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; importBackup(file); }}
+            data-testid="import-backup-input" />
           <Button variant="ghost" onClick={() => backupFileRef.current?.click()} disabled={importingBackup} data-testid="import-backup-button">
-            <UploadSimple size={16} className="mr-1.5" /> {importingBackup ? "Επαναφορά..." : "Επαναφορά από Backup"}
+            <UploadSimple size={16} className="mr-1.5" />
+            {importingBackup ? "Επαναφορά..." : overwriteWorking ? "Επαναφορά με αντικατάσταση" : "Επαναφορά από Backup"}
           </Button>
         </div>
         {backupResult && (
@@ -391,12 +439,35 @@ export default function Settings() {
                 ⚠ Η επαναφορά ολοκληρώθηκε, αλλά χρειάζεται έλεγχο.
                 {(backupResult.failed || 0) > 0 && ` Έγγραφα που δεν επαναφέρθηκαν: ${backupResult.failed}.`}
                 {differingRows(backupResult) > 0 && ` Γραμμές ελεγκτικού ίχνους που διαφέρουν από το αντίγραφο: ${differingRows(backupResult)}.`}
+                {keptRows(backupResult) > 0 && ` Υπάρχοντα στοιχεία που διέφεραν από το αντίγραφο και δεν άλλαξαν: ${keptRows(backupResult)}.`}
+                {backupResult.checks?.numbering?.ok === false && " Ο έλεγχος αρίθμησης τιμολογίων βρήκε προβλήματα."}
+                {backupResult.checks?.numbering?.ok === null && " Ο έλεγχος αρίθμησης τιμολογίων δεν ολοκληρώθηκε."}
+                {backupResult.checks?.trust_ledger?.ok === false
+                  && ` Πελατολογικοί λογαριασμοί που δεν συμφωνούν με τις κινήσεις τους: ${backupResult.checks.trust_ledger.inconsistent?.length ?? 0}.`}
+                {backupResult.checks?.trust_ledger?.ok === null && " Ο έλεγχος των πελατολογικών λογαριασμών δεν ολοκληρώθηκε."}
               </div>
             ) : (
               <div className="text-[hsl(var(--success))]">✓ {backupResult.message}</div>
             )}
-            {(backupResult.notes || []).map((note) => (
-              <div key={note} className="text-xs text-muted-foreground mt-1" data-testid="backup-note">{note}</div>
+            {backupResult.mode === "overwrite" && (
+              <div className="text-xs text-muted-foreground mt-1" data-testid="backup-mode">
+                Τρόπος επαναφοράς: αντικατάσταση δεδομένων εργασίας
+                {sumCounts(backupResult.replaced) > 0 && ` (αντικαταστάθηκαν ${sumCounts(backupResult.replaced)} στοιχεία)`}.
+              </div>
+            )}
+            {backupResult.checks?.numbering?.ok === true && (
+              <div className="text-xs text-muted-foreground mt-1" data-testid="backup-check-numbering">
+                ✓ Έλεγχος αρίθμησης τιμολογίων: δεν βρέθηκε πρόβλημα.
+              </div>
+            )}
+            {backupResult.checks?.trust_ledger?.ok === true && (
+              <div className="text-xs text-muted-foreground mt-1" data-testid="backup-check-trust">
+                ✓ Πελατολογικοί λογαριασμοί: τα υπόλοιπα συμφωνούν με τις κινήσεις τους
+                {backupResult.checks.trust_ledger.accounts > 0 && ` (${backupResult.checks.trust_ledger.accounts} λογαριασμοί)`}.
+              </div>
+            )}
+            {(backupResult.notes || []).map((note, index) => (
+              <div key={`${index}:${note}`} className="text-xs text-muted-foreground mt-1" data-testid="backup-note">{note}</div>
             ))}
             {backupResult.errors?.length > 0 && (
               <details className="mt-1 text-xs">

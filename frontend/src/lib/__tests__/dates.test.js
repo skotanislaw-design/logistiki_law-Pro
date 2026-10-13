@@ -5,7 +5,7 @@
  * και το `toISOString()` δίνει πάντα UTC: μετά τα μεσάνυχτα Ελλάδας (21:00/22:00 UTC) ήταν ακόμη «χθες». Κάθε test εδώ
  * τρέχει σε πέντε ζώνες μηχανήματος και πρέπει να δίνει το ίδιο αποτέλεσμα σε όλες.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { dateFmt } from "@/lib/api";
 import { daysSince, formatDate, formatDateTime, formatTime, monthAthens, todayAthens, yearAthens } from "@/lib/utils";
@@ -13,6 +13,7 @@ import { MACHINE_ZONES, freezeAt, useMachineZone } from "@/test/machineZone";
 
 describe.each(MACHINE_ZONES)("ώρα Ελλάδας — μηχάνημα σε %s", (zone) => {
   useMachineZone(zone);
+  afterEach(() => { vi.unstubAllGlobals(); });
 
   describe("σήμερα", () => {
     it.each([
@@ -95,6 +96,58 @@ describe.each(MACHINE_ZONES)("ώρα Ελλάδας — μηχάνημα σε %s
       }
       expect(formatTime("σκουπίδι")).toBe("σκουπίδι");
       expect(formatDateTime("σκουπίδι")).toBe("σκουπίδι");
+    });
+  });
+
+  describe("σφραγίδα χωρίς ζώνη (παλιά ή εισαγόμενα δεδομένα)", () => {
+    it("διαβάζεται ως UTC, όπως κάνει το backend — η ώρα δεν εξαρτάται από τη συσκευή", () => {
+      expect(formatDate("2026-10-11T22:30:00")).toBe("12/10/2026");               // 01:30 της 12ης στην Αθήνα
+      expect(formatTime("2026-10-11T22:30:00")).toBe("1:30:00 π.μ.");
+      expect(formatDateTime("2026-10-11T22:30:00")).toBe("12/10/2026, 1:30:00 π.μ.");
+    });
+
+    it("είναι ίδια με την αντίστοιχη σφραγίδα που δηλώνει ρητά UTC", () => {
+      for (const stamp of ["2026-10-11T22:30:00", "2026-12-31T22:30:00", "2026-06-30T21:00:00"]) {
+        expect(formatDateTime(stamp)).toBe(formatDateTime(`${stamp}Z`));
+        expect(formatDateTime(stamp)).toBe(formatDateTime(`${stamp}+00:00`));
+      }
+    });
+
+    it("δέχεται κενό αντί για T, κλάσμα δευτερολέπτου και σφραγίδα χωρίς δευτερόλεπτα", () => {
+      expect(formatDateTime("2026-10-11 22:30:00")).toBe("12/10/2026, 1:30:00 π.μ.");
+      expect(formatDateTime("2026-10-11T22:30:00.250")).toBe("12/10/2026, 1:30:00 π.μ.");
+      expect(formatDateTime("2026-10-11T22:30")).toBe("12/10/2026, 1:30:00 π.μ.");
+      expect(formatDateTime("  2026-10-11T22:30:00  ")).toBe("12/10/2026, 1:30:00 π.μ.");
+    });
+
+    it("περνά στον αναλυτή ημερομηνιών μορφή ISO με «T» — οι αυστηροί αναλυτές (Safari) δεν διαβάζουν κενό αντί για «T»", () => {
+      // Η V8 (Node, Chrome) δέχεται «2026-10-11 22:30:00Z» και θα έκρυβε το σφάλμα· ο Safari το διάβαζε ως «Invalid Date».
+      const RealDate = Date;
+      class StrictDate extends RealDate {
+        constructor(...args) {
+          if (typeof args[0] === "string" && /^\d{4}-\d{2}-\d{2} /.test(args[0])) super(NaN);
+          else super(...args);
+        }
+      }
+      vi.stubGlobal("Date", StrictDate);
+      expect(formatDateTime("2026-10-11 22:30:00")).toBe("12/10/2026, 1:30:00 π.μ.");
+      expect(formatDate("2026-10-11 22:30")).toBe("12/10/2026");
+    });
+
+    it("σφραγίδα με ρητή ζώνη και απλή ημερομηνία δεν επηρεάζονται", () => {
+      expect(formatDateTime("2026-10-11T22:30:00+00:00")).toBe("12/10/2026, 1:30:00 π.μ.");
+      expect(formatDateTime("2026-10-11T22:30:00Z")).toBe("12/10/2026, 1:30:00 π.μ.");
+      expect(formatDateTime("2026-10-12T01:30:00+03:00")).toBe("12/10/2026, 1:30:00 π.μ.");
+      expect(formatDate("2026-10-12")).toBe("12/10/2026");
+    });
+
+    it("ό,τι δεν είναι σφραγίδα επιστρέφεται όπως είναι", () => {
+      for (const junk of ["2026-10-11T25:61:00", "T22:30:00", "22:30:00", "σκουπίδι"]) expect(formatDateTime(junk)).toBe(junk);
+    });
+
+    it("δεν αγγίζει τιμές που δεν είναι κείμενο", () => {
+      expect(formatDateTime(Date.UTC(2026, 9, 11, 22, 30))).toBe("12/10/2026, 1:30:00 π.μ.");
+      expect(formatDateTime(new Date(Date.UTC(2026, 9, 11, 22, 30)))).toBe("12/10/2026, 1:30:00 π.μ.");
     });
   });
 

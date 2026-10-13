@@ -221,7 +221,7 @@ describe("Ρυθμίσεις — επαναφορά αντιγράφου", () =>
 
   const zip = () => new File(["zip"], "backup.zip", { type: "application/zip" });
 
-  it("προειδοποιεί ότι το ίχνος μόνο συμπληρώνεται και δείχνει τι έγινε μετά την επαναφορά", async () => {
+  it("προειδοποιεί ότι η επαναφορά μόνο προσθέτει και δείχνει τι έγινε μετά την επαναφορά", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup({ applyAccept: false });
     serveSettings(settingsDoc());
@@ -239,7 +239,10 @@ describe("Ρυθμίσεις — επαναφορά αντιγράφου", () =>
 
     const panel = await screen.findByTestId("backup-result");
     expect(confirm).toHaveBeenCalledTimes(1);
-    expect(confirm.mock.calls[0][0]).toMatch(/ελεγκτικό ίχνος μόνο συμπληρώνεται/);
+    expect(confirm.mock.calls[0][0]).toMatch(/ΠΡΟΣΘΕΤΕΙ από το αντίγραφο μόνο όσα έγγραφα λείπουν/);
+    expect(confirm.mock.calls[0][0]).toMatch(/Δεν αντικαθιστά υπάρχοντα τιμολόγια, πληρωμές/);
+    expect(confirm.mock.calls[0][0]).toMatch(/ελεγκτικό ίχνος/);
+    expect(confirm.mock.calls[0][0]).not.toMatch(/αντικαθιστά τα δεδομένα με ίδιο id/);
     expect(panel).toHaveTextContent("Η επαναφορά ολοκληρώθηκε, αλλά χρειάζεται έλεγχο.");
     const notes = screen.getAllByTestId("backup-note").map((n) => n.textContent);
     expect(notes[0]).toMatch(/συμπληρώθηκε με 3 γραμμές· 120 υπήρχαν ήδη/);
@@ -258,6 +261,26 @@ describe("Ρυθμίσεις — επαναφορά αντιγράφου", () =>
     await user.upload(await screen.findByTestId("import-backup-input"), zip());
     expect(called).toBe(false);
     expect(screen.queryByTestId("backup-result")).not.toBeInTheDocument();
+  });
+
+  it("δύο ίδιες σημειώσεις εμφανίζονται και οι δύο, χωρίς προειδοποίηση της React για διπλά κλειδιά", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup({ applyAccept: false });
+    serveSettings(settingsDoc());
+    server.use(http.post(`${API}/backup/import`, () => HttpResponse.json({
+      message: "Η επαναφορά ολοκληρώθηκε.", restored: {}, already_present: {}, differing: {}, failed: 0,
+      notes: ["Το αντίγραφο περιείχε εγγραφή χωρίς id.", "Το αντίγραφο περιείχε εγγραφή χωρίς id."], errors: [],
+    })));
+    render(<><Settings /><Toaster /></>);
+
+    await user.upload(await screen.findByTestId("import-backup-input"), zip());
+
+    await screen.findByTestId("backup-result");
+    expect(screen.getAllByTestId("backup-note").map((n) => n.textContent)).toEqual([
+      "Το αντίγραφο περιείχε εγγραφή χωρίς id.", "Το αντίγραφο περιείχε εγγραφή χωρίς id.",
+    ]);
+    expect(errors.mock.calls.flat().join(" ")).not.toMatch(/same key|unique "key"/);
   });
 
   it("καθαρή επαναφορά: μόνο το μήνυμα, χωρίς προειδοποιήσεις", async () => {
@@ -364,7 +387,299 @@ describe("Ρυθμίσεις — επαναφορά αντιγράφου: επι
   });
 });
 
+describe("Ρυθμίσεις — επαναφορά αντιγράφου: τρόπος επαναφοράς και έλεγχοι μετά από αυτήν", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const zip = () => new File(["zip"], "backup.zip", { type: "application/zip" });
+  const okChecks = () => ({
+    numbering: { ok: true, problems: {} },
+    trust_ledger: { ok: true, accounts: 3, inconsistent: [] },
+  });
+  const reply = (over = {}) => ({
+    message: "Η επαναφορά ολοκληρώθηκε.", mode: "merge", restored: { clients: 2 }, replaced: {}, already_present: {},
+    kept: {}, differing: {}, failed: 0, checks: okChecks(), notes: [], errors: [], ...over,
+  });
+  const toastOfType = (type) => document.querySelector(`[data-sonner-toast][data-type="${type}"]`);
+
+  // Ανεβάζει ένα αρχείο και επιστρέφει όσα είδε ο server: την παράμετρο `mode` κάθε αιτήματος.
+  async function restore({ result = reply(), confirmAnswer = true, overwrite = false } = {}) {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(confirmAnswer);
+    const user = userEvent.setup({ applyAccept: false });
+    const modes = [];
+    serveSettings(settingsDoc());
+    server.use(http.post(`${API}/backup/import`, ({ request }) => {
+      modes.push(new URL(request.url).searchParams.get("mode"));
+      return HttpResponse.json(result);
+    }));
+    render(<><Settings /><Toaster /></>);
+    if (overwrite) await user.click(await screen.findByTestId("backup-overwrite-toggle"));
+    await user.upload(await screen.findByTestId("import-backup-input"), zip());
+    return { confirm, modes, user };
+  }
+
+  it("η αντικατάσταση είναι σβηστή από προεπιλογή και το αίτημα φεύγει με mode=merge", async () => {
+    expect.hasAssertions();
+    const { confirm, modes } = await restore();
+    await screen.findByTestId("backup-result");
+    expect(modes).toEqual(["merge"]);
+    expect(confirm.mock.calls[0][0]).toMatch(/ΠΡΟΣΘΕΤΕΙ/);
+    expect(confirm.mock.calls[0][0]).not.toMatch(/ΑΝΤΙΚΑΤΑΣΤΑΣΗ ΔΕΔΟΜΕΝΩΝ/);
+    expect(screen.getByTestId("backup-overwrite-toggle")).not.toBeChecked();
+    expect(screen.queryByTestId("backup-mode")).not.toBeInTheDocument();
+  });
+
+  it("με την επιλογή αντικατάστασης φεύγει mode=overwrite και η επιβεβαίωση λέει τι χάνεται και τι δεν αγγίζεται ποτέ", async () => {
+    const { confirm, modes } = await restore({
+      overwrite: true,
+      result: reply({ mode: "overwrite", replaced: { clients: 2, cases: 1 }, restored: { clients: 2, cases: 1 } }),
+    });
+    await screen.findByTestId("backup-result");
+    expect(modes).toEqual(["overwrite"]);
+    const text = confirm.mock.calls[0][0];
+    expect(text).toMatch(/ΑΝΤΙΚΑΤΑΣΤΑΣΗ ΔΕΔΟΜΕΝΩΝ ΕΡΓΑΣΙΑΣ/);
+    expect(text).toMatch(/οι αλλαγές που έγιναν μετά θα χαθούν/);
+    expect(text).toMatch(/Τιμολόγια, πληρωμές, τραπεζικές κινήσεις.*ΔΕΝ αντικαθίστανται ποτέ/);
+    expect(text).not.toMatch(/ΠΡΟΣΘΕΤΕΙ/);
+    expect(screen.getByTestId("backup-mode")).toHaveTextContent("Τρόπος επαναφοράς: αντικατάσταση δεδομένων εργασίας (αντικαταστάθηκαν 3 στοιχεία).");
+  });
+
+  it("το κουμπί λέει ρητά ότι η επαναφορά θα αντικαταστήσει δεδομένα, μόλις ανάψει η επιλογή", async () => {
+    const user = userEvent.setup();
+    serveSettings(settingsDoc());
+    render(<Settings />);
+    const button = await screen.findByTestId("import-backup-button");
+    expect(button).toHaveTextContent("Επαναφορά από Backup");
+    await user.click(screen.getByTestId("backup-overwrite-toggle"));
+    expect(button).toHaveTextContent("Επαναφορά με αντικατάσταση");
+    await user.click(screen.getByTestId("backup-overwrite-toggle"));
+    expect(button).toHaveTextContent("Επαναφορά από Backup");
+  });
+
+  it("η επιλογή δεν μένει αναμμένη: η επόμενη επαναφορά είναι ξανά μόνο προσθήκη", async () => {
+    const { modes, user } = await restore({ overwrite: true, result: reply({ mode: "overwrite" }) });
+    await screen.findByTestId("backup-result");
+    await waitFor(() => expect(screen.getByTestId("backup-overwrite-toggle")).not.toBeChecked());
+    await user.upload(screen.getByTestId("import-backup-input"), zip());
+    await waitFor(() => expect(modes).toEqual(["overwrite", "merge"]));
+  });
+
+  it("αν ο χρήστης αρνηθεί την επιβεβαίωση, μπορεί να ανάψει την επιλογή και να διαλέξει ξανά το ΙΔΙΟ αρχείο", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValue(true);
+    const user = userEvent.setup({ applyAccept: false });
+    const modes = [];
+    serveSettings(settingsDoc());
+    server.use(http.post(`${API}/backup/import`, ({ request }) => {
+      modes.push(new URL(request.url).searchParams.get("mode"));
+      return HttpResponse.json(reply({ mode: "overwrite" }));
+    }));
+    render(<Settings />);
+    const file = zip();
+    const input = await screen.findByTestId("import-backup-input");
+    await user.upload(input, file);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(modes).toEqual([]);
+    expect(screen.getByTestId("backup-overwrite-toggle")).not.toBeChecked();
+
+    await user.click(screen.getByTestId("backup-overwrite-toggle"));
+    await user.upload(input, file);           // ίδιο αρχείο: ένας browser δεν ξαναστέλνει «change» αν η επιλογή δεν αλλάξει
+    expect(await screen.findByTestId("backup-result")).toBeInTheDocument();
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(modes).toEqual(["overwrite"]);
+  });
+
+  it.each([
+    ["η αρίθμηση τιμολογίων βρήκε προβλήματα",
+      { numbering: { ok: false, problems: { gaps: 2 } }, trust_ledger: okChecks().trust_ledger },
+      "Ο έλεγχος αρίθμησης τιμολογίων βρήκε προβλήματα."],
+    ["ο έλεγχος αρίθμησης δεν ολοκληρώθηκε",
+      { numbering: { ok: null, error: "timeout" }, trust_ledger: okChecks().trust_ledger },
+      "Ο έλεγχος αρίθμησης τιμολογίων δεν ολοκληρώθηκε."],
+    ["πελατολογικοί λογαριασμοί δεν συμφωνούν",
+      { numbering: okChecks().numbering, trust_ledger: { ok: false, accounts: 4, inconsistent: [{ client_name: "Α" }, { client_name: "Β" }] } },
+      "Πελατολογικοί λογαριασμοί που δεν συμφωνούν με τις κινήσεις τους: 2."],
+    ["ο έλεγχος πελατολογικού δεν ολοκληρώθηκε",
+      { numbering: okChecks().numbering, trust_ledger: { ok: null, error: "timeout" } },
+      "Ο έλεγχος των πελατολογικών λογαριασμών δεν ολοκληρώθηκε."],
+  ])("%s: προειδοποίηση, όχι επιτυχία", async (_label, checks, headline) => {
+    const { modes } = await restore({ result: reply({ checks }) });
+    const panel = await screen.findByTestId("backup-result");
+    expect(modes).toEqual(["merge"]);
+    expect(panel).toHaveAttribute("data-attention", "true");
+    expect(panel).toHaveAttribute("role", "alert");
+    expect(screen.getByTestId("backup-attention")).toHaveTextContent("Η επαναφορά ολοκληρώθηκε, αλλά χρειάζεται έλεγχο.");
+    expect(screen.getByTestId("backup-attention")).toHaveTextContent(headline);
+    expect(screen.getByTestId("backup-attention")).not.toHaveTextContent("Έγγραφα που δεν επαναφέρθηκαν");
+    expect(panel).not.toHaveTextContent("✓ Η επαναφορά ολοκληρώθηκε.");
+    await waitFor(() => expect(toastOfType("warning")).not.toBeNull());
+    expect(toastOfType("success")).toBeNull();
+  });
+
+  it("όταν περάσουν και οι δύο έλεγχοι: επιτυχία με τις γραμμές ✓ και τον αριθμό των λογαριασμών", async () => {
+    await restore();
+    const panel = await screen.findByTestId("backup-result");
+    expect(panel).toHaveAttribute("data-attention", "false");
+    expect(panel).toHaveAttribute("role", "status");
+    expect(screen.getByTestId("backup-check-numbering")).toHaveTextContent("✓ Έλεγχος αρίθμησης τιμολογίων: δεν βρέθηκε πρόβλημα.");
+    expect(screen.getByTestId("backup-check-trust")).toHaveTextContent("✓ Πελατολογικοί λογαριασμοί: τα υπόλοιπα συμφωνούν με τις κινήσεις τους (3 λογαριασμοί).");
+    await waitFor(() => expect(toastOfType("success")).not.toBeNull());
+  });
+
+  it("χωρίς πελατολογικούς λογαριασμούς η γραμμή ✓ δεν γράφει «(0 λογαριασμοί)»", async () => {
+    await restore({
+      result: reply({ checks: { numbering: okChecks().numbering, trust_ledger: { ok: true, accounts: 0, inconsistent: [] } } }),
+    });
+    expect(await screen.findByTestId("backup-check-trust"))
+      .toHaveTextContent(/^✓ Πελατολογικοί λογαριασμοί: τα υπόλοιπα συμφωνούν με τις κινήσεις τους\.$/);
+  });
+
+  it("η γραμμή ✓ δεν εμφανίζεται για έλεγχο που απέτυχε ή δεν έτρεξε", async () => {
+    await restore({ result: reply({ checks: { numbering: { ok: false, problems: { gaps: 1 } }, trust_ledger: { ok: null, error: "x" } } }) });
+    const panel = await screen.findByTestId("backup-result");
+    expect(screen.queryByTestId("backup-check-numbering")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("backup-check-trust")).not.toBeInTheDocument();
+    expect(panel).not.toHaveTextContent("✓");
+  });
+
+  it("υπάρχοντα στοιχεία που διέφεραν και κρατήθηκαν: προειδοποίηση με το άθροισμα όλων των συλλογών", async () => {
+    await restore({
+      result: reply({
+        kept: { clients: 2, settings: 1 },
+        notes: ["3 υπάρχοντα έγγραφα διέφεραν από το αντίγραφο και δεν άλλαξαν (πελάτες: 2, ρυθμίσεις: 1)."],
+      }),
+    });
+    const panel = await screen.findByTestId("backup-result");
+    expect(panel).toHaveAttribute("data-attention", "true");
+    expect(screen.getByTestId("backup-attention")).toHaveTextContent("Υπάρχοντα στοιχεία που διέφεραν από το αντίγραφο και δεν άλλαξαν: 3.");
+    expect(screen.getAllByTestId("backup-note")[0]).toHaveTextContent("δεν άλλαξαν (πελάτες: 2, ρυθμίσεις: 1)");
+    await waitFor(() => expect(toastOfType("warning")).not.toBeNull());
+  });
+
+  it("μηδενικά πλήθη στα «kept» δεν είναι προειδοποίηση", async () => {
+    await restore({ result: reply({ kept: { clients: 0 } }) });
+    expect(await screen.findByTestId("backup-result")).toHaveAttribute("data-attention", "false");
+  });
+
+  it("απάντηση χωρίς «checks» (παλαιότερη έκδοση) κρίνεται όπως πριν, χωρίς γραμμές ελέγχου", async () => {
+    const { checks, ...withoutChecks } = reply();
+    expect(checks).toBeDefined();
+    await restore({ result: withoutChecks });
+    const panel = await screen.findByTestId("backup-result");
+    expect(panel).toHaveAttribute("data-attention", "false");
+    expect(screen.queryByTestId("backup-check-numbering")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("backup-check-trust")).not.toBeInTheDocument();
+  });
+
+  it("μετά την επαναφορά η φόρμα ξαναφορτώνεται από τον server και το «Αποθήκευση» δεν ξαναγράφει τα παλιά στοιχεία", async () => {
+    const user = userEvent.setup({ applyAccept: false });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    let doc = settingsDoc({ company_name: "ΠΑΛΙΑ ΕΠΩΝΥΜΙΑ" });
+    let saved = null;
+    server.use(
+      http.get(`${API}/settings`, () => HttpResponse.json(doc)),
+      http.put(`${API}/settings`, async ({ request }) => { saved = await request.json(); return HttpResponse.json(saved); }),
+      http.post(`${API}/backup/import`, () => {
+        doc = settingsDoc({ company_name: "ΕΠΑΝΕΛΘΟΥΣΑ ΕΠΩΝΥΜΙΑ" });
+        return HttpResponse.json(reply({ mode: "overwrite" }));
+      }),
+    );
+    render(<><Settings /><Toaster /></>);
+    expect(await screen.findByTestId("settings-company-name")).toHaveValue("ΠΑΛΙΑ ΕΠΩΝΥΜΙΑ");
+    await user.upload(screen.getByTestId("import-backup-input"), zip());
+    await screen.findByTestId("backup-result");
+    await waitFor(() => expect(screen.getByTestId("settings-company-name")).toHaveValue("ΕΠΑΝΕΛΘΟΥΣΑ ΕΠΩΝΥΜΙΑ"));
+
+    await user.click(screen.getByTestId("save-settings-button"));
+    await waitFor(() => expect(saved).not.toBeNull());
+    expect(saved.company_name).toBe("ΕΠΑΝΕΛΘΟΥΣΑ ΕΠΩΝΥΜΙΑ");
+  });
+
+  it("αν η ανανέωση των ρυθμίσεων αποτύχει, φαίνεται σφάλμα και το αποτέλεσμα της επαναφοράς μένει", async () => {
+    const user = userEvent.setup({ applyAccept: false });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    let reads = 0;
+    server.use(
+      http.get(`${API}/settings`, () => {
+        reads += 1;
+        return reads === 1 ? HttpResponse.json(settingsDoc()) : HttpResponse.json({ detail: "Η βάση δεν απαντά." }, { status: 500 });
+      }),
+      http.post(`${API}/backup/import`, () => HttpResponse.json(reply())),
+    );
+    render(<><Settings /><Toaster /></>);
+    await user.upload(await screen.findByTestId("import-backup-input"), zip());
+    expect(await screen.findByTestId("backup-result")).toHaveAttribute("data-attention", "false");
+    expect(await screen.findByText(/Οι ρυθμίσεις δεν ανανεώθηκαν μετά την επαναφορά — ανανεώστε τη σελίδα πριν τις αποθηκεύσετε/)).toBeInTheDocument();
+    expect(reads).toBe(2);
+  });
+
+  it("αποτυχημένη επαναφορά (σφάλμα του server) δεν ξαναφορτώνει τις ρυθμίσεις: δεν άλλαξε τίποτα", async () => {
+    const user = userEvent.setup({ applyAccept: false });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    let reads = 0;
+    server.use(
+      http.get(`${API}/settings`, () => { reads += 1; return HttpResponse.json(settingsDoc()); }),
+      http.post(`${API}/backup/import`, () => HttpResponse.json({ detail: "Το αρχείο δεν είναι έγκυρο αντίγραφο." }, { status: 400 })),
+    );
+    render(<><Settings /><Toaster /></>);
+    await user.upload(await screen.findByTestId("import-backup-input"), zip());
+    expect(await screen.findByText("Το αρχείο δεν είναι έγκυρο αντίγραφο.")).toBeInTheDocument();
+    expect(reads).toBe(1);
+    expect(screen.queryByTestId("backup-result")).not.toBeInTheDocument();
+  });
+});
+
+describe("Ρυθμίσεις — εισαγωγή πελατολογίου", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const csv = () => new File(["Όνομα,ΑΦΜ\nΑ,094259216\nΒ,123456783"], "clients.csv", { type: "text/csv" });
+
+  it("στέλνει το αρχείο και δείχνει το αποτέλεσμα", async () => {
+    const user = userEvent.setup({ applyAccept: false });
+    const sent = [];
+    serveSettings(settingsDoc());
+    server.use(http.post(`${API}/import/clients`, async ({ request }) => {
+      sent.push(await (await request.formData()).get("file").text());
+      return HttpResponse.json({ message: "Εισήχθησαν 2 πελάτες.", total_rows: 2, errors: [] });
+    }));
+    render(<><Settings /><Toaster /></>);
+    await user.upload(await screen.findByTestId("import-clients-input"), csv());
+    const panel = await screen.findByTestId("import-result");
+    expect(sent).toEqual(["Όνομα,ΑΦΜ\nΑ,094259216\nΒ,123456783"]);
+    expect(panel).toHaveTextContent("✓ Εισήχθησαν 2 πελάτες.");
+    expect(panel).toHaveTextContent("Σύνολο γραμμών: 2");
+  });
+
+  it("μετά από αποτυχία το ΙΔΙΟ αρχείο μπορεί να ξαναδιαλεχτεί και να ξαναστείλει", async () => {
+    const user = userEvent.setup({ applyAccept: false });
+    let attempts = 0;
+    serveSettings(settingsDoc());
+    server.use(http.post(`${API}/import/clients`, () => {
+      attempts += 1;
+      return attempts === 1
+        ? HttpResponse.json({ detail: "Η βάση δεν απαντά." }, { status: 503 })
+        : HttpResponse.json({ message: "Εισήχθησαν 2 πελάτες.", total_rows: 2, errors: [] });
+    }));
+    render(<><Settings /><Toaster /></>);
+    const file = csv();
+    const input = await screen.findByTestId("import-clients-input");
+    await user.upload(input, file);
+    expect(await screen.findByText("Η βάση δεν απαντά.")).toBeInTheDocument();
+    await user.upload(input, file);       // ένας browser δεν ξαναστέλνει «change» για την ίδια επιλογή αν δεν μηδενιστεί το πεδίο
+    expect(await screen.findByTestId("import-result")).toHaveTextContent("✓ Εισήχθησαν 2 πελάτες.");
+    expect(attempts).toBe(2);
+  });
+});
+
 describe("Ρυθμίσεις — αντίγραφο ασφαλείας: τι δεν περιλαμβάνεται", () => {
+  it("η κάρτα εξηγεί πώς λειτουργεί η επαναφορά: μόνο προσθήκη, ποτέ τα βιβλία, κενή βάση για πλήρη επαναφορά", async () => {
+    serveSettings(settingsDoc());
+    render(<Settings />);
+    const rules = await screen.findByTestId("backup-restore-rules");
+    expect(rules).toHaveTextContent("προσθέτει μόνο όσα έγγραφα λείπουν");
+    expect(rules).toHaveTextContent("δεν αντικαθιστά ποτέ τιμολόγια, πληρωμές, τραπεζικές κινήσεις, πελατολογικό λογαριασμό, περιόδους ΦΠΑ και ελεγκτικό ίχνος");
+    expect(rules).toHaveTextContent("επαναφέρετε σε κενή βάση");
+    expect(screen.getByTestId("backup-overwrite-toggle")).not.toBeChecked();
+  });
+
   it("η κάρτα το λέει πριν από τη λήψη: αρχεία, χρήστες/πύλη πελατών και SECRETS_KEY", async () => {
     serveSettings(settingsDoc());
     render(<Settings />);

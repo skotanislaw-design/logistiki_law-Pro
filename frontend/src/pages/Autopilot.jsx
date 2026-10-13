@@ -188,6 +188,19 @@ export default function Autopilot() {
         </div>
       </div>
 
+      {!settings.autopilot_enabled && (
+        // Ο γενικός διακόπτης σταματά τις αυτόματες ενέργειες, αλλά όχι δύο ελέγχους που δεν στέλνουν τίποτα σε τρίτους
+        // (backend: ALWAYS_ON_JOBS). Αν δεν το λέει η οθόνη, ο χρήστης θα νόμιζε ότι «κλειστό» σημαίνει «δεν τρέχει τίποτα».
+        <div className="lux-card p-4 text-sm flex items-start gap-3" data-testid="autopilot-off-note">
+          <Info size={18} className="shrink-0 mt-0.5 text-muted-foreground" />
+          <p>
+            Ο Autopilot είναι κλειστός: δεν γίνονται αυτόματες αποστολές (emails, υπενθυμίσεις), συγχρονισμοί ή αυτόματες εξοφλήσεις.{" "}
+            <strong>Δύο έλεγχοι συνεχίζουν πάντα να τρέχουν</strong>: ο έλεγχος κενών στην αρίθμηση των τιμολογίων και η
+            επιβεβαίωση των πληρωμών με κάρτα από το Stripe (καταγράφει πληρωμές που ο πελάτης έχει ήδη κάνει). Δεν στέλνουν τίποτα σε τρίτους.
+          </p>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4 stagger">
         <Stat label="Αποφάσεις" value={status.open_items} testid="autopilot-open-items" />
         <Stat label="Emails 7ημ." value={week.emails_sent || 0} testid="autopilot-emails" />

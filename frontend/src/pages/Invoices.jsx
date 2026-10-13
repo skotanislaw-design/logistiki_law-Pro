@@ -44,13 +44,23 @@ export default function Invoices() {
   // Ο server στέλνει όλα τα πρόχειρα και τα εκδοθέντα, αλλά μόνο τα τελευταία εξοφλημένα/ακυρωμένα. Όταν κόπηκαν
   // παλαιότερα, τα σύνολα «Εξοφλημένα» και «Σύνολο» αφορούν μόνο όσα φορτώθηκαν — το δηλώνουμε αντί να τα παρουσιάζουμε ως πλήρη.
   const [closedTruncated, setClosedTruncated] = useState(false);
+  // Μια αποτυχημένη φόρτωση δεν είναι άδεια λίστα: όσο τα τιμολόγια δεν έχουν φορτώσει ούτε μία φορά, τα σύνολα γράφουν «—»
+  // (όχι «0,00 €») και δεν λέμε «δεν υπάρχουν τιμολόγια». Αν αποτύχει μια επαναφόρτωση, η λίστα που φαίνεται μένει, με σημείωση.
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const mediaRef = useState({ recorder: null, chunks: [] })[0];
 
   const load = () => {
+    setLoadError("");
     axios.get(`${API}/invoices`).then((r) => {
       setInvoices(r.data);
       setClosedTruncated(r.headers?.["x-closed-truncated"] === "1");
-    }).catch((e) => toast.error(errMsg(e)));
+      setLoaded(true);
+    }).catch((e) => {
+      const message = errMsg(e);
+      toast.error(message);
+      setLoadError(message);
+    });
     axios.get(`${API}/clients`).then((r) => setClients(r.data)).catch(() => {});
   };
 
@@ -259,6 +269,7 @@ export default function Invoices() {
   const filteredInvoices = filter === "unpaid" ? unpaidList : (filter === "paid" ? invoices.filter((i) => i.status === "paid") : invoices);
 
   const daysOverdue = (dateStr) => Math.max(0, daysSince(dateStr));
+  const known = (value) => (loaded ? value : "—");
 
   return (
     <div className="space-y-8" data-testid="invoices-page">
@@ -281,9 +292,9 @@ export default function Invoices() {
             <span className="lux-overline">Ανείσπρακτα</span>
             <BellRinging size={18} className="text-[hsl(var(--gold))]" />
           </div>
-          <div className="mt-2 font-mono text-3xl font-semibold" data-testid="kpi-unpaid-total">{money(unpaidSum)}</div>
+          <div className="mt-2 font-mono text-3xl font-semibold" data-testid="kpi-unpaid-total">{known(money(unpaidSum))}</div>
           <div className="mt-1 text-xs text-muted-foreground">
-            <span data-testid="kpi-unpaid-count">{unpaidList.length}</span> ανεξόφλητα τιμολόγια
+            <span data-testid="kpi-unpaid-count">{known(unpaidList.length)}</span> ανεξόφλητα τιμολόγια
             {overdue30 > 0 && <span className="ml-2 text-[hsl(var(--destructive))]">· {overdue30} με καθυστέρηση 30+ ημερών</span>}
           </div>
         </button>
@@ -296,8 +307,8 @@ export default function Invoices() {
             <span className="lux-overline">Εξοφλημένα</span>
             <CheckCircle size={18} className="text-[hsl(var(--success))]" />
           </div>
-          <div className="mt-2 font-mono text-3xl font-semibold">{money(invoices.filter((i) => i.status === "paid").reduce((s, i) => s + (i.total || 0), 0))}</div>
-          <div className="mt-1 text-xs text-muted-foreground">{invoices.filter((i) => i.status === "paid").length} τιμολόγια</div>
+          <div className="mt-2 font-mono text-3xl font-semibold">{known(money(invoices.filter((i) => i.status === "paid").reduce((s, i) => s + (i.total || 0), 0)))}</div>
+          <div className="mt-1 text-xs text-muted-foreground">{known(invoices.filter((i) => i.status === "paid").length)} τιμολόγια</div>
         </button>
         <button
           onClick={() => setFilter("all")}
@@ -308,10 +319,20 @@ export default function Invoices() {
             <span className="lux-overline">Σύνολο</span>
             <ArrowClockwise size={18} className="text-muted-foreground" />
           </div>
-          <div className="mt-2 font-mono text-3xl font-semibold">{money(invoices.reduce((s, i) => s + (i.total || 0), 0))}</div>
-          <div className="mt-1 text-xs text-muted-foreground">{invoices.length} τιμολόγια συνολικά</div>
+          <div className="mt-2 font-mono text-3xl font-semibold">{known(money(invoices.reduce((s, i) => s + (i.total || 0), 0)))}</div>
+          <div className="mt-1 text-xs text-muted-foreground">{known(invoices.length)} τιμολόγια συνολικά</div>
         </button>
       </div>
+
+      {loadError && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 text-sm border border-[hsl(var(--destructive))]/30 bg-[hsl(var(--destructive))]/5 rounded-md px-3 py-2"
+          data-testid="invoices-load-error">
+          <span className="text-[hsl(var(--destructive))]">
+            Δεν φορτώθηκαν τα τιμολόγια: {loadError}{loaded ? " Η λίστα που βλέπετε μπορεί να μην είναι ενημερωμένη." : ""}
+          </span>
+          <Button size="sm" variant="outline" onClick={load} data-testid="invoices-retry">Επανάληψη</Button>
+        </div>
+      )}
 
       {closedTruncated && (
         <div className="text-xs text-muted-foreground border border-border/60 rounded-md px-3 py-2" data-testid="closed-truncated-notice">
@@ -324,7 +345,7 @@ export default function Invoices() {
         <div className="flex items-center justify-between px-4 py-3 border-b border-border/60">
           <div className="text-sm text-muted-foreground">
             Προβολή: <span className="font-medium text-foreground" data-testid="invoices-filter-label">{filter === "unpaid" ? "Ανεξόφλητα" : filter === "paid" ? "Εξοφλημένα" : "Όλα"}</span>
-            <span className="ml-2">· {filteredInvoices.length} εγγραφές</span>
+            <span className="ml-2">· {known(filteredInvoices.length)} εγγραφές</span>
           </div>
           {filter !== "all" && (
             <Button variant="ghost" size="sm" onClick={() => setFilter("all")} data-testid="clear-filter-button">Καθαρισμός φίλτρου</Button>
@@ -444,10 +465,13 @@ export default function Invoices() {
               </TableRow>
               );
             })}
-            {filteredInvoices.length === 0 && (
+            {filteredInvoices.length === 0 && loaded && (
               <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">
                 {filter === "unpaid" ? "Δεν υπάρχουν ανεξόφλητα τιμολόγια." : filter === "paid" ? "Δεν υπάρχουν εξοφλημένα τιμολόγια." : "Δεν υπάρχουν τιμολόγια ακόμα."}
               </TableCell></TableRow>
+            )}
+            {!loaded && !loadError && (
+              <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8" data-testid="invoices-loading">Φόρτωση τιμολογίων…</TableCell></TableRow>
             )}
           </TableBody>
         </Table>

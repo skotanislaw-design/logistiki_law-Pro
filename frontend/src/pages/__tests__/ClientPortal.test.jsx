@@ -44,8 +44,8 @@ describe("Πύλη πελάτη", () => {
 
     expect(await screen.findByText(/ΠΕΛΑΤΗΣ ΕΝΑ/)).toBeInTheDocument();
     expect(screen.getByText("ΤΠΥ-2026-0001")).toBeInTheDocument();
-    // Υποδιαστολή κόμμα και σύμβολο μετά τον αριθμό — όχι «1240.00 EUR».
-    expect(screen.getAllByText(/1240,00 €/).length).toBeGreaterThan(0);
+    // Τελεία χιλιάδων, υποδιαστολή κόμμα και σύμβολο μετά τον αριθμό — όπως στις οθόνες του γραφείου, όχι «1240.00 EUR» ή «1240,00 €».
+    expect(screen.getAllByText(/1\.240,00\s€/).length).toBeGreaterThan(0);
   });
 
   it("οι ημερομηνίες του φακέλου δεν μετατοπίζονται ημέρα, όποια κι αν είναι η ζώνη της συσκευής", async () => {
@@ -151,7 +151,7 @@ describe("Πύλη πελάτη — επιστροφή από την πληρω�
     const paid = await screen.findByTestId("portal-payment-paid");
     expect(paid).toHaveTextContent(/ολοκληρώθηκε επιτυχώς/);
     expect(paid).toHaveTextContent("ΤΠΥ-2026-0001");
-    expect(paid).toHaveTextContent(/1240,00\s€/);
+    expect(paid).toHaveTextContent(/1\.240,00\s€/);
     expect(counter.polls).toBe(3);
     await waitFor(() => expect(counter.loads).toBe(2));                               // ο φάκελος ξαναφορτώθηκε μετά την επιβεβαίωση
     expect(screen.queryByTestId("portal-payment-checking")).not.toBeInTheDocument();

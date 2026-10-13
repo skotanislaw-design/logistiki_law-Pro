@@ -111,7 +111,7 @@ function MatchCell({ tx }) {
   );
 }
 
-function ReconcileDialog({ tx, invoices, loadInvoices, closedTruncated, onClose, onDone }) {
+function ReconcileDialog({ tx, invoices, loadInvoices, closedTruncated, onClose, onDone, onRefused }) {
   const [list, setList] = useState(invoices);
   const [truncated, setTruncated] = useState(!!closedTruncated);
   const [query, setQuery] = useState("");
@@ -144,12 +144,20 @@ function ReconcileDialog({ tx, invoices, loadInvoices, closedTruncated, onClose,
     setSaving(true); setError("");
     try {
       const params = { invoice_id: before.inv.id };
-      if (!exact) params.accept_difference = true;
+      // Η αποδοχή δένεται με τη διαφορά που βλέπει ο χρήστης (κατάθεση − οφειλόμενο, με πρόσημο): αν το οφειλόμενο αλλάξει
+      // στο μεταξύ (δεύτερη καρτέλα, συνάδελφος, εξόφληση από πελατολογικό), ο server αρνείται με 409 αντί να καταγράψει μια
+      // διαφορά που ο χρήστης δεν είδε ποτέ.
+      if (!exact) { params.accept_difference = true; params.expected_difference = diff; }
       const { data } = await axios.post(`${API}/bank/reconcile/${tx.id}`, null, { params });
       toast.success(data.message);
       onDone();
     } catch (e) {
       const message = errMsg(e);
+      // Ό,τι κι αν αρνήθηκε ο server, η αποδοχή που είχε δοθεί αφορούσε την κατάσταση που έβλεπε ο χρήστης και όχι την
+      // τρέχουσα: ξαναρωτάμε. Και η λίστα πίσω από το παράθυρο ξαναφορτώνεται, γιατί μια άρνηση (η κίνηση συμφωνήθηκε στο
+      // μεταξύ, επεξεργάζεται από άλλη ενέργεια) σημαίνει ότι η γραμμή που βλέπει δεν είναι πια η τρέχουσα.
+      setAccepted(false);
+      if (e.response) onRefused?.();
       // Το τιμολόγιο μπορεί να άλλαξε από τότε που ανοίχτηκε το παράθυρο (νέα εξόφληση από πελατολογικό, αλλαγή παρακράτησης):
       // ξαναδιαβάζουμε τα υπόλοιπα. Αν το οφειλόμενο του επιλεγμένου άλλαξε, ο χρήστης βλέπει τη νέα διαφορά (και το κουτί
       // αποδοχής, αν χρειάζεται) αντί για το τεχνικό μήνυμα του server.
@@ -165,7 +173,6 @@ function ReconcileDialog({ tx, invoices, loadInvoices, closedTruncated, onClose,
         // Αν δεν ξαναφορτώνονται, μένει το μήνυμα του server.
       }
       if (changed) {
-        setAccepted(false);
         setError(`Το οφειλόμενο του ${invoiceLabel(changed.inv)} άλλαξε από ${money(before.owed)} σε ${money(changed.owed)} ενώ το παράθυρο `
           + "ήταν ανοιχτό. Ελέγξτε τη νέα διαφορά και επιβεβαιώστε ξανά.");
       } else {
@@ -322,6 +329,10 @@ export default function Bank() {
   const [busyId, setBusyId] = useState(null);
   const [reconciling, setReconciling] = useState(null);
   const fileRef = useRef(null);
+  // Μία ενέργεια τη φορά. Με δύο ταυτόχρονα «Συμφωνία» (άλλη γραμμή, διπλό κλικ) το δεύτερο παράθυρο αντικαθιστούσε το
+  // πρώτο με την αποδοχή διαφοράς που είχε τσεκάρει ο χρήστης για άλλη κατάθεση. Το ref κλειδώνει αμέσως (το state
+  // ενημερώνεται στον επόμενο κύκλο), το busyId απενεργοποιεί τα κουμπιά ΟΛΩΝ των γραμμών.
+  const actionLock = useRef(false);
 
   const reload = () => setReloadKey((k) => k + 1);
 
@@ -333,7 +344,7 @@ export default function Bank() {
     setLoadError("");
     Promise.all([
       axios.get(`${API}/bank/summary`),
-      ...statuses.map((status) => axios.get(`${API}/bank/transactions`, { params: { status } })),
+      ...statuses.map((status) => axios.get(`${API}/bank/transactions`, { params: { status }, silentTruncation: true })),   // το μήνυμα για κομμένη λίστα δίνεται παρακάτω, με τα σύνολα
     ]).then(([sum, ...lists]) => {
       if (stale) return;
       setSummary(sum.data);
@@ -401,32 +412,44 @@ export default function Bank() {
     return { invoices: res.data, closedTruncated: res.headers?.["x-closed-truncated"] === "1" };
   };
 
-  const openReconcile = async (tx) => {
-    setBusyId(tx.id);
+  const exclusively = async (id, work) => {
+    if (actionLock.current) return;
+    actionLock.current = true;
+    setBusyId(id);
+    try {
+      await work();
+    } finally {
+      actionLock.current = false;
+      setBusyId(null);
+    }
+  };
+
+  const openReconcile = (tx) => exclusively(tx.id, async () => {
     try {
       const { invoices, closedTruncated } = await loadInvoices();
       setReconciling({ tx, invoices, closedTruncated });
     } catch (e) {
       toast.error(errMsg(e));
-    } finally {
-      setBusyId(null);
     }
-  };
+  });
 
   const ignore = async (tx) => {
+    if (actionLock.current) return;
     if (!window.confirm(
       `Να αγνοηθεί η κίνηση «${tx.description}» (${money(tx.amount)}) της ${day(tx.date)};\n\n`
       + "Δεν θα εμφανίζεται πια στις κινήσεις που χρειάζονται ενέργεια και δεν θα συνδεθεί με τιμολόγιο.")) return;
-    setBusyId(tx.id);
-    try {
-      const { data } = await axios.post(`${API}/bank/reconcile/${tx.id}`, null, { params: { ignore: true } });
-      toast.success(data.message);
-      reload();
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setBusyId(null);
-    }
+    await exclusively(tx.id, async () => {
+      try {
+        const { data } = await axios.post(`${API}/bank/reconcile/${tx.id}`, null, { params: { ignore: true } });
+        toast.success(data.message);
+        reload();
+      } catch (e) {
+        toast.error(errMsg(e));
+        // Μια άρνηση (π.χ. «η κίνηση έχει ήδη συμφωνηθεί» από συνάδελφο ή δεύτερη καρτέλα) σημαίνει ότι η γραμμή που βλέπει
+        // ο χρήστης δεν είναι πια η τρέχουσα: ξαναφορτώνουμε αντί να του αφήσουμε κουμπιά που θα αρνηθούν ξανά.
+        if (e.response) reload();
+      }
+    });
   };
 
   const proposals = summary?.auto_matched || 0;
@@ -571,7 +594,7 @@ export default function Bank() {
             <TableBody>
               {rows.map((tx) => {
                 const debit = !isCredit(tx);
-                const busy = busyId === tx.id;
+                const busy = busyId !== null;                  // μία ενέργεια τη φορά: ΟΛΑ τα κουμπιά περιμένουν
                 return (
                   <TableRow key={tx.id} data-testid={`bank-row-${tx.id}`}>
                     <TableCell className="font-mono text-xs whitespace-nowrap">{day(tx.date)}</TableCell>
@@ -617,12 +640,14 @@ export default function Bank() {
 
       {reconciling && (
         <ReconcileDialog
+          key={reconciling.tx.id}
           tx={reconciling.tx}
           invoices={reconciling.invoices}
           closedTruncated={reconciling.closedTruncated}
           loadInvoices={loadInvoices}
           onClose={() => setReconciling(null)}
           onDone={() => { setReconciling(null); reload(); }}
+          onRefused={reload}
         />
       )}
     </div>
