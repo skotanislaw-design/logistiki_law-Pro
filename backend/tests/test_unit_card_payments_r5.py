@@ -228,7 +228,10 @@ async def test_the_job_finishes_old_unapplied_payments_and_leaves_everything_els
 
     r = (await run_firm(FIRM, ["card_payments"]))[0]
     # Η πληρωμή της παλιάς έκδοσης δεν εφαρμόζεται ποτέ αυτόματα· αναφέρεται μία φορά (βλ. test_unit_card_payments_r5b).
-    assert r["status"] == "ok" and r["stats"] == {"pending": 1, "applied": 1, "legacy_reported": 1}
+    # Τα polled/recovered/expired/poll_errors είναι του polling του Stripe (βλ. test_unit_card_poll_r5)· εδώ δεν υπάρχει
+    # εκκρεμής συνεδρία, άρα μένουν στο μηδέν.
+    assert r["status"] == "ok" and r["stats"] == {"pending": 1, "applied": 1, "legacy_reported": 1,
+                                                  "polled": 0, "recovered": 0, "expired": 0, "poll_errors": 0}
     assert (await _invoice_doc(old_inv))["status"] == "paid"
     assert (await _invoice_doc(fresh_inv))["status"] == "issued"
     assert (await _invoice_doc(legacy_inv))["status"] == "issued"
@@ -236,7 +239,8 @@ async def test_the_job_finishes_old_unapplied_payments_and_leaves_everything_els
     assert await db.notifications.count_documents({"dedupe_key": "card_payment_unapplied:cs_legacy"}) == 1
 
     again = (await run_firm(FIRM, ["card_payments"]))[0]
-    assert again["stats"] == {"pending": 0, "applied": 0, "legacy_reported": 0}
+    assert again["stats"] == {"pending": 0, "applied": 0, "legacy_reported": 0,
+                              "polled": 0, "recovered": 0, "expired": 0, "poll_errors": 0}
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,15 @@ if not BASE_URL:
 API = f"{BASE_URL}/api"
 
 
+def _valid_afm(seed: str) -> str:
+    """Εννιαψήφιο ΑΦΜ με σωστό ψηφίο ελέγχου, από τυχαίο δεκαεξαδικό κείμενο. Η εισαγωγή πελατών απορρίπτει τα άκυρα ΑΦΜ (όπως η
+    χειροκίνητη δημιουργία), οπότε τα δεδομένα δοκιμής πρέπει να είναι έγκυρα· τα τελευταία ψηφία εξαρτώνται από τα τυχαία
+    ψηφία του `seed`, όχι από το πρόθεμά του, ώστε διαφορετικά προθέματα να δίνουν διαφορετικά ΑΦΜ."""
+    digits = str(int(seed, 16))[-8:].zfill(8)
+    total = sum(int(digits[i]) * 2 ** (8 - i) for i in range(8))
+    return digits + str((total % 11) % 10)
+
+
 def _credentials():
     path = Path("/app/memory/test_credentials.md")
     if not path.exists():
@@ -227,17 +236,16 @@ class TestClientImport:
         suffix = uuid.uuid4().hex[:7]
         name_one = f"TEST_IMPORT_A_{suffix}"
         name_two = f"TEST_IMPORT_B_{suffix}"
-        afm_one = f"81{suffix}"
-        afm_two = f"82{suffix}"
+        afm_one, afm_two, afm_three, afm_four = (_valid_afm(f"{prefix}{suffix}") for prefix in ("81", "82", "83", "84"))
         test_state["client_names"].extend([name_one, name_two, f"TEST_IMPORT_DUPAFM_{suffix}"])
-        test_state["client_afms"].extend([afm_one, afm_two, f"83{suffix}"])
+        test_state["client_afms"].extend([afm_one, afm_two, afm_three])
         csv_bytes = (
             "Όνομα,ΑΦΜ,ΔΟΥ,Email,Τηλέφωνο,Διεύθυνση,Τύπος\n"
             f"{name_one},{afm_one},ΑΘΗΝΩΝ,a-{suffix}@example.test,2100000001,Αθήνα,individual\n"
             f"{name_two},{afm_two},ΠΕΙΡΑΙΑ,b-{suffix}@example.test,2100000002,Πειραιά,company\n"
             f"TEST_IMPORT_DUPAFM_{suffix},{afm_one},ΑΘΗΝΩΝ,dup@example.test,,,company\n"
-            f"{name_two},83{suffix},ΑΘΗΝΩΝ,dupname@example.test,,,individual\n"
-            f",84{suffix},ΑΘΗΝΩΝ,missing@example.test,,,individual\n"
+            f"{name_two},{afm_three},ΑΘΗΝΩΝ,dupname@example.test,,,individual\n"
+            f",{afm_four},ΑΘΗΝΩΝ,missing@example.test,,,individual\n"
         ).encode("utf-8")
         response = auth_client.post(
             f"{API}/import/clients",
@@ -263,7 +271,7 @@ class TestClientImport:
     def test_xlsx_import_creates_client(self, auth_client, test_state):
         suffix = uuid.uuid4().hex[:7]
         name = f"TEST_XLSX_{suffix}"
-        afm = f"91{suffix}"
+        afm = _valid_afm(f"91{suffix}")
         test_state["client_names"].append(name)
         test_state["client_afms"].append(afm)
         workbook = Workbook()

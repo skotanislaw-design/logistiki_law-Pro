@@ -3,7 +3,7 @@ import os
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from fastapi.responses import Response
 from bson import ObjectId
 from db import db, fetch_all
@@ -11,7 +11,7 @@ from http_utils import content_disposition
 from models import Invoice
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
-from tax_utils import calculate_invoice_totals, is_finite_number, MAX_LINE_VALUE, VALID_VAT_RATES
+from tax_utils import calculate_invoice_totals, is_finite_number, valid_iso_date, MAX_LINE_VALUE, VALID_VAT_RATES
 from mydata_client import INVOICE_TYPE_LABELS, TYPE_SERVICES_B2B, TYPE_RECEIPT_B2C, TYPE_CREDIT_NOTE, resolve_invoice_type
 from ai_helpers import transcribe_audio, parse_invoice_from_text
 
@@ -100,8 +100,6 @@ def _validate_invoice_payload(payload: Invoice) -> None:
     validators εκεί θα έσπαγαν την ανάγνωση παλιών τιμολογίων που γράφτηκαν πριν
     μπει ο έλεγχος. Εδώ ελέγχουμε μόνο ό,τι φτάνει από τον χρήστη.
     """
-    from datetime import date as _date
-
     if not payload.line_items:
         raise HTTPException(status_code=400, detail="Το τιμολόγιο πρέπει να έχει τουλάχιστον μία γραμμή.")
     # Πιστωτικό δεν φτιάχνεται «με το χέρι»: εκδίδεται από το τιμολόγιο που πιστώνει (/credit-note),
@@ -113,9 +111,9 @@ def _validate_invoice_payload(payload: Invoice) -> None:
                    + ", ".join(f"{code} ({INVOICE_TYPE_LABELS[code]})" for code in USER_INVOICE_TYPES)
                    + ". Το πιστωτικό εκδίδεται από το αρχικό τιμολόγιο.",
         )
-    try:
-        _date.fromisoformat(payload.date)
-    except (ValueError, TypeError):
+    # Μόνο ΕΕΕΕ-ΜΜ-ΗΗ: η `date.fromisoformat` της Python 3.11 δέχεται και «20260612» ή «2026-W24-5», και οι περίοδοι ΦΠΑ και
+    # το dashboard συγκρίνουν την ημερομηνία ως κείμενο — μια τέτοια τιμή έπεφτε εκτός κάθε περιόδου.
+    if not valid_iso_date(payload.date):
         raise HTTPException(status_code=400, detail="Μη έγκυρη ημερομηνία — αναμένεται μορφή ΕΕΕΕ-ΜΜ-ΗΗ.")
     for idx, line in enumerate(payload.line_items, start=1):
         if not (line.description or "").strip():
@@ -404,6 +402,7 @@ class CancelPayload(BaseModel):
 
 
 class CreditNotePayload(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)    # «NaN» ως κείμενο: αλλιώς έμενε πρόχειρο πιστωτικό με NaN σύνολο
     reason: str = ""
     amount: Optional[float] = None   # κενό = πλήρες πιστωτικό
 
@@ -452,7 +451,7 @@ async def invoice_types(user: dict = Depends(get_current_user)):
 
 @router.post("/{invoice_id}/mark-paid")
 async def mark_invoice_paid(invoice_id: str, user: dict = Depends(get_current_user)):
-    from datetime import datetime, timezone
+    from invoice_services import mark_paid
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
@@ -460,10 +459,11 @@ async def mark_invoice_paid(invoice_id: str, user: dict = Depends(get_current_us
         raise HTTPException(status_code=400, detail="Το τιμολόγιο είναι ήδη εξοφλημένο.")
     if doc.get("status") != "issued":
         raise HTTPException(status_code=400, detail="Μόνο εκδοθέντα τιμολόγια μπορούν να σημανθούν ως εξοφλημένα")
-    await db.invoices.update_one(
-        tenant_query(user, {"_id": ObjectId(invoice_id)}),
-        {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc).isoformat()}},
-    )
+    # Ατομική μετάβαση issued → paid (όπως κάθε άλλο κανάλι εξόφλησης): αν στο μεταξύ το εξόφλησε κάρτα, τράπεζα ή
+    # πελατολογικός, δεν γράφουμε πάνω στο δικό τους `paid_via`/`paid_at`. Ο τρόπος καταγράφεται ως «manual» —
+    # μόνο τα χειροκίνητα εξοφλημένα μπορεί να συνδεθούν αργότερα με κατάθεση.
+    if not await mark_paid(firm_id_for(user), ObjectId(invoice_id), paid_via="manual"):
+        raise HTTPException(status_code=409, detail="Η κατάσταση του τιμολογίου άλλαξε στο μεταξύ — ανανεώστε και ξαναδοκιμάστε.")
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     return Invoice.from_mongo(doc)
 

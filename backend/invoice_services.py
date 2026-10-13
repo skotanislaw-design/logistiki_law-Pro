@@ -7,11 +7,13 @@ decided it was time.
 import os
 import re
 import math
+import uuid
 import asyncio
 import logging
-from datetime import datetime, timezone, date as _date
+from datetime import datetime, timedelta, timezone, date as _date
 
 from bson import ObjectId
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from db import db
@@ -119,7 +121,10 @@ async def invoice_balances(firm_id: str, invoices: list[dict], settings: dict,
     """{id: (πληρωτέο, οφειλόμενο)} για κάθε παραστατικό της λίστας — **ο μοναδικός ορισμός** του «ανείσπρακτου».
 
     Το dashboard, η εβδομαδιαία ενημέρωση, οι αναλύσεις, ο Copilot, η λίστα τιμολογίων και η πύλη του πελάτη
-    δείχνουν όλα τον ίδιο αριθμό, γιατί βγαίνει από εδώ:
+    δείχνουν όλα τον ίδιο αριθμό ανά τιμολόγιο, γιατί βγαίνει από εδώ. Διαφέρει μόνο το **σύνολο των τιμολογίων** που
+    μετρά κάθε οθόνη: όλα τα έτη στο dashboard, στην ενημέρωση, στον Copilot και στην πύλη· μόνο το τρέχον έτος στις
+    Αναλύσεις (η οθόνη το γράφει: «Έτος YYYY»), ώστε το ποσοστό είσπραξης να συγκρίνει εισπραγμένα και ανείσπρακτα
+    της ίδιας βάσης:
 
     * εκδοθέν τιμολόγιο: το πληρωτέο (σύνολο − παρακράτηση) μείον ό,τι εξοφλήθηκε από πελατολογικό, όχι κάτω από 0·
     * εκδοθέν πιστωτικό (αρνητικό σύνολο): το αρνητικό πληρωτέο του — συμψηφίζεται με τα υπόλοιπα του ίδιου
@@ -172,6 +177,24 @@ def open_total(invoices: list[dict], balances: dict[str, tuple[float, float]]) -
         key = str(inv.get("client_id") or "")
         per_client[key] = per_client.get(key, 0.0) + balances[str(inv["_id"])][1]
     return round(sum(max(round(v, 2), 0.0) for v in per_client.values()), 2)
+
+
+def open_invoices(invoices: list[dict], balances: dict[str, tuple[float, float]]) -> list[dict]:
+    """Τα τιμολόγια που πράγματι απομένει να εισπραχθούν — η λίστα πίσω από το `open_total`.
+
+    Εκδοθέντα, όχι πιστωτικά, με οφειλόμενο > 0, και μόνο για πελάτες που ο συμψηφισμός πιστωτικών δεν τους αφήνει στο
+    μηδέν. Πριν, το «πλήθος ανεξόφλητων» μετρούσε κάθε εκδοθέν παραστατικό (και τα πιστωτικά, και όσα έχουν εξοφληθεί από
+    πελατολογικό): «3 ανεξόφλητα τιμολόγια συνολικού ποσού 248,00 €» για δύο οφειλές.
+    """
+    issued = [inv for inv in invoices if inv.get("status") == "issued"]
+    per_client: dict[str, float] = {}
+    for inv in issued:
+        key = str(inv.get("client_id") or "")
+        per_client[key] = per_client.get(key, 0.0) + balances[str(inv["_id"])][1]
+    # Το πιστωτικό έχει αρνητικό οφειλόμενο, άρα αποκλείεται από μόνο του από τη συνθήκη «οφειλόμενο > 0».
+    return [inv for inv in issued
+            if round(balances[str(inv["_id"])][1], 2) > 0
+            and round(per_client[str(inv.get("client_id") or "")], 2) > 0]
 
 
 async def effective_invoice(firm_id: str, invoice: dict, settings: dict, client: dict | None = None) -> dict:
@@ -275,6 +298,7 @@ async def ensure_invoice_number_index(collection=None) -> None:
 
 
 GAP_LIST_LIMIT = 50          # πόσα κενά αναγράφονται· το σύνολο μετριέται πάντα ολόκληρο
+UNNUMBERED_ID_LIMIT = 1000   # πόσα αναγνωριστικά αναρίθμητων παραστατικών μπαίνουν στο αποτύπωμα της κάρτας
 # Έως 9 ψηφία: ένας αριθμός με περισσότερα (εισαγωγή, επαναφορά, χειροκίνητη επέμβαση) δεν είναι αύξων αριθμός σειράς·
 # αναφέρεται ως «εκτός μορφής» αντί να παράγει εκατομμύρια «κενά» (ή να ξεπεράσει το όριο μετατροπής του int).
 _NUMBER_PATTERN = re.compile(r"^(?P<prefix>[^-\s]+)-(?P<year>[0-9]{4})-(?P<seq>[0-9]{1,9})$")
@@ -300,6 +324,7 @@ async def numbering_report(firm_id: str, year: int | None = None) -> dict:
     query = firm_query(firm_id, {"status": {"$in": NUMBERED_STATUSES}, "number": {"$gt": ""}})
     groups: dict[tuple[str, int], list] = {}
     unparseable = []
+    observations = []
     async for d in db.invoices.find(query, {"number": 1, "date": 1}):
         parsed = _parse_number(d["number"])
         if parsed is None:
@@ -315,6 +340,11 @@ async def numbering_report(firm_id: str, year: int | None = None) -> dict:
         items.sort(key=lambda t: (t[0], t[1], t[3]))
         seqs = sorted({t[0] for t in items})
         first, last = seqs[0], seqs[-1]
+        if first > 1:
+            # Δεν είναι «κενό»: μια σειρά που συνεχίζει την αρίθμηση άλλου συστήματος (0042 ως πρώτο) είναι νόμιμη. Αν όμως ο
+            # πρώτος αριθμός χάθηκε (κατάρρευση μετά την παραχώρηση, παραστατικό που εξαφανίστηκε), η αναφορά δεν έλεγχε τίποτα·
+            # γι' αυτό εμφανίζεται ως παρατήρηση που ο λογιστής επιβεβαιώνει μία φορά, χωρίς να θεωρείται σφάλμα της σειράς.
+            observations.append({"kind": "starts_above_one", "series": f"{prefix}-{y}", "first": first})
 
         # Τα κενά μετριούνται από τα διαστήματα ανάμεσα σε διαδοχικούς υπάρχοντες αριθμούς· ο κατάλογος κρατά μόνο τα
         # πρώτα GAP_LIST_LIMIT. Ένας αριθμός με πολλά ψηφία (εισαγωγή, επαναφορά, χειροκίνητη επέμβαση) δεν πρέπει
@@ -368,9 +398,32 @@ async def numbering_report(firm_id: str, year: int | None = None) -> dict:
             "ok": not (gaps_total or duplicates or date_order or counter["state"] == "behind"),
         })
 
-    unnumbered = await db.invoices.count_documents(firm_query(firm_id, {
+    # Μετρητές που έχουν δώσει αριθμούς σε σειρά χωρίς κανένα εκδοθέν παραστατικό (κατάρρευση μετά την παραχώρηση, ή τα
+    # παραστατικά χάθηκαν): οι αριθμοί 1..seq έχουν δοθεί και δεν υπάρχουν πουθενά — κενό ολόκληρης της σειράς.
+    counter_id = re.compile(rf"^invoice-(?:(?P<prefix>[^-\s]+)-)?{re.escape(firm_id)}-(?P<year>[0-9]{{4}})$")
+    known = {(s["prefix"], s["year"]) for s in series}
+    async for c in db.counters.find({"_id": {"$regex": counter_id.pattern}}):
+        m = counter_id.match(str(c["_id"]))
+        if m is None:
+            continue
+        prefix, y = m.group("prefix") or DEFAULT_SERIES_PREFIX, int(m.group("year"))
+        seq_now = as_int(c.get("seq"))
+        if (prefix, y) in known or (year is not None and y != year) or seq_now <= 0:
+            continue
+        series.append({
+            "series": f"{prefix}-{y}", "prefix": prefix, "year": y, "count": 0, "first": None, "last": 0,
+            "gaps": list(range(1, min(seq_now, GAP_LIST_LIMIT) + 1)), "gaps_total": seq_now,
+            "duplicates": [], "date_order": [], "counter": {"seq": seq_now, "state": "ahead", "ahead_by": seq_now},
+            "ok": False,
+        })
+    series.sort(key=lambda item: (item["year"], item["prefix"]))
+
+    no_number = firm_query(firm_id, {
         "status": {"$in": NUMBERED_STATUSES},
-        "$or": [{"number": {"$exists": False}}, {"number": None}, {"number": ""}]}))
+        "$or": [{"number": {"$exists": False}}, {"number": None}, {"number": ""}]})
+    unnumbered = await db.invoices.count_documents(no_number)
+    # Τα αναγνωριστικά χρησιμεύουν μόνο στο «αποτύπωμα» της κάρτας του Autopilot· το πλήθος είναι πάντα ακριβές.
+    unnumbered_ids = [str(d["_id"]) async for d in db.invoices.find(no_number, {"_id": 1}).sort("_id", 1).limit(UNNUMBERED_ID_LIMIT)]
     numbered_drafts = await db.invoices.count_documents(firm_query(firm_id, {"status": "draft", "number": {"$gt": ""}}))
     try:
         unique_index = INVOICE_NUMBER_INDEX in await db.invoices.index_information()
@@ -391,6 +444,8 @@ async def numbering_report(firm_id: str, year: int | None = None) -> dict:
         "unique_index": unique_index,
         "series": series,
         "unparseable": unparseable,
+        "unnumbered_ids": unnumbered_ids,
+        "observations": observations,
         "numbered_drafts": numbered_drafts,
         "problems": problems,
     }
@@ -462,8 +517,17 @@ async def email_invoice(firm_id: str, invoice: dict, settings: dict, client: dic
     return update
 
 
+# Το Stripe δέχεται λήξη συνεδρίας από 30 λεπτά ως 24 ώρες μετά τη δημιουργία (docs.stripe.com/api/checkout/sessions/create,
+# παράμετρος `expires_at`)· μεγαλύτερη τιμή απορρίπτεται. Παλιότερα ζητούνταν 7 ημέρες: κάθε κλήση αποτύγχανε, το σφάλμα
+# καταπινόταν και η υπενθύμιση έφευγε σιωπηλά χωρίς σύνδεσμο κάρτας. 23 ώρες αφήνουν περιθώριο για απόκλιση ρολογιού.
+PAYMENT_LINK_VALID_HOURS = 23
+
+
 async def build_payment_link(invoice: dict, settings: dict) -> str:
     """Create a Stripe Checkout link for the invoice, or '' when Stripe is not configured.
+
+    Ο σύνδεσμος ισχύει **`PAYMENT_LINK_VALID_HOURS` ώρες** (όριο του Stripe: 24)· η υπενθύμιση το αναγράφει και
+    παραπέμπει στο IBAN για όποιον πληρώσει αργότερα.
 
     Χρεώνει το **οφειλόμενο** — πληρωτέο (μετά την παρακράτηση) μείον ό,τι έχει ήδη εξοφληθεί από
     πελατολογικό λογαριασμό — δηλαδή το ίδιο ποσό που αναγράφει το email υπενθύμισης και που
@@ -490,7 +554,9 @@ async def build_payment_link(invoice: dict, settings: dict) -> str:
                            "(public_url στις Ρυθμίσεις ή PUBLIC_URL)")
             return ""
         invoice_id = str(invoice["_id"])
-        session = _stripe.checkout.Session.create(
+        # Σε νήμα: η κλήση περιμένει το δίκτυο και δεν πρέπει να παγώνει τον βρόχο γεγονότων του Autopilot.
+        session = await asyncio.to_thread(
+            _stripe.checkout.Session.create,
             mode="payment",
             line_items=[{
                 "price_data": {
@@ -506,7 +572,7 @@ async def build_payment_link(invoice: dict, settings: dict) -> str:
             success_url=origin + "/payment/success?session_id={CHECKOUT_SESSION_ID}",
             cancel_url=origin + "/payment/cancel",
             metadata={"invoice_id": invoice_id, "invoice_number": invoice.get("number", "")},
-            expires_at=int(datetime.now(timezone.utc).timestamp()) + 60 * 60 * 24 * 7,
+            expires_at=int(datetime.now(timezone.utc).timestamp()) + 60 * 60 * PAYMENT_LINK_VALID_HOURS,
         )
         from models import PaymentTransaction
         tx = PaymentTransaction(
@@ -674,6 +740,52 @@ async def _claimed_by_other_deposit(firm_id: str, invoice_id: str, tx_id) -> boo
     return other is not None
 
 
+CONFIRMED_DEPOSIT_STATES = ("auto_confirmed", "manual_matched")
+DEPOSIT_CLAIM_TTL_SECONDS = 120       # μετά από κατάρρευση, το «κλείδωμα» μιας κατάθεσης λήγει μόνο του
+
+
+def _deposit_unclaimed() -> dict:
+    """Φίλτρο: καμία άλλη ενέργεια δεν επεξεργάζεται αυτή τη στιγμή την κατάθεση (ή το κλείδωμά της έχει λήξει)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=DEPOSIT_CLAIM_TTL_SECONDS)).isoformat()
+    return {"$or": [{"claim_at": {"$exists": False}}, {"claim_at": None}, {"claim_at": {"$lt": cutoff}}]}
+
+
+async def claim_deposit(firm_id: str, tx_id, invoice_key: str, token: str) -> dict | None:
+    """Ατομικό «κλείδωμα» μιας κατάθεσης πριν εξοφληθεί το τιμολόγιό της. Επιστρέφει την κατάθεση **όπως ήταν πριν**
+    το κλείδωμα (ώστε ο καλών να ξέρει αν πρόκειται για επανάληψη), ή None αν δεν κλειδώθηκε.
+
+    Δύο αιτήματα που διάβασαν την ίδια ασυμφώνητη κατάθεση και διάλεξαν ΔΙΑΦΟΡΕΤΙΚΑ τιμολόγια περνούσαν και τα δύο τον
+    έλεγχο, εξόφλησαν και τα δύο τιμολόγια, και η κατάθεση έδειχνε στο τελευταίο που έγραψε — ένα ποσό, δύο εξοφλήσεις. Εδώ
+    κερδίζει ένα: το δεύτερο βρίσκει την κατάθεση κλειδωμένη (ή ήδη συμφωνημένη με άλλο τιμολόγιο) και αρνείται.
+    Επανάληψη του ΙΔΙΟΥ αιτήματος (ίδιο τιμολόγιο, ήδη συμφωνημένη κατάθεση) επιτρέπεται: είναι αδρανής.
+    """
+    return await db.bank_transactions.find_one_and_update(
+        firm_query(firm_id, {"_id": tx_id, "$and": [
+            {"$or": [{"match_status": {"$nin": list(CONFIRMED_DEPOSIT_STATES)}}, {"matched_invoice_id": invoice_key}]},
+            _deposit_unclaimed(),
+        ]}),
+        {"$set": {"claim": token, "claim_at": _now()}},
+        return_document=ReturnDocument.BEFORE)
+
+
+async def release_deposit(firm_id: str, tx_id, token: str) -> None:
+    try:
+        await db.bank_transactions.update_one(
+            firm_query(firm_id, {"_id": tx_id, "claim": token}), {"$unset": {"claim": "", "claim_at": ""}})
+    except Exception:  # noqa: BLE001 — λήγει μόνο του μετά το TTL
+        logger.warning("Δεν αποδεσμεύτηκε το κλείδωμα της κατάθεσης %s", tx_id)
+
+
+async def change_unsettled_deposit(firm_id: str, tx_id, changes: dict) -> bool:
+    """Αλλάζει την κατάσταση μιας κατάθεσης (αγνόηση, αποδέσμευση) **μόνο** αν δεν έχει συμφωνηθεί και δεν την επεξεργάζεται
+    άλλη ενέργεια. Ο έλεγχος γίνεται στην ίδια ατομική εγγραφή: αλλιώς μια επιβεβαίωση που έγινε ανάμεσα στην ανάγνωση και την
+    εγγραφή θα αντικαθίστατο — τιμολόγιο «εξοφλημένο» από κατάθεση που πλέον φαίνεται αγνοημένη και συνδεδεμένη με τίποτα."""
+    result = await db.bank_transactions.update_one(
+        firm_query(firm_id, {"_id": tx_id, "match_status": {"$nin": list(CONFIRMED_DEPOSIT_STATES)}, **_deposit_unclaimed()}),
+        {"$set": changes})
+    return result.matched_count == 1
+
+
 # Τρόποι εξόφλησης με τους οποίους μια κατάθεση μπορεί ακόμη να συνδεθεί με εξοφλημένο τιμολόγιο: ο χρήστης το σημείωσε
 # εξοφλημένο με το χέρι (ή παλιό τιμολόγιο χωρίς καταγραφή τρόπου). Stripe και πελατολογικός λογαριασμός είναι άλλα κανάλια·
 # τα bank_* έχουν ήδη δική τους κατάθεση.
@@ -710,7 +822,7 @@ async def bank_link_dues(firm_id: str, invoices: list[dict], settings: dict) -> 
 
 async def apply_bank_payment(firm_id: str, tx: dict, invoice_id, *, settings: dict, paid_via: str,
                              status_on_success: str, accept_difference: bool = False,
-                             dry_run: bool = False) -> dict:
+                             expected_difference: float | None = None, dry_run: bool = False) -> dict:
     """Συνδέει μια κατάθεση με ένα τιμολόγιο και το εξοφλεί — με όλους τους ελέγχους, σε ένα σημείο.
 
     Την καλούν η αυτόματη συμφωνία, η μαζική και η χειροκίνητη επιβεβαίωση, και το inbox. Κανόνες:
@@ -721,7 +833,12 @@ async def apply_bank_payment(firm_id: str, tx: dict, invoice_id, *, settings: di
       πρόκειται για διπλοπληρωμή ή για πληρωμή από άλλο κανάλι (Stripe, πελατολογικός) και ένας
       άνθρωπος πρέπει να αποφασίσει·
     * το ποσό πρέπει να ισούται με το οφειλόμενο. Διαφορά δέχεται μόνο ρητή απόφαση ανθρώπου
-      (`accept_difference`) και καταγράφεται στην κίνηση.
+      (`accept_difference`) και καταγράφεται στην κίνηση. Αν ο καλών δηλώσει και τη διαφορά που ΕΙΔΕ ο άνθρωπος
+      (`expected_difference`, προσημασμένη: κατάθεση − οφειλόμενο), η αποδοχή ισχύει μόνο γι' αυτήν· αν το οφειλόμενο
+      άλλαξε στο μεταξύ (δεύτερη καρτέλα, συνάδελφος, πιστωτικό), η εξόφληση αρνείται με `amount_changed` — αλλιώς ένα
+      τσεκαρισμένο «αποδέχομαι τη διαφορά» θα κάλυπτε οποιαδήποτε διαφορά, και όχι αυτή που εμφανιζόταν·
+    * η κατάθεση «κλειδώνεται» ατομικά πριν αγγιχτεί οποιοδήποτε τιμολόγιο (`claim_deposit`): όποιος χάσει τον αγώνα
+      παίρνει `tx_settled` (η κίνηση συμφωνήθηκε στο μεταξύ), `tx_busy` (την επεξεργάζεται άλλη ενέργεια) ή `tx_missing`.
 
     Επιστρέφει {"status": "paid" | "linked" | "refused", "reason", "message", ...}. Με `dry_run`
     κάνει μόνο τους ελέγχους και επιστρέφει "ok" χωρίς να αλλάξει τίποτα.
@@ -768,33 +885,68 @@ async def apply_bank_payment(firm_id: str, tx: dict, invoice_id, *, settings: di
             f"Η κατάθεση ({_eur(amount)}) δεν ταιριάζει με το οφειλόμενο του {number} ({_eur(due)}): "
             f"διαφορά {'+' if difference > 0 else '−'}{_eur(abs(difference))}.",
             due=due, difference=difference)
+    if not exact and expected_difference is not None and to_cents(difference) != to_cents(expected_difference):
+        return refuse(
+            "amount_changed",
+            f"Το οφειλόμενο του {number} άλλαξε από τότε που είδατε τη διαφορά: τώρα η κατάθεση ({_eur(amount)}) απέχει "
+            f"{'+' if difference > 0 else '−'}{_eur(abs(difference))} από το οφειλόμενο ({_eur(due)}), ενώ είχατε αποδεχτεί "
+            f"{'+' if expected_difference > 0 else '−'}{_eur(abs(expected_difference))}. Ελέγξτε το ποσό και επιβεβαιώστε ξανά.",
+            due=due, difference=difference)
 
     if dry_run:
         return {"status": "ok", "reason": "", "message": "", "due": due,
                 "difference": 0.0 if exact else difference, "invoice_number": invoice.get("number", "")}
 
-    outcome = "linked"
-    if status == "issued":
-        if await mark_paid(firm_id, oid, paid_via=paid_via):
-            outcome = "paid"
-        else:
-            # Άλλη διεργασία πρόλαβε ανάμεσα στον έλεγχο και την εξόφληση: ξαναελέγχουμε την τρέχουσα εικόνα.
-            fresh = await db.invoices.find_one(firm_query(firm_id, {"_id": oid})) or {}
-            if (fresh.get("status") != "paid" or fresh.get("paid_via") in ("stripe", "trust")
-                    or await _claimed_by_other_deposit(firm_id, key, tx["_id"])):
-                return refuse("already_paid", already_paid_message())
+    # Ατομικό «κλείδωμα» της κατάθεσης: αν δύο αιτήματα (αυτόματη συμφωνία + χειροκίνητη επιβεβαίωση, δύο καρτέλες) πάνε να
+    # εξοφλήσουν ΔΙΑΦΟΡΕΤΙΚΑ τιμολόγια με την ίδια κατάθεση, περνά ένα· το άλλο αρνείται πριν αγγίξει οποιοδήποτε τιμολόγιο.
+    token = uuid.uuid4().hex
+    before = await claim_deposit(firm_id, tx["_id"], key, token)
+    if before is None:
+        current = await db.bank_transactions.find_one(firm_query(firm_id, {"_id": tx["_id"]}))
+        if current is None:
+            return refuse("tx_missing", "Η κίνηση δεν υπάρχει πια.")
+        if current.get("match_status") in CONFIRMED_DEPOSIT_STATES:
+            return refuse("tx_settled", f"Η κίνηση έχει ήδη συμφωνηθεί με το τιμολόγιο {current.get('matched_invoice_number') or ''}.".strip())
+        return refuse("tx_busy", "Η κίνηση επεξεργάζεται αυτή τη στιγμή από άλλη ενέργεια — ανανεώστε και ξαναδοκιμάστε σε λίγο.")
 
-    update = {"$set": {
-        "matched_invoice_id": key, "matched_invoice_number": invoice.get("number", ""),
-        "match_status": status_on_success, "match_ambiguous": False, "confirmed_at": _now(),
-        **({"match_confidence": 100} if status_on_success == "manual_matched" else {}),
-        **({} if exact else {"amount_difference": difference}),
-    }}
-    if exact:
-        update["$unset"] = {"amount_difference": ""}
-    await db.bank_transactions.update_one(firm_query(firm_id, {"_id": tx["_id"]}), update)
-    return {"status": outcome, "reason": "", "message": "", "due": due, "difference": 0.0 if exact else difference,
-            "invoice_number": invoice.get("number", "")}
+    outcome = "linked"
+    try:
+        if status == "issued":
+            if await mark_paid(firm_id, oid, paid_via=paid_via):
+                outcome = "paid"
+            else:
+                # Άλλη διεργασία πρόλαβε ανάμεσα στον έλεγχο και την εξόφληση: ξαναελέγχουμε την τρέχουσα εικόνα.
+                fresh = await db.invoices.find_one(firm_query(firm_id, {"_id": oid})) or {}
+                if (fresh.get("status") != "paid" or fresh.get("paid_via") in ("stripe", "trust")
+                        or await _claimed_by_other_deposit(firm_id, key, tx["_id"])):
+                    return refuse("already_paid", already_paid_message())
+
+        # Επανάληψη: η κατάθεση ήταν ήδη συμφωνημένη με ΑΥΤΟ το τιμολόγιο (διπλό κλικ, ή παλιό αντίγραφο στον Autopilot).
+        # Μένει ό,τι καταγράφηκε την πρώτη φορά — μια αυτόματη επανάληψη δεν υποβαθμίζει ανθρώπινη επιβεβαίωση.
+        replay = before.get("match_status") in CONFIRMED_DEPOSIT_STATES and before.get("matched_invoice_id") == key
+        final_status = before["match_status"] if replay else status_on_success
+        update = {"$set": {
+            "matched_invoice_id": key, "matched_invoice_number": invoice.get("number", ""),
+            "match_status": final_status, "match_ambiguous": False,
+            **({} if replay else {"confirmed_at": _now()}),
+            **({"match_confidence": 100} if final_status == "manual_matched" else {}),
+            **({} if exact else {"amount_difference": difference}),
+        }, "$unset": {"claim": "", "claim_at": "", **({"amount_difference": ""} if exact else {})}}
+        written = await db.bank_transactions.update_one(firm_query(firm_id, {"_id": tx["_id"], "claim": token}), update)
+        if written.matched_count == 0:
+            # Το κλείδωμα έληξε (πολύ αργή βάση) και άλλος πρόλαβε. Αν κατέληξε στο ίδιο τιμολόγιο, δεν χάθηκε τίποτα·
+            # αλλιώς η ενέργεια δεν ολοκληρώθηκε και ο χρήστης πρέπει να την επαναλάβει (η επανάληψη είναι ασφαλής).
+            current = await db.bank_transactions.find_one(firm_query(firm_id, {"_id": tx["_id"]})) or {}
+            if not (current.get("match_status") in CONFIRMED_DEPOSIT_STATES and current.get("matched_invoice_id") == key):
+                logger.error("Η κατάθεση %s δεν καταγράφηκε στο τιμολόγιο %s (το κλείδωμα χάθηκε· εξόφληση τιμολογίου: %s)",
+                             tx["_id"], key, outcome)
+                return refuse("tx_busy", f"Η κίνηση άλλαξε στο μεταξύ και δεν συνδέθηκε με το {number}"
+                                         + (" (το τιμολόγιο σημειώθηκε εξοφλημένο)" if outcome == "paid" else "")
+                                         + " — ανανεώστε και επιβεβαιώστε ξανά.")
+        return {"status": outcome, "reason": "", "message": "", "due": due, "difference": 0.0 if exact else difference,
+                "invoice_number": invoice.get("number", "")}
+    finally:
+        await release_deposit(firm_id, tx["_id"], token)
 
 
 # ------------------------------------------------- cancellation / credit ----
@@ -821,10 +973,12 @@ async def _previous_in_series(firm_id: str, prefix: str, year: int):
     query = firm_query(firm_id, {"number": {"$regex": f"^{prefix}-{year}-"},
                                  "status": {"$in": ["issued", "paid", "cancelled"]}})
     async for d in db.invoices.find(query, {"number": 1, "date": 1}):
-        try:
-            n = int(d["number"].rsplit("-", 1)[-1])
-        except (ValueError, KeyError):
+        # Ό,τι η αναφορά αριθμών (`numbering_report`) δεν θεωρεί αριθμό σειράς δεν γίνεται ούτε «δάπεδο» της επόμενης έκδοσης:
+        # ένας αριθμός 11 ψηφίων (εισαγωγή, επαναφορά) θα έδινε στο επόμενο παραστατικό 12345678902.
+        parsed = _parse_number(d.get("number") or "")
+        if parsed is None or parsed[0] != prefix or parsed[1] != year:
             continue
+        n = parsed[2]
         if best is None or n > best[0]:
             best = (n, (d.get("date") or "")[:10], d["number"])
     return best
@@ -1201,6 +1355,11 @@ async def build_credit_note(firm_id: str, invoice: dict, user_email: str,
     from models import Invoice, InvoiceLineItem
     from tax_utils import calculate_invoice_totals
 
+    # Πρώτος έλεγχος, πριν από οποιαδήποτε εγγραφή: ένα NaN εδώ έμενε ως πρόχειρο πιστωτικό με NaN σύνολο, και από εκεί
+    # η λίστα τιμολογίων όλου του γραφείου απαντούσε 500 (το route το φρουρεί, αλλά η υπηρεσία δεν εξαρτάται από αυτό).
+    if amount is not None and not (isinstance(amount, (int, float)) and not isinstance(amount, bool)
+                                   and math.isfinite(amount) and amount > 0):
+        raise InvoiceWorkflowError("Το ποσό της πίστωσης πρέπει να είναι θετικός, έγκυρος αριθμός.")
     if invoice.get("mydata_status") != "synced" or not invoice.get("mydata_mark"):
         raise InvoiceWorkflowError(
             "Το πιστωτικό απαιτεί διαβιβασμένο αρχικό παραστατικό (MARK). "

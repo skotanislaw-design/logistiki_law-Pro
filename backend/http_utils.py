@@ -57,6 +57,16 @@ def content_disposition(filename: str, disposition: str = "attachment") -> str:
 
 # ------------------------------------------------------------------ επιτρεπτές διευθύνσεις ---
 
+# Λίστες οθόνης που επιστρέφουν το πολύ N εγγραφές (χωρίς σελιδοποίηση). Όταν υπάρχουν και άλλες, η απάντηση φέρει την
+# κεφαλίδα με το N που εμφανίστηκε — το frontend το λέει στον χρήστη, αντί να μοιάζει η λίστα πλήρης.
+LIST_TRUNCATED_HEADER = "X-List-Truncated"
+
+
+def disclose_truncation(response, truncated: bool, limit: int) -> None:
+    if truncated:
+        response.headers[LIST_TRUNCATED_HEADER] = str(limit)
+
+
 DEFAULT_DEV_ORIGINS = ["http://localhost:3000", "http://localhost:8080"]
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
@@ -80,6 +90,23 @@ def _origin_key(scheme: str, host: str, port: int | None) -> str:
     if port is not None and port != _DEFAULT_PORTS.get(scheme):
         host = f"{host}:{port}"
     return f"{scheme}://{host}"
+
+
+def origin_of(value) -> str | None:
+    """Η προέλευση (``scheme://host[:port]``, κανονική μορφή) μιας διεύθυνσης ή μιας τιμής ``Origin``/``Referer`` — ή ``None``.
+
+    ``None`` για ό,τι δεν είναι διεύθυνση http(s) με όνομα υπολογιστή, π.χ. ``Origin: null`` (το στέλνουν οι browsers από
+    sandboxed iframe, ``data:`` URL και αναδρομές μεταξύ ιστότοπων με πολιτική απορρήτου): δεν ταυτοποιεί κανέναν."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parts = urlsplit(value.strip())
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in _DEFAULT_PORTS or not parts.hostname:
+        return None
+    return _origin_key(parts.scheme, parts.hostname, port)
 
 
 def checked_return_url(url, allowed, *, allowed_paths: tuple[str, ...] = ("",)) -> str | None:

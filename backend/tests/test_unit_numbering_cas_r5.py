@@ -816,14 +816,19 @@ def test_a_huge_number_does_not_build_a_huge_list():
     async def scenario():
         await _put("ΤΠΥ-2026-0001")
         await _put("ΤΠΥ-2026-999999999")
-        await db.counters.insert_one({"_id": CID, "seq": 10 ** 15})
+        await db.counters.insert_one({"_id": CID, "seq": 999_999_999})        # το μεγαλύτερο έγκυρο: ο μετρητής ισούται με τον τελευταίο
         started = time.perf_counter()
         report = await numbering_report(FIRM)
         assert time.perf_counter() - started < 1.0
         s = report["series"][0]
-        assert s["gaps_total"] == 999999997 + (10 ** 15 - 999999999)
+        assert s["gaps_total"] == 999999997 and s["counter"]["state"] == "ok"
         assert len(s["gaps"]) == GAP_LIST_LIMIT and s["gaps"][:3] == [2, 3, 4] and s["ok"] is False
         assert report["problems"]["gaps"] == s["gaps_total"]
+        # Μετρητής πέρα από το όριο των 9 ψηφίων: δεν είναι αριθμός σειράς, μετράει ως 0 (numbering.as_int) και
+        # εμφανίζεται ως «πίσω» — δεν χτίζεται λίστα κενών ούτε διαδίδεται υπέρογκος αριθμός.
+        await db.counters.update_one({"_id": CID}, {"$set": {"seq": 10 ** 15}})
+        s = (await numbering_report(FIRM))["series"][0]
+        assert s["gaps_total"] == 999999997 and s["counter"]["state"] == "behind" and s["counter"]["seq"] == 0
 
     _run(scenario())
 

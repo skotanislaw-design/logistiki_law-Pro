@@ -8,20 +8,25 @@ import math
 import re
 from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
-from db import db
+from db import db, fetch_capped
+from http_utils import disclose_truncation
 from models import BankTransaction
 from auth import get_current_user, require_admin
 from pydantic import BaseModel
-from tax_utils import athens_today
+from tax_utils import athens_today, money_limit_error
 from tenant import tenant_query, firm_id_for
 from invoice_services import (
-    apply_bank_payment, close_tx_notifications, deposit_cents, firm_query, load_client, outstanding_amount, to_cents,
+    apply_bank_payment, change_unsettled_deposit, close_tx_notifications, deposit_cents, firm_query, load_client,
+    outstanding_amount, to_cents,
 )
 
 router = APIRouter(prefix="/bank", tags=["bank"])
+
+TRANSACTIONS_LIMIT = 500  # οι νεότερες κινήσεις· αν υπάρχουν κι άλλες, η απάντηση το δηλώνει (X-List-Truncated)
 
 
 def _parse_amount(s: str) -> float:
@@ -410,26 +415,33 @@ async def import_bank_statement(bank: str = "Άγνωστη", file: UploadFile =
 
 
 @router.get("/transactions")
-async def list_transactions(status: str = "all", user: dict = Depends(get_current_user)):
+async def list_transactions(response: Response, status: str = "all", user: dict = Depends(get_current_user)):
     query = {}
     if status != "all":
         query["match_status"] = status
-    docs = await db.bank_transactions.find(tenant_query(user, query)).sort("date", -1).limit(500).to_list(500)
+    docs, cut = await fetch_capped(db.bank_transactions.find(tenant_query(user, query)).sort("date", -1), TRANSACTIONS_LIMIT)
+    disclose_truncation(response, cut, TRANSACTIONS_LIMIT)
     return [BankTransaction.from_mongo(d) for d in docs]
 
 
 CONFIRMED_STATES = ("auto_confirmed", "manual_matched")
-REFUSAL_STATUS = {"invoice_missing": 404, "not_a_deposit": 400}
+REFUSAL_STATUS = {"invoice_missing": 404, "not_a_deposit": 400, "tx_missing": 404}
 
 
 @router.post("/reconcile/{tx_id}")
 async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, accept_difference: bool = False,
-                    user: dict = Depends(get_current_user)):
+                    expected_difference: Optional[float] = None, user: dict = Depends(get_current_user)):
     """Χειροκίνητη συμφωνία κατάθεσης με τιμολόγιο.
 
     Το ποσό πρέπει να ισούται με το οφειλόμενο. Αν η διαφορά είναι αποδεκτή (π.χ. προμήθεια της
     τράπεζας) ο χρήστης το δηλώνει ρητά με `accept_difference=true` και η διαφορά καταγράφεται.
+    Το `expected_difference` (κατάθεση − οφειλόμενο, προσημασμένο, σε €) δένει την αποδοχή με τη διαφορά που είδε ο
+    άνθρωπος: αν το οφειλόμενο άλλαξε στο μεταξύ, απάντηση 409 και καμία εγγραφή.
     """
+    if expected_difference is not None:
+        problem = money_limit_error(expected_difference, "Διαφορά που αποδέχεστε", negative_ok=True)
+        if problem:
+            raise HTTPException(status_code=400, detail=problem)
     try:
         tx = await db.bank_transactions.find_one(tenant_query(user, {"_id": ObjectId(tx_id)}))
     except Exception:
@@ -438,17 +450,27 @@ async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, acce
         raise HTTPException(status_code=404, detail="Δεν βρέθηκε")
 
     if ignore:
-        if tx.get("match_status") in CONFIRMED_STATES:
-            number = tx.get("matched_invoice_number")
-            raise HTTPException(
+        def settled_conflict(doc: dict) -> HTTPException:
+            number = doc.get("matched_invoice_number")
+            return HTTPException(
                 status_code=409,
                 detail=f"Η κίνηση έχει ήδη συμφωνηθεί με το τιμολόγιο{' ' + number if number else ''} "
                        "και δεν μπορεί να αγνοηθεί.")
-        await db.bank_transactions.update_one(
-            tenant_query(user, {"_id": ObjectId(tx_id)}),
-            {"$set": {"match_status": "ignored", "matched_invoice_id": None, "matched_invoice_number": None,
-                      "match_ambiguous": False}},
-        )
+
+        if tx.get("match_status") in CONFIRMED_STATES:
+            raise settled_conflict(tx)
+        # Η αλλαγή γίνεται υπό όρο μέσα στην ίδια εγγραφή: αν στο μεταξύ επιβεβαίωσε την κίνηση άλλος (ή την επεξεργάζεται
+        # ο Autopilot), δεν την αντικαθιστούμε — αλλιώς το τιμολόγιο θα έμενε «εξοφλημένο» από κίνηση που φαίνεται αγνοημένη.
+        changed = await change_unsettled_deposit(
+            firm_id_for(user), tx["_id"],
+            {"match_status": "ignored", "matched_invoice_id": None, "matched_invoice_number": None, "match_ambiguous": False})
+        if not changed:
+            current = await db.bank_transactions.find_one(tenant_query(user, {"_id": tx["_id"]})) or {}
+            if current.get("match_status") in CONFIRMED_STATES:
+                raise settled_conflict(current)
+            raise HTTPException(
+                status_code=409,
+                detail="Η κίνηση επεξεργάζεται αυτή τη στιγμή από άλλη ενέργεια — ανανεώστε και ξαναδοκιμάστε σε λίγο.")
         await close_tx_notifications(firm_id_for(user), tx["_id"], "ignored", user["email"])
         return {"message": "Η κίνηση σημειώθηκε ως αγνοητέα"}
 
@@ -458,7 +480,7 @@ async def reconcile(tx_id: str, invoice_id: str = "", ignore: bool = False, acce
     settings = await db.settings.find_one(tenant_query(user)) or {}
     result = await apply_bank_payment(
         firm_id_for(user), tx, invoice_id, settings=settings, paid_via="bank_manual",
-        status_on_success="manual_matched", accept_difference=accept_difference)
+        status_on_success="manual_matched", accept_difference=accept_difference, expected_difference=expected_difference)
     if result["status"] == "refused":
         detail = result["message"]
         if result["reason"] == "amount_mismatch":

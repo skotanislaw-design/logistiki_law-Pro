@@ -256,10 +256,13 @@ async def test_digest_job_sends_and_records(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_autopilot_disabled_skips_everything():
+async def test_autopilot_disabled_skips_everything_that_acts_for_the_office():
     await _seed({"autopilot_enabled": False})
     results = await run_firm(FIRM)
-    assert results == [{"job": "*", "status": "skipped", "stats": {"reason": "autopilot_disabled"}}]
+    # Ο διακόπτης σταματά ό,τι ενεργεί εκ μέρους του γραφείου· μόνο οι δύο έλεγχοι που δεν στέλνουν τίποτα σε τρίτους
+    # συνεχίζουν (βλ. test_unit_autopilot_off_r5.py).
+    assert results[0] == {"job": "*", "status": "skipped", "stats": {"reason": "autopilot_disabled"}}
+    assert [r["job"] for r in results[1:]] == ["numbering_check", "card_payments"]
 
 
 @pytest.mark.asyncio

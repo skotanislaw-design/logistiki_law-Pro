@@ -71,8 +71,8 @@ def _archive(files: dict) -> bytes:
     return buf.getvalue()
 
 
-def _import(client, content: bytes):
-    return client.post("/api/backup/import", files={"file": ("backup.zip", content, "application/zip")})
+def _import(client, content: bytes, **params):
+    return client.post("/api/backup/import", params=params, files={"file": ("backup.zip", content, "application/zip")})
 
 
 def _oid(value) -> dict:
@@ -181,14 +181,17 @@ def test_restore_brings_back_everything_that_was_exported(client):
     assert ids <= {d["_id"] for d in _run(db.audit_logs.find({}).to_list(100000))}
 
 
-def test_restore_still_replaces_ordinary_documents_with_the_same_id(client):
-    """Τα επιχειρησιακά δεδομένα επαναφέρονται όπως πριν (η αντικατάσταση είναι ο σκοπός τους)."""
+def test_restore_replaces_ordinary_documents_only_when_the_overwrite_is_asked_for(client):
+    """Από το WP15β η προεπιλογή δεν αντικαθιστά τίποτα (βλ. test_unit_restore_semantics_r5)· τα δεδομένα εργασίας
+    αντικαθίστανται με ρητή επιλογή `mode=overwrite`."""
     _admin(client)
     from db import db
     cid = client.post("/api/clients", json={"name": "ΑΡΧΙΚΟ ΟΝΟΜΑ", "afm": "123456783"}).json()["id"]
     backup = _export_bytes(client)
     _run(db.clients.update_one({"_id": ObjectId(cid)}, {"$set": {"name": "ΑΛΛΑΓΜΕΝΟ ΟΝΟΜΑ"}}))
     assert _import(client, backup).status_code == 200
+    assert _run(db.clients.find_one({"_id": ObjectId(cid)}))["name"] == "ΑΛΛΑΓΜΕΝΟ ΟΝΟΜΑ"
+    assert _import(client, backup, mode="overwrite").status_code == 200
     assert _run(db.clients.find_one({"_id": ObjectId(cid)}))["name"] == "ΑΡΧΙΚΟ ΟΝΟΜΑ"
 
 

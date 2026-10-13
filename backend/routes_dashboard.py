@@ -4,7 +4,7 @@ from db import db, fetch_all
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from tax_utils import athens_today, next_vat_deadline, next_efka_deadline
-from invoice_services import invoice_balances, open_total
+from invoice_services import invoice_balances, open_invoices, open_total
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -71,6 +71,7 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
     unpaid = await fetch_all(db.invoices.find(tenant_query(user, {"status": "issued"})))
     balances = await invoice_balances(firm_id_for(user), unpaid, settings or {})
     unpaid_total = open_total(unpaid, balances)
+    unpaid_count = len(open_invoices(unpaid, balances))       # ο ίδιος ορισμός με το ποσό: όχι πιστωτικά, όχι ό,τι συμψηφίστηκε
 
     vat_deadline = next_vat_deadline(today, vat_period)
     efka_deadline = next_efka_deadline(today)
@@ -85,7 +86,7 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
     else:
         advice = "Δεν προκύπτει ΦΠΑ προς πληρωμή για την τρέχουσα περίοδο."
     if unpaid_total > 0:
-        advice += f" Υπενθύμιση: {len(unpaid)} ανεξόφλητα τιμολόγια συνολικού ποσού {unpaid_total:.2f} €."
+        advice += f" Υπενθύμιση: {unpaid_count} ανεξόφλητα τιμολόγια συνολικού ποσού {unpaid_total:.2f} €."
 
     obligations = [
         {"date": vat_deadline.isoformat(), "label": "Δήλωση & πληρωμή ΦΠΑ", "amount": vat_due if vat_due > 0 else None},
@@ -121,7 +122,7 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
         "year_expense": year_expense,
         "year_profit": round(year_income - year_expense, 2),
         "unpaid_total": unpaid_total,
-        "unpaid_count": len(unpaid),
+        "unpaid_count": unpaid_count,
         "advice": advice,
         "obligations": obligations,
     }

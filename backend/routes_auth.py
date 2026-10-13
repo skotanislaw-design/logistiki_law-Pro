@@ -8,7 +8,7 @@ from db import db
 from models import User, UserPublic
 from auth import (
     hash_password, verify_password, create_access_token, create_refresh_token,
-    set_auth_cookies, get_current_user, check_lockout, record_failed_attempt, clear_attempts,
+    set_auth_cookies, set_access_cookie, clear_auth_cookies, get_current_user, check_lockout, record_failed_attempt, clear_attempts,
     get_jwt_secret, JWT_ALGORITHM, create_mfa_token, decode_mfa_token,
 )
 from crypto import encrypt, decrypt
@@ -104,8 +104,7 @@ async def login(payload: LoginRequest, request: Request, response: Response):
 
 @router.post("/logout")
 async def logout(response: Response, user: dict = Depends(get_current_user)):
-    response.delete_cookie("access_token", path="/")
-    response.delete_cookie("refresh_token", path="/")
+    clear_auth_cookies(response)
     return {"message": "Αποσυνδεθήκατε επιτυχώς"}
 
 
@@ -132,7 +131,7 @@ async def refresh_token(request: Request, response: Response):
     if token_predates_password_change(payload, user):
         raise HTTPException(status_code=401, detail="Ο κωδικός άλλαξε. Συνδεθείτε ξανά.")
     access = create_access_token(str(user["_id"]), user["email"])
-    response.set_cookie(key="access_token", value=access, httponly=True, secure=True, samesite="none", max_age=1800, path="/")
+    set_access_cookie(response, access)
     return {"message": "ok"}
 
 

@@ -17,6 +17,7 @@ def _validate_client_payload(payload: Client) -> None:
     αντί να διορθωθεί. Εδώ ελέγχεται μόνο ό,τι γράφεται τώρα.
     """
     afm = (payload.afm or "").strip()
+    payload.afm = afm               # αποθηκεύεται όπως ελέγχθηκε: το « 094259216 » δεν ταίριαζε με τίποτα (διπλότυπα, τράπεζα)
     if not afm:
         return                      # ιδιώτης χωρίς ΑΦΜ: νόμιμο, εκδίδεται ΑΠΥ λιανικής
     if (payload.country or "GR").upper() != "GR":

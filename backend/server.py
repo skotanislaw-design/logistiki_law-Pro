@@ -1,6 +1,10 @@
 from fastapi import FastAPI, APIRouter
+from bson.errors import InvalidId
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 import os
+import re
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
@@ -9,7 +13,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 from db import db
-from auth import hash_password, verify_password
+from auth import hash_password, verify_password, cookie_samesite, COOKIE_SAMESITE_VALUES
 from tenant import LEGACY_FIRM_ID
 from storage import init_storage
 from routes_auth import router as auth_router
@@ -44,7 +48,9 @@ from routes_portal_chat import router as portal_chat_router, public_router as po
 from routes_automation import router as automation_router
 from routes_audit import router as audit_router
 from ai_runtime import AIUnavailable
+from numbering import SeriesBusy
 from json_guard import RejectNonFiniteJson
+from csrf_guard import CsrfGuard
 from invoice_services import flag_unchecked_bank_suggestions  # noqa: F401 — επίσης: τρέχει στην εκκίνηση
 from invoice_services import ensure_invoice_number_index, INVOICE_NUMBER_INDEX  # noqa: F401 — επίσης: τρέχει στην εκκίνηση
 
@@ -108,6 +114,37 @@ async def _ai_unavailable(_, exc: AIUnavailable):
     return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
+@app.exception_handler(SeriesBusy)
+async def _series_busy(_, exc: SeriesBusy):
+    """Ο μετρητής αρίθμησης ήταν συνεχώς απασχολημένος (50 γύροι) και δεν δόθηκε αριθμός — ούτε χάθηκε κάποιος. Είναι
+    προσωρινή κατάσταση που διορθώνεται με νέα προσπάθεια: 503 με `Retry-After`, όχι 500 «κάτι χάλασε». Καλύπτει τις
+    υποθέσεις, τα γραμμάτια και τα παράβολα (η έκδοση τιμολογίου το μετατρέπει μόνη της σε σφάλμα εργασίας)."""
+    from fastapi.responses import JSONResponse
+    from numbering import BUSY_MESSAGE
+    return JSONResponse(status_code=503, headers={"Retry-After": "2"}, content={"detail": BUSY_MESSAGE})
+
+
+@app.exception_handler(InvalidId)
+async def _invalid_id(_, exc: InvalidId):
+    """Αναγνωριστικό που δεν είναι έγκυρο ObjectId (`/api/hearings/abc`, κομμένος σύνδεσμος) δεν αντιστοιχεί σε καμία εγγραφή:
+    404 «δεν βρέθηκε», όπως για ένα έγκυρο αναγνωριστικό που δεν υπάρχει — όχι 500 «κάτι χάλασε» με ίχνος στο log. Ισχύει για
+    όλες τις διαδρομές (πάνω από εκατό σημεία κάνουν `ObjectId(<κείμενο του αιτήματος>)`)."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=404, content={"detail": "Η εγγραφή δεν βρέθηκε."})
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request, exc: RequestValidationError):
+    """Ένας αριθμός γραμμένος ως κείμενο (`"NaN"`, `"Infinity"`, `"1e999"`) ξεφεύγει από τον φραγμό JSON, που βλέπει μόνο
+    τις σταθερές του JSON. Τα μοντέλα τον απορρίπτουν (`allow_inf_nan=False`)· εδώ παίρνει το ίδιο 400 και το ίδιο
+    μήνυμα με τις σταθερές, ώστε ο χρήστης να βλέπει πάντα την ίδια εξήγηση. Κάθε άλλο σφάλμα μένει όπως το δίνει η FastAPI."""
+    if any(error.get("type") == "finite_number" for error in exc.errors()):
+        from fastapi.responses import JSONResponse
+        from json_guard import MESSAGE
+        return JSONResponse(status_code=400, content={"detail": MESSAGE})
+    return await request_validation_exception_handler(request, exc)
+
+
 app.include_router(api_router)
 # Payment webhook & public status live στη ρίζα (χωρίς /api prefix από router — ήδη ενσωματωμένο)
 app.include_router(payments_public_router)
@@ -135,8 +172,11 @@ async def _audit_mutations(request, call_next):
     return response
 
 
-# Εσωτερικότερο από το CORS (ώστε και η απόρριψη να φέρει τις κεφαλίδες του) και εξωτερικότερο από το ίχνος ελέγχου.
+# Σειρά (από έξω προς τα μέσα): CORS → CsrfGuard → RejectNonFiniteJson → ίχνος ελέγχου → εφαρμογή. Τα δύο φίλτρα είναι εσωτερικότερα
+# από το CORS (ώστε και η απόρριψη να φέρει τις κεφαλίδες του) και εξωτερικότερα από το ίχνος ελέγχου. Ο έλεγχος προέλευσης
+# προηγείται του φραγμού JSON: ένα ξένο αίτημα απορρίπτεται πριν διαβαστεί (και αναλυθεί) το σώμα του.
 app.add_middleware(RejectNonFiniteJson)
+app.add_middleware(CsrfGuard)
 
 app.add_middleware(
     CORSMiddleware,
@@ -144,10 +184,19 @@ app.add_middleware(
     allow_origins=_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
+    # Σε αίτημα από άλλη προέλευση ο browser κρύβει κάθε κεφαλίδα που δεν αναφέρεται εδώ. Το frontend διαβάζει την
+    # `X-Closed-Truncated` για να δείξει ότι η λίστα τιμολογίων/τράπεζας δεν περιλαμβάνει παλαιότερα εξοφλημένα — χωρίς
+    # αυτό (dev server, frontend και API σε διαφορετικά domains) η ειδοποίηση δεν θα εμφανιζόταν ποτέ.
+    expose_headers=["X-Closed-Truncated", "X-List-Truncated"],
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+# Οι τιμές-παραδείγματα του `.env.example` («change-me-to-a-long-random-string») είναι δημόσιες: όποιος έχει διαβάσει το αποθετήριο
+# τις γνωρίζει. Μια εγκατάσταση που τις κρατά δεν έχει στην πράξη μυστικό.
+PLACEHOLDER_VALUE = re.compile(r"change[-_ ]?me", re.IGNORECASE)
 
 
 def validate_environment() -> None:
@@ -156,12 +205,36 @@ def validate_environment() -> None:
     Το docker-compose ορίζει JWT_SECRET="" όταν λείπει από το .env. Ο server ξεκινούσε
     τότε «υγιής» (το /api/health δεν αγγίζει JWT) και κάθε login επέστρεφε 500 με
     InvalidKeyError — η χειρότερη δυνατή εμπειρία για τον διαχειριστή.
+
+    Το ίδιο ισχύει και για την τιμή-παράδειγμα του `.env.example`: με γνωστό JWT_SECRET ο καθένας υπογράφει δικό του token
+    διαχειριστή· με γνωστό κωδικό MongoDB διαβάζει όλη τη βάση. Και στις δύο περιπτώσεις η εφαρμογή δεν ξεκινά.
     """
     secret = os.environ.get("JWT_SECRET") or ""
     if not secret.strip():
         raise RuntimeError(
             "Το JWT_SECRET δεν έχει οριστεί. Ορίστε το στο .env (τυχαία συμβολοσειρά "
             "τουλάχιστον 32 χαρακτήρων) — χωρίς αυτό καμία σύνδεση δεν λειτουργεί."
+        )
+    if PLACEHOLDER_VALUE.search(secret):
+        raise RuntimeError(
+            "Το JWT_SECRET έχει ακόμη την τιμή-παράδειγμα του .env.example («change-me…»), που είναι δημόσια: οποιοσδήποτε "
+            "θα μπορούσε να υπογράψει δικό του token διαχειριστή. Ορίστε τυχαία συμβολοσειρά τουλάχιστον 32 χαρακτήρων, π.χ. "
+            "με:  python -c \"import secrets; print(secrets.token_urlsafe(48))\"  (αν δεν είχε οριστεί SECRETS_KEY, οι "
+            "συνδέσεις θα λήξουν και τα αποθηκευμένα μυστικά SMTP/IMAP/ΑΑΔΕ θα ξανακαταχωρηθούν από τις Ρυθμίσεις)."
+        )
+    if PLACEHOLDER_VALUE.search(os.environ.get("MONGO_URL") or ""):
+        raise RuntimeError(
+            "Ο κωδικός της MongoDB (MONGO_PASSWORD) έχει ακόμη την τιμή-παράδειγμα του .env.example («change-me…»), που είναι "
+            "δημόσια: όποιος φτάνει στη βάση θα διάβαζε όλο το αρχείο του γραφείου. Ορίστε μακρύ τυχαίο κωδικό. Σε υπάρχουσα "
+            "εγκατάσταση αλλάξτε πρώτα τον κωδικό στη MongoDB (db.changeUserPassword) και μετά το .env."
+        )
+    requested_samesite = (os.environ.get("COOKIE_SAMESITE") or "").strip().lower()
+    if requested_samesite and requested_samesite not in COOKIE_SAMESITE_VALUES:
+        logger.warning("Η τιμή COOKIE_SAMESITE=%r δεν είναι έγκυρη (lax | strict | none) — χρησιμοποιείται lax.", requested_samesite[:30])
+    if cookie_samesite() == "none":
+        logger.warning(
+            "COOKIE_SAMESITE=none: τα cookies σύνδεσης στέλνονται και σε αιτήματα από άλλους ιστότοπους. Η προστασία από "
+            "CSRF στηρίζεται τότε μόνο στον έλεγχο προέλευσης — το CORS_ORIGINS πρέπει να περιέχει ΜΟΝΟ την προέλευση της εφαρμογής."
         )
     if len(secret) < 32:
         logger.warning(
@@ -176,8 +249,9 @@ def validate_environment() -> None:
     if os.environ.get("STRIPE_SECRET_KEY") and not os.environ.get("STRIPE_WEBHOOK_SECRET"):
         logger.warning(
             "Το STRIPE_WEBHOOK_SECRET λείπει ενώ οι πληρωμές είναι ενεργές: το webhook του Stripe απενεργοποιείται "
-            "(απάντηση 503, για λόγους ασφαλείας — χωρίς μυστικό δεν μπορεί να ελεγχθεί η υπογραφή) και οι εξοφλήσεις "
-            "θα εντοπίζονται μόνο μέσω polling."
+            "(απάντηση 503, για λόγους ασφαλείας — χωρίς μυστικό δεν μπορεί να ελεγχθεί η υπογραφή). Οι εξοφλήσεις "
+            "εντοπίζονται τότε από τη σελίδα επιτυχίας του πελάτη και από τον Autopilot, που ρωτά το Stripe κάθε ~30 λεπτά "
+            "(εργασία card_payments)· ορίστε το μυστικό για άμεση καταγραφή."
         )
 
 

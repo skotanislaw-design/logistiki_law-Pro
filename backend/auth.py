@@ -88,9 +88,37 @@ def token_predates_password_change(payload: dict, user: dict) -> bool:
     return float(issued_at) < changed_dt.timestamp()
 
 
+ACCESS_COOKIE_MAX_AGE = 1800            # 30′, όσο και το access token
+REFRESH_COOKIE_MAX_AGE = 604800         # 7 ημέρες, όσο και το refresh token
+COOKIE_SAMESITE_VALUES = ("lax", "strict", "none")
+
+
+def cookie_samesite() -> str:
+    """Η τιμή `SameSite` των cookies σύνδεσης (μεταβλητή `COOKIE_SAMESITE`, προεπιλογή `lax`).
+
+    Με `none` ο browser τα στέλνει και σε αιτήματα που ξεκινούν από ΑΛΛΟΝ ιστότοπο — αυτό ήταν η αιτία του CSRF (βλ.
+    `csrf_guard.py`). Η εγκατάσταση του docker-compose είναι ίδιας προέλευσης, οπότε το `lax` δεν κοστίζει τίποτα. Το `none`
+    χρειάζεται μόνο όταν η εφαρμογή (frontend) και το API βρίσκονται σε διαφορετικά sites (π.χ. app.firma.gr και api.otherfirma.gr)·
+    τότε ορίστε `COOKIE_SAMESITE=none` ΚΑΙ βάλτε την προέλευση της εφαρμογής στο `CORS_ORIGINS`. Άγνωστη τιμή = `lax`."""
+    value = (os.environ.get("COOKIE_SAMESITE") or "lax").strip().lower()
+    return value if value in COOKIE_SAMESITE_VALUES else "lax"
+
+
+def set_access_cookie(response, access_token: str):
+    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=True,
+                        samesite=cookie_samesite(), max_age=ACCESS_COOKIE_MAX_AGE, path="/")
+
+
 def set_auth_cookies(response, access_token: str, refresh_token: str):
-    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=True, samesite="none", max_age=1800, path="/")
-    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=True, samesite="none", max_age=604800, path="/")
+    set_access_cookie(response, access_token)
+    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=True,
+                        samesite=cookie_samesite(), max_age=REFRESH_COOKIE_MAX_AGE, path="/")
+
+
+def clear_auth_cookies(response):
+    """Διαγραφή με τα ίδια χαρακτηριστικά που είχε το cookie όταν ορίστηκε (διαδρομή, Secure, SameSite)."""
+    for key in ("access_token", "refresh_token"):
+        response.delete_cookie(key, path="/", secure=True, httponly=True, samesite=cookie_samesite())
 
 
 async def get_current_user(request: Request) -> dict:

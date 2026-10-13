@@ -1,27 +1,36 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from bson import ObjectId
-from db import db
+from db import db, fetch_capped
+from http_utils import disclose_truncation
 from models import PayrollEmployee, PayrollRun
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
-from tax_utils import afm_error, calculate_payroll, is_valid_afm
+from tax_utils import afm_error, calculate_payroll, is_valid_afm, money_limit_error
 
 router = APIRouter(prefix="/payroll", tags=["payroll"])
+
+EMPLOYEES_LIMIT = 500     # αλφαβητικά· αν υπάρχουν κι άλλοι εργαζόμενοι, η απάντηση το δηλώνει (X-List-Truncated)
+RUNS_LIMIT = 1000         # οι νεότερες μισθοδοσίες· αν υπάρχουν κι άλλες, η απάντηση το δηλώνει (X-List-Truncated)
 
 
 def _validate_employee_afm(payload: PayrollEmployee) -> None:
     """Έλεγχος στη διαδρομή, όχι στο μοντέλο (όπως στους πελάτες): το μοντέλο διαβάζει και υπάρχουσες εγγραφές, και
-    ένας παλιός εργαζόμενος με λανθασμένο ΑΦΜ θα γινόταν αόρατος στη λίστα αντί να διορθωθεί. Το κενό επιτρέπεται."""
+    ένας παλιός εργαζόμενος με λανθασμένο ΑΦΜ θα γινόταν αόρατος στη λίστα αντί να διορθωθεί. Το κενό επιτρέπεται.
+    Ελέγχεται εδώ και ο μισθός (πεπερασμένος, όχι αρνητικός, μέχρι το όριο)."""
     afm = (payload.afm or "").strip()
     payload.afm = afm
     if afm and not is_valid_afm(afm):
         raise HTTPException(status_code=400, detail=afm_error(afm, "ΑΦΜ εργαζομένου"))
+    problem = money_limit_error(payload.gross_salary, "Μικτός μισθός")
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
 
 
 @router.get("/employees")
-async def list_employees(user: dict = Depends(get_current_user)):
-    docs = await db.payroll_employees.find(tenant_query(user)).sort("name", 1).to_list(500)
+async def list_employees(response: Response, user: dict = Depends(get_current_user)):
+    docs, cut = await fetch_capped(db.payroll_employees.find(tenant_query(user)).sort("name", 1), EMPLOYEES_LIMIT)
+    disclose_truncation(response, cut, EMPLOYEES_LIMIT)
     return [PayrollEmployee.from_mongo(d) for d in docs]
 
 
@@ -84,6 +93,7 @@ async def run_payroll(payload: RunPayrollRequest, user: dict = Depends(get_curre
 
 
 @router.get("/runs")
-async def list_runs(user: dict = Depends(get_current_user)):
-    docs = await db.payroll_runs.find(tenant_query(user)).sort("created_at", -1).to_list(1000)
+async def list_runs(response: Response, user: dict = Depends(get_current_user)):
+    docs, cut = await fetch_capped(db.payroll_runs.find(tenant_query(user)).sort("created_at", -1), RUNS_LIMIT)
+    disclose_truncation(response, cut, RUNS_LIMIT)
     return [PayrollRun.from_mongo(d) for d in docs]

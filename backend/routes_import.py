@@ -1,18 +1,26 @@
 import csv
 import io
+import unicodedata
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from openpyxl import load_workbook
 from db import db
 from models import Client
 from auth import get_current_user
+from tax_utils import afm_error, is_valid_afm
 from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/import", tags=["import"])
 
 
 def _norm_key(s: str) -> str:
-    return (s or "").strip().lower().replace(".", "").replace(" ", "_")
+    """Κλειδί στήλης: πεζά, χωρίς τόνους, τελείες και κενά — «Όνομα», «ΟΝΟΜΑ» και «ονομα» είναι η ίδια στήλη.
+
+    Το αρχείο-παράδειγμα που κατεβάζει ο χρήστης έχει επικεφαλίδα «Ονομα» (χωρίς τόνο στο Ο), που δεν υπήρχε στον πίνακα: κάθε
+    γραμμή του, και κάθε αρχείο φτιαγμένο πάνω του, έβγαινε «λείπει όνομα/επωνυμία» και δεν εισαγόταν κανένας πελάτης."""
+    text = unicodedata.normalize("NFD", (s or "").strip().lower())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return text.replace(".", "").replace(" ", "_")
 
 
 CLIENT_KEY_MAP = {
@@ -25,14 +33,24 @@ CLIENT_KEY_MAP = {
     "type": "client_type", "τύπος": "client_type",
     "client_type": "client_type",
 }
+# Ο πίνακας γράφεται όπως τον διαβάζει ο άνθρωπος· η αναζήτηση γίνεται με τα κλειδιά χωρίς τόνους.
+_CLIENT_KEYS = {_norm_key(key): field for key, field in CLIENT_KEY_MAP.items()}
+
+
+def _cell_text(value) -> str:
+    """Το κείμενο ενός κελιού. Το Excel δίνει τους αριθμούς ως αριθμούς: ένα ΑΦΜ ή τηλέφωνο φτάνει ως `123456783` (int) ή ως
+    `123456783.0` (float) και το δεύτερο αποθηκευόταν έτσι, με την τελεία."""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value).strip()
 
 
 def _parse_client_row(row: dict) -> dict:
     parsed = {}
     for k, v in row.items():
         key = _norm_key(str(k))
-        if key in CLIENT_KEY_MAP and v is not None and str(v).strip():
-            parsed[CLIENT_KEY_MAP[key]] = str(v).strip()
+        if key in _CLIENT_KEYS and v is not None and _cell_text(v):
+            parsed[_CLIENT_KEYS[key]] = _cell_text(v)
     ctype = parsed.get("client_type", "").lower()
     if any(w in ctype for w in ["εταιρ", "company", "α.ε", "ε.π.ε", "ike"]):
         parsed["client_type"] = "company"
@@ -79,13 +97,22 @@ def _read_rows(file_bytes: bytes, filename: str):
         raise HTTPException(status_code=400, detail="Υποστηρίζονται μόνο αρχεία .csv ή .xlsx")
 
 
+def _afm_row_error(afm: str) -> str:
+    message = afm_error(afm, "ΑΦΜ")
+    if afm.isascii() and afm.isdigit() and len(afm) == 8:
+        message += " Το Excel κόβει το αρχικό 0 των αριθμών — μορφοποιήστε τη στήλη ως κείμενο και ξαναδοκιμάστε."
+    return message
+
+
 @router.get("/clients/template")
 async def clients_template(user: dict = Depends(get_current_user)):
     """Παράδειγμα για τον χρήστη — να ξέρει τι στήλες περιμένουμε."""
     from fastapi.responses import Response
     csv_text = "Ονομα,ΑΦΜ,ΔΟΥ,Email,Τηλέφωνο,Διεύθυνση,Τύπος\n"
-    csv_text += "Παπαδόπουλος Ιωάννης,123456789,ΑΘΗΝΩΝ,ipapadopoulos@example.gr,2101234567,Πανεπιστημίου 10 Αθήνα,individual\n"
-    csv_text += "ABC Ε.Π.Ε.,999888777,ΦΑΕ ΑΘΗΝΩΝ,info@abc.gr,2109999999,Λ. Κηφισίας 100 Μαρούσι,company\n"
+    # Τα ΑΦΜ του παραδείγματος έχουν έγκυρο ψηφίο ελέγχου: η εισαγωγή απορρίπτει τα άλλα, οπότε ένα αρχείο που φτιάχτηκε
+    # πατώντας πάνω στο παράδειγμα πρέπει να περνά.
+    csv_text += "Παπαδόπουλος Ιωάννης,123456783,ΑΘΗΝΩΝ,ipapadopoulos@example.gr,2101234567,Πανεπιστημίου 10 Αθήνα,individual\n"
+    csv_text += "ABC Ε.Π.Ε.,999888771,ΦΑΕ ΑΘΗΝΩΝ,info@abc.gr,2109999999,Λ. Κηφισίας 100 Μαρούσι,company\n"
     return Response(
         content=("\ufeff" + csv_text).encode("utf-8"),
         media_type="text/csv",
@@ -108,6 +135,12 @@ async def import_clients(file: UploadFile = File(...), user: dict = Depends(get_
             data = _parse_client_row(raw)
             if not data.get("name"):
                 errors.append(f"Γραμμή {idx}: λείπει όνομα/επωνυμία")
+                skipped += 1
+                continue
+            if data.get("afm") and not is_valid_afm(data["afm"]):
+                # Όπως στη χειροκίνητη δημιουργία (`routes_clients`): κανένας νέος πελάτης με ΑΦΜ που δεν υπάρχει. Αλλιώς το λάθος
+                # φαίνεται μήνες αργότερα, στην πρώτη έκδοση τιμολογίου ή στην υποβολή στο myDATA.
+                errors.append(f"Γραμμή {idx}: {_afm_row_error(data['afm'])}")
                 skipped += 1
                 continue
             existing = None

@@ -26,13 +26,14 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Response
+from pydantic import BaseModel, ConfigDict, Field
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from auth import get_current_user
-from db import db
+from db import db, fetch_capped
+from http_utils import disclose_truncation
 from invoice_services import mark_paid, outstanding_amount, payable_amount
 from models import TrustAccount, TrustTransaction
 from tax_utils import athens_today
@@ -41,6 +42,9 @@ from tenant import tenant_query, firm_id_for
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/trust", tags=["trust"])
 
+ACCOUNTS_LIMIT = 1000     # αλφαβητικά· αν υπάρχουν κι άλλοι λογαριασμοί, η απάντηση το δηλώνει (X-List-Truncated)
+LEDGER_LIMIT = 500        # οι νεότερες κινήσεις του λογαριασμού· το υπόλοιπο και ο έλεγχος κινήσεων καλύπτουν πάντα όλες
+
 CENT = Decimal("0.01")
 MAX_AMOUNT = Decimal("1000000000")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -48,6 +52,7 @@ OUT_TYPES = ("withdrawal", "apply_to_invoice", "refund")
 
 
 class TransactionPayload(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     client_id: str
     type: Literal["deposit", "withdrawal", "apply_to_invoice", "refund"]
     amount: float
@@ -216,17 +221,48 @@ async def _ledger_check(user: dict, acc_id, account: TrustAccount) -> dict:
     return {"ledger_balance": float(ledger), "difference": float(difference), "consistent": difference == 0}
 
 
+async def ledger_inconsistencies(user: dict) -> dict:
+    """Οι λογαριασμοί του γραφείου των οποίων το υπόλοιπο δεν συμφωνεί με τις κινήσεις τους — για έλεγχο μετά από
+    επαναφορά αντιγράφου, όπου προστίθενται κινήσεις και ο λογαριασμός μπορεί να μείνει πίσω. Μόνο διαβάζει.
+
+    Ένα πέρασμα για όλο το γραφείο (όχι ένα ερώτημα ανά λογαριασμό) και **χωρίς όριο** πλήθους: ο έλεγχος που κόβεται
+    σιωπηλά σε κάποιον αριθμό λογαριασμών δεν είναι έλεγχος.
+    """
+    totals: dict[str, dict[str, Decimal]] = {}
+    async for row in db.trust_transactions.aggregate([
+        {"$match": tenant_query(user, {})},
+        {"$group": {"_id": {"account": "$account_id", "type": "$type"}, "total": {"$sum": "$amount"}}},
+    ]):
+        key = row["_id"] or {}
+        totals.setdefault(str(key.get("account")), {})[key.get("type")] = _dec(row["total"])
+    accounts = 0
+    inconsistent = []
+    async for account in db.trust_accounts.find(tenant_query(user, {})):
+        accounts += 1
+        per_type = totals.get(str(account["_id"]), {})
+        ledger = per_type.get("deposit", Decimal(0)) - sum((per_type.get(t, Decimal(0)) for t in OUT_TYPES), Decimal(0))
+        difference = _dec(account.get("balance")) - ledger
+        if difference != 0:
+            inconsistent.append({"client_id": account.get("client_id", ""), "client_name": account.get("client_name", ""),
+                                 "balance": float(_dec(account.get("balance"))), "ledger_balance": float(ledger),
+                                 "difference": float(difference)})
+    return {"accounts": accounts, "inconsistent": inconsistent}
+
+
 @router.get("/accounts")
-async def list_accounts(user: dict = Depends(get_current_user)):
-    docs = await db.trust_accounts.find(tenant_query(user, {})).sort("client_name", 1).to_list(1000)
+async def list_accounts(response: Response, user: dict = Depends(get_current_user)):
+    docs, cut = await fetch_capped(db.trust_accounts.find(tenant_query(user, {})).sort("client_name", 1), ACCOUNTS_LIMIT)
+    disclose_truncation(response, cut, ACCOUNTS_LIMIT)
     return [TrustAccount.from_mongo(d) for d in docs]
 
 
 @router.get("/accounts/{client_id}")
-async def get_account(client_id: str, user: dict = Depends(get_current_user)):
+async def get_account(client_id: str, response: Response, user: dict = Depends(get_current_user)):
     acc_id, account = await _ensure_account(client_id, user)
-    txs = await db.trust_transactions.find(tenant_query(user, {"account_id": str(acc_id)})) \
-        .sort([("date", -1), ("created_at", -1)]).to_list(500)
+    txs, cut = await fetch_capped(
+        db.trust_transactions.find(tenant_query(user, {"account_id": str(acc_id)})).sort([("date", -1), ("created_at", -1)]),
+        LEDGER_LIMIT)
+    disclose_truncation(response, cut, LEDGER_LIMIT)
     return {
         "account": account,
         "transactions": [TrustTransaction.from_mongo(t) for t in txs],

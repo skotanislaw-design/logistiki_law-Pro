@@ -4,15 +4,17 @@ from pydantic import BaseModel
 from datetime import date, datetime, timezone
 from typing import Optional
 from bson import ObjectId
-from db import db
-from http_utils import content_disposition
+from db import db, fetch_capped
+from http_utils import content_disposition, disclose_truncation
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from models import Grammatio, Invoice, InvoiceLineItem
 from routes_cases import log_case_event
-from tax_utils import athens_today, calculate_invoice_totals
+from tax_utils import athens_today, calculate_invoice_totals, money_limit_error
 
 router = APIRouter(prefix="/grammatia", tags=["grammatia"])
+
+LIST_LIMIT = 500          # τα νεότερα γραμμάτια· αν υπάρχουν κι άλλα, η απάντηση το δηλώνει (X-List-Truncated)
 
 GRAMMATIA_REFERENCE = [
     {"court_type": "Ειρηνοδικείο", "procedure": "Μικροδιαφορές", "amount": 64.0},
@@ -42,11 +44,14 @@ async def _next_number(firm_id: str):
 
 
 def _validate_amounts(payload: Grammatio) -> None:
-    for label, value in (("Η αξία αναφοράς", payload.reference_amount),
-                         ("Οι εισφορές", payload.contributions_amount),
-                         ("Το ΦΠΑ", payload.vat_amount)):
+    for label, field, value in (("Η αξία αναφοράς", "Αξία αναφοράς", payload.reference_amount),
+                                ("Οι εισφορές", "Εισφορές", payload.contributions_amount),
+                                ("Το ΦΠΑ", "ΦΠΑ", payload.vat_amount)):
         if value < 0:
             raise HTTPException(status_code=400, detail=f"{label} δεν μπορεί να είναι αρνητική.")
+        problem = money_limit_error(value, field)
+        if problem:
+            raise HTTPException(status_code=400, detail=problem)
     if round(payload.reference_amount + payload.contributions_amount + payload.vat_amount, 2) <= 0:
         raise HTTPException(status_code=400, detail="Το σύνολο του γραμματίου πρέπει να είναι θετικό.")
 
@@ -71,9 +76,10 @@ async def reference_table(user: dict = Depends(get_current_user)):
 
 
 @router.get("")
-async def list_grammatia(case_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_grammatia(response: Response, case_id: Optional[str] = None, user: dict = Depends(get_current_user)):
     query = {"case_id": case_id} if case_id else {}
-    docs = await db.grammatia.find(tenant_query(user, query)).sort("created_at", -1).to_list(500)
+    docs, cut = await fetch_capped(db.grammatia.find(tenant_query(user, query)).sort("created_at", -1), LIST_LIMIT)
+    disclose_truncation(response, cut, LIST_LIMIT)
     return [Grammatio.from_mongo(d) for d in docs]
 
 

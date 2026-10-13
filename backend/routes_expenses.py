@@ -4,14 +4,18 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
-from db import db
+from db import db, fetch_capped
+from http_utils import disclose_truncation
 from models import Expense
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
+from tax_utils import money_limit_error, valid_iso_date
 from ai_helpers import ocr_receipt
 from storage import upload_receipt_image, get_object
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
+
+LIST_LIMIT = 1000         # τα νεότερα έξοδα· αν υπάρχουν κι άλλα, η απάντηση το δηλώνει (X-List-Truncated). Τα σύνολα (ΦΠΑ, dashboard) δεν περνούν από εδώ.
 
 DUPLICATE_MARK_MSG = "Υπάρχει ήδη έξοδο με αυτό το MARK της ΑΑΔΕ· το ίδιο παραστατικό δεν καταχωρείται δύο φορές."
 
@@ -35,14 +39,34 @@ async def _refuse_duplicate_mark(user: dict, mark, exclude_id: str | None = None
         raise HTTPException(status_code=409, detail=DUPLICATE_MARK_MSG)
 
 
+def _validate_expense(payload: Expense) -> None:
+    """Έλεγχος στη διαδρομή, όχι στο μοντέλο: το μοντέλο διαβάζει και υπάρχουσες εγγραφές.
+
+    * Ημερομηνία ΕΕΕΕ-ΜΜ-ΗΗ και τίποτε άλλο — οι περίοδοι ΦΠΑ και το dashboard τις συγκρίνουν ως κείμενα.
+    * Ποσά πεπερασμένα και μέχρι το όριο (δύο `1e308` αθροίζονταν σε `inf` και το dashboard απαντούσε 500).
+    * Το ΦΠΑ έχει το πρόσημο του ποσού και δεν το ξεπερνά: αλλιώς η καθαρή δαπάνη βγαίνει αρνητική και το ΦΠΑ εισροών
+      φουσκώνει στο Φ2. Το αρνητικό ποσό με αρνητικό ΦΠΑ είναι πιστωτικό προμηθευτή και επιτρέπεται.
+    """
+    if not valid_iso_date(payload.date):
+        raise HTTPException(status_code=400, detail="Μη έγκυρη ημερομηνία — αναμένεται μορφή ΕΕΕΕ-ΜΜ-ΗΗ.")
+    for label, value in (("Ποσό", payload.amount), ("ΦΠΑ", payload.vat_amount)):
+        problem = money_limit_error(value, label, negative_ok=True)
+        if problem:
+            raise HTTPException(status_code=400, detail=problem)
+    if payload.amount * payload.vat_amount < 0 or abs(payload.vat_amount) > abs(payload.amount):
+        raise HTTPException(status_code=400, detail="Το ΦΠΑ πρέπει να έχει το ίδιο πρόσημο με το ποσό και να μην το ξεπερνά.")
+
+
 @router.get("")
-async def list_expenses(user: dict = Depends(get_current_user)):
-    docs = await db.expenses.find(tenant_query(user)).sort("created_at", -1).to_list(1000)
+async def list_expenses(response: Response, user: dict = Depends(get_current_user)):
+    docs, cut = await fetch_capped(db.expenses.find(tenant_query(user)).sort("created_at", -1), LIST_LIMIT)
+    disclose_truncation(response, cut, LIST_LIMIT)
     return [Expense.from_mongo(d) for d in docs]
 
 
 @router.post("")
 async def create_expense(payload: Expense, user: dict = Depends(get_current_user)):
+    _validate_expense(payload)
     payload.id = None
     payload.firm_id = firm_id_for(user)
     payload.created_by = user["email"]
@@ -57,6 +81,7 @@ async def create_expense(payload: Expense, user: dict = Depends(get_current_user
 
 @router.put("/{expense_id}")
 async def update_expense(expense_id: str, payload: Expense, user: dict = Depends(get_current_user)):
+    _validate_expense(payload)
     payload.id = expense_id
     data = payload.to_mongo()
     data.pop("_id", None)

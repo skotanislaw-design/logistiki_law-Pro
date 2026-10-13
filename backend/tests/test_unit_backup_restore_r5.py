@@ -88,8 +88,8 @@ def _archive(files: dict | None = None, *, meta: dict | str | None = None, raw: 
     return buf.getvalue()
 
 
-def _import(client, content: bytes):
-    return client.post("/api/backup/import", files={"file": ("backup.zip", content, "application/zip")})
+def _import(client, content: bytes, **params):
+    return client.post("/api/backup/import", params=params, files={"file": ("backup.zip", content, "application/zip")})
 
 
 def _oid(value) -> dict:
@@ -315,7 +315,10 @@ def test_restore_after_total_loss_brings_the_office_settings_back_even_after_the
     assert client.get("/api/settings").json()["company_name"] == "ΤΡΙΤΟ ΟΝΟΜΑ"
     assert _count("settings", {"firm_id": fid}) == 1
 
-    assert _import(client, backup).json()["restored"]["settings"] == 1                 # και δεύτερη επαναφορά
+    # Δεύτερη επαναφορά: οι ρυθμίσεις έχουν πλέον αλλάξει, άρα μόνο με ρητή αντικατάσταση επανέρχονται (WP15β)
+    assert _import(client, backup).json()["restored"]["settings"] == 0
+    assert client.get("/api/settings").json()["company_name"] == "ΤΡΙΤΟ ΟΝΟΜΑ"
+    assert _import(client, backup, mode="overwrite").json()["restored"]["settings"] == 1
     assert _count("settings", {"firm_id": fid}) == 1
     assert client.get("/api/settings").json()["company_name"] == "ΠΑΛΙΟ ΓΡΑΦΕΙΟ ΕΠΕ"
 
@@ -389,7 +392,7 @@ def test_restored_secrets_that_this_installation_cannot_read_are_reported(client
 
     bad = _import(client, _archive({"settings": [
         {"_id": _oid(ObjectId()), "smtp_password": unreadable, "imap_password": readable,
-         "aade_subscription_key": unreadable}]})).json()
+         "aade_subscription_key": unreadable}]}), mode="overwrite").json()
     warning = next(n for n in bad["notes"] if "ΠΡΟΣΟΧΗ" in n and "SECRETS_KEY" in n)
     assert "smtp_password" in warning and "aade_subscription_key" in warning and "imap_password" not in warning
 
@@ -534,11 +537,29 @@ def test_a_write_error_on_one_document_is_reported_per_document(client, monkeypa
     _admin(client)
     ok, bad = ObjectId(), ObjectId()
     monkeypatch.setattr(routes_backup, "db", _FailingDb(
-        db, "clients", "replace_one", WriteError("δοκιμαστικό σφάλμα εγγραφής"),
-        when=lambda flt, *a, **k: flt.get("_id") == bad))
+        db, "clients", "insert_one", WriteError("δοκιμαστικό σφάλμα εγγραφής"),
+        when=lambda doc, *a, **k: doc.get("_id") == bad))
     body = _import(client, _archive({"clients": [{"_id": _oid(ok), "name": "ΚΑΛΟ"}, {"_id": _oid(bad), "name": "ΚΑΚΟ"}]})).json()
     assert body["restored"]["clients"] == 1 and body["failed"] == 1
     assert any("δοκιμαστικό σφάλμα εγγραφής" in e for e in body["errors"])
+
+
+def test_a_write_error_while_replacing_one_document_is_reported_per_document(client, monkeypatch):
+    """Η ίδια εγγύηση και στη ρητή αντικατάσταση (`mode=overwrite`), που γράφει με `replace_one`."""
+    import routes_backup
+    from db import db
+    user = _admin(client)
+    ok, bad = ObjectId(), ObjectId()
+    _run(db.clients.insert_many([{"_id": ok, "firm_id": user["firm_id"], "name": "ΠΑΛΙΟ 1"},
+                                 {"_id": bad, "firm_id": user["firm_id"], "name": "ΠΑΛΙΟ 2"}]))
+    monkeypatch.setattr(routes_backup, "db", _FailingDb(
+        db, "clients", "replace_one", WriteError("δοκιμαστικό σφάλμα αντικατάστασης"),
+        when=lambda flt, *a, **k: flt.get("_id") == bad))
+    body = _import(client, _archive({"clients": [{"_id": _oid(ok), "name": "ΝΕΟ 1"}, {"_id": _oid(bad), "name": "ΝΕΟ 2"}]}),
+                   mode="overwrite").json()
+    assert body["restored"]["clients"] == 1 and body["replaced"]["clients"] == 1 and body["failed"] == 1
+    assert any("δοκιμαστικό σφάλμα αντικατάστασης" in e for e in body["errors"])
+    assert _run(db.clients.find_one({"_id": ok}))["name"] == "ΝΕΟ 1" and _run(db.clients.find_one({"_id": bad}))["name"] == "ΠΑΛΙΟ 2"
 
 
 def test_a_lost_database_connection_stops_the_restore_instead_of_failing_every_document(client, monkeypatch):
@@ -547,9 +568,14 @@ def test_a_lost_database_connection_stops_the_restore_instead_of_failing_every_d
     import routes_backup
     from db import db
     _admin(client)
-    monkeypatch.setattr(routes_backup, "db", _FailingDb(db, "clients", "replace_one", AutoReconnect("η βάση δεν απαντά")))
+    monkeypatch.setattr(routes_backup, "db", _FailingDb(db, "clients", "insert_one", AutoReconnect("η βάση δεν απαντά")))
     with pytest.raises(AutoReconnect):
         _import(client, _archive({"clients": [{"_id": _oid(ObjectId()), "name": "ΑΛΦΑ"}]}))
+    monkeypatch.setattr(routes_backup, "db", _FailingDb(db, "clients", "replace_one", AutoReconnect("η βάση δεν απαντά")))
+    existing = ObjectId()
+    _run(db.clients.insert_one({"_id": existing, "firm_id": _run(db.users.find_one({"email": "backup@example.gr"}))["firm_id"], "name": "ΠΑΛΙΟ"}))
+    with pytest.raises(AutoReconnect):
+        _import(client, _archive({"clients": [{"_id": _oid(existing), "name": "ΝΕΟ"}]}), mode="overwrite")
 
 
 def test_one_unwritable_audit_row_loses_only_itself_not_its_whole_chunk(client):

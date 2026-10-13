@@ -1,5 +1,5 @@
 from typing import Optional, List, Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from datetime import datetime, timezone
 from db import BaseDocument, PyObjectId
 from tenant import LEGACY_FIRM_ID
@@ -59,6 +59,7 @@ class Client(BaseDocument):
 
 
 class InvoiceLineItem(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)      # βλ. db.BaseDocument
     description: str
     quantity: float = 1
     unit_price: float

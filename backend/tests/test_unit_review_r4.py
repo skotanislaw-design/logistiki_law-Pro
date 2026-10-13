@@ -260,7 +260,9 @@ def _webhook(client, monkeypatch, event_type, session_id, payment_status="paid")
     monkeypatch.setattr(routes_payments, "STRIPE_WEBHOOK_SECRET", "whsec_test")      # χωρίς μυστικό το webhook δίνει 503
     monkeypatch.setattr(routes_payments.stripe.Webhook, "construct_event",
                         staticmethod(lambda payload, sig, secret: event))
-    return client.post("/api/stripe/webhook", content=b"{}", headers={"stripe-signature": "t=1,v1=x"})
+    # Το Stripe δηλώνει πάντα Content-Type· χωρίς αυτό, αίτημα με cookie συνεδρίας και σώμα απορρίπτεται με 415 από το CsrfGuard.
+    return client.post("/api/stripe/webhook", content=b"{}",
+                       headers={"stripe-signature": "t=1,v1=x", "content-type": "application/json"})
 
 
 def test_delayed_payment_methods_close_the_invoice_only_when_the_money_arrives(client, office, monkeypatch):
@@ -2053,7 +2055,8 @@ def test_portal_total_nets_a_credit_note_against_the_invoice_it_credits(client, 
     data = portal(office.alpha)
     rows = {r["id"]: r for r in data["invoices"]}
     assert (rows[inv["id"]]["outstanding"], rows[credit["id"]]["outstanding"]) == (1240.0, -496.0)
-    assert data["totals"]["unpaid_total"] == 744.0 and data["totals"]["unpaid_count"] == 2
+    # Το πλήθος μετρά τα τιμολόγια που πράγματι οφείλονται (όχι το πιστωτικό): ένα, με οφειλόμενο 744 μετά τον συμψηφισμό.
+    assert data["totals"]["unpaid_total"] == 744.0 and data["totals"]["unpaid_count"] == 1
 
     # ολικό πιστωτικό: μηδέν
     whole = _issued(client, office.beta, net=100.0)

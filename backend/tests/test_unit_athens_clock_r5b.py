@@ -88,6 +88,30 @@ def test_athens_date_of_returns_none_for_anything_that_is_not_a_readable_stamp(j
     assert athens_date_of(junk) is None
 
 
+@pytest.mark.parametrize("stamp", [
+    "9999-12-31T23:59:59+00:00",        # σε ώρα Ελλάδας είναι ήδη το έτος 10000
+    "9999-12-31T23:59:59Z",
+    "9999-12-31T23:59:59",              # χωρίς ζώνη = UTC
+    "0001-01-01T00:00:00+05:00",        # σε UTC είναι ήδη το έτος 0
+    "0001-01-01T00:00:00+14:00",
+])
+def test_athens_date_of_returns_none_for_a_stamp_the_calendar_cannot_hold_instead_of_raising(stamp):
+    """Έγκυρη μορφή, αλλά η μετατροπή ζώνης βγάζει εκτός εύρους της `datetime` (OverflowError, όχι ValueError). Η συνάρτηση
+    υπόσχεται «None αν το κείμενο δεν διαβάζεται»· μια σφραγίδα από εισαγωγή δεδομένων δεν πρέπει να ρίχνει τον κύκλο του Autopilot."""
+    from tax_utils import athens_date_of
+    assert athens_date_of(stamp) is None
+
+
+@pytest.mark.parametrize("stamp, expected", [
+    ("9999-12-31", date(9999, 12, 31)),                 # ημερομηνία χωρίς ώρα: μένει ίδια
+    ("0001-01-01", date(1, 1, 1)),
+    ("9999-12-31T00:00:00+14:00", date(9999, 12, 30)),  # στο άκρο, αλλά μέσα στο εύρος
+])
+def test_athens_date_of_reads_dates_at_the_edge_of_the_calendar(stamp, expected):
+    from tax_utils import athens_date_of
+    assert athens_date_of(stamp) == expected
+
+
 # ============================================================ 3. υπενθύμιση: «πότε στάλθηκε» ====
 
 LAST_REMINDER_UTC = "2026-12-16T22:30:00+00:00"             # = 00:30 της 17/12 στην Ελλάδα · σήμερα (1/1) απέχει 15 ημέρες
@@ -416,3 +440,18 @@ def test_bank_consent_runs_ninety_days_from_the_greek_date(office, monkeypatch):
     r = office.api.post("/api/bank/openbanking/complete")
     assert r.status_code == 200, r.text
     assert _run(db.settings.find_one({"firm_id": office.firm_id}))["gocardless_access_valid_until"] == "2027-04-01"
+
+
+def test_the_backup_file_name_carries_the_greek_date_and_time(office, athens_clock, monkeypatch):
+    """Η εξαγωγή 01:30 της 1/1/2027 (23:30 UTC της 31/12/2026) έδινε όνομα αρχείου με ημερομηνία UTC: «…-20261231-233000.zip»."""
+    import routes_backup
+
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return athens_clock.astimezone(tz) if tz else athens_clock.astimezone(timezone.utc).replace(tzinfo=None)
+
+    monkeypatch.setattr(routes_backup, "datetime", Frozen)
+    response = office.api.get("/api/backup/export")
+    assert response.status_code == 200, response.text[:200]
+    assert "nomos-one-backup-20270101-013000.zip" in response.headers["content-disposition"]

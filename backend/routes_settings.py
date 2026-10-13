@@ -91,6 +91,7 @@ def _validate_withholding(category=None, rate=None, min_net=None) -> None:
 async def update_settings(payload: Settings, user: dict = Depends(require_admin)):
     from datetime import datetime, timezone
     _validate_firm_afm(payload.afm)
+    payload.afm = (payload.afm or "").strip()       # αποθηκεύεται όπως ελέγχθηκε
     _validate_withholding(payload.withholding_category, payload.withholding_rate, payload.withholding_min_net)
     doc = await _settings_doc(user)
     data = payload.model_dump(exclude={"id", "firm_id"})
@@ -113,6 +114,7 @@ async def patch_settings(payload: dict, user: dict = Depends(require_admin)):
         raise HTTPException(status_code=400, detail="Δεν δόθηκαν έγκυρα πεδία ρυθμίσεων")
     if "afm" in data:
         _validate_firm_afm(data["afm"])
+        data["afm"] = (data["afm"] or "").strip()   # αποθηκεύεται όπως ελέγχθηκε
     _validate_withholding(data.get("withholding_category"), data.get("withholding_rate"), data.get("withholding_min_net"))
     current = await _settings_doc(user)
     merged = {**current, **merge_masked_secrets(data, current)}

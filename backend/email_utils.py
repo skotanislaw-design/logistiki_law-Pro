@@ -101,6 +101,12 @@ def invoice_email_text(invoice: dict, settings: dict) -> str:
     return "\n".join(lines)
 
 
+# Ο σύνδεσμος κάρτας της υπενθύμισης λήγει σε λιγότερο από 24 ώρες (όριο του Stripe — βλ. invoice_services.PAYMENT_LINK_VALID_HOURS).
+# Ο παραλήπτης πρέπει να το ξέρει πριν ανοίξει τον σύνδεσμο μέρες αργότερα και βρει μια ληγμένη σελίδα.
+_LINK_VALIDITY = "Ο σύνδεσμος πληρωμής λήγει μέσα σε 24 ώρες από την αποστολή του μηνύματος."
+_LINK_VALIDITY_WITH_IBAN = _LINK_VALIDITY[:-1] + " — αν δεν προλάβετε, μπορείτε να πληρώσετε με έμβασμα στο IBAN που αναγράφεται."
+
+
 def _fmt_money(v) -> str:
     return f"{(v or 0):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
 
@@ -122,12 +128,13 @@ def reminder_email_html(invoice: dict, settings: dict, days_overdue: int, remind
         )
     pay_button = ""
     if payment_link:
+        link_validity = esc(_LINK_VALIDITY_WITH_IBAN if settings.get("iban") else _LINK_VALIDITY)
         pay_button = (
             f'<p style="margin:20px 0;text-align:center;">'
             f'<a href="{esc(payment_link)}" style="background:#c9a227;color:#0a0f1e;padding:14px 32px;'
             f'text-decoration:none;font-weight:600;border-radius:6px;display:inline-block;">'
             f'💳 Πληρωμή με κάρτα — {total}</a></p>'
-            f'<p style="text-align:center;font-size:11px;color:#8a93a8;">Ασφαλής πληρωμή μέσω Stripe</p>'
+            f'<p style="text-align:center;font-size:11px;color:#8a93a8;">Ασφαλής πληρωμή μέσω Stripe. {link_validity}</p>'
         )
     return f"""
     <html><body style="font-family:Arial,sans-serif;color:#1a2035;max-width:560px;">
@@ -176,7 +183,8 @@ def reminder_email_text(invoice: dict, settings: dict, days_overdue: int, remind
     if settings.get("iban"):
         lines.append(f"IBAN: {settings['iban']}" + (f" ({settings['bank_name']})" if settings.get("bank_name") else ""))
     if payment_link:
-        lines += ["", f"💳 Πληρωμή με κάρτα (ασφαλής μέσω Stripe): {payment_link}"]
+        lines += ["", f"💳 Πληρωμή με κάρτα (ασφαλής μέσω Stripe): {payment_link}",
+                  _LINK_VALIDITY_WITH_IBAN if settings.get("iban") else _LINK_VALIDITY]
     lines += [
         "",
         "Σε περίπτωση που η πληρωμή έχει ήδη πραγματοποιηθεί, αγνοήστε το παρόν μήνυμα.",

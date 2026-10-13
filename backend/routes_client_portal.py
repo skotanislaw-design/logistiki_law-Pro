@@ -228,7 +228,7 @@ async def portal_data(token: str, request: Request):
     # portal· αν η λίστα έδειχνε μόνο το σύνολο, ο πελάτης θα έβλεπε άλλο ποσό από αυτό που πληρώνει.
     # Ο υπολογισμός είναι κοινός με το dashboard, τις αναλύσεις και τη λίστα τιμολογίων (invoice_services.invoice_balances):
     # το γραφείο και ο πελάτης βλέπουν πάντα τον ίδιο αριθμό. Το πιστωτικό κρατά το αρνητικό ποσό του και συμψηφίζεται.
-    from invoice_services import invoice_balances, open_total
+    from invoice_services import invoice_balances, open_invoices, open_total
     amounts = await invoice_balances(firm, invoices, settings, {client_id: client})
 
     payload = {
@@ -270,7 +270,7 @@ async def portal_data(token: str, request: Request):
             "total_withdrawals": trust.get("total_withdrawals", 0) if trust else 0,
         } if trust else None,
         "totals": {
-            "unpaid_count": sum(1 for i in invoices if i.get("status") == "issued"),
+            "unpaid_count": len(open_invoices(invoices, amounts)),
             # Το άθροισμα είναι προσημασμένο: ένα πιστωτικό συμψηφίζει το τιμολόγιο που πιστώνει. Μόνο το σύνολο
             # δεν πέφτει κάτω από το μηδέν (πιστωτικό μεγαλύτερο από τα ανεξόφλητα δεν είναι «οφειλή» του πελάτη).
             "unpaid_total": open_total(invoices, amounts),

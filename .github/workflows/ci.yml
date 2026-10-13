@@ -20,6 +20,10 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements-ci.txt
       - run: pip install -r requirements-ci.txt
+      # Τα tests υποδομής (tests/test_unit_nginx_lab_r5.py) τρέχουν τον ΠΡΑΓΜΑΤΙΚΟ nginx με το frontend/nginx.conf μπροστά από
+      # backend με τις παραμέτρους του Dockerfile. Η εικόνα ubuntu-latest συνήθως τον έχει ήδη· αλλιώς εγκαθίσταται εδώ.
+      - run: command -v nginx || /usr/sbin/nginx -v || (sudo apt-get update && sudo apt-get install -y --no-install-recommends nginx-light)
+        working-directory: .
       - run: python -m pytest
         env:
           MONGO_URL: mongomock://
@@ -27,6 +31,8 @@ jobs:
           JWT_SECRET: ci-secret-key-with-enough-entropy-for-hs256
           STORAGE_BACKEND: local
           AUTOPILOT_SCHEDULER: "0"
+          # Στο CI τα tests του nginx ΔΕΝ παραλείπονται σιωπηλά: αν λείπει ο nginx, αποτυγχάνουν.
+          REQUIRE_NGINX_LAB: "1"
 
   frontend:
     name: Frontend build

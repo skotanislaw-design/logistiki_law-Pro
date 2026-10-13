@@ -15,7 +15,7 @@
 """
 import os
 from decimal import Decimal
-from tax_utils import athens_today
+from tax_utils import athens_today, round_half_up
 from xml.sax.saxutils import escape
 from xml.etree.ElementTree import fromstring
 
@@ -154,7 +154,7 @@ def withholding_for(invoice: dict, settings: dict, invoice_type: str, net_value:
     όριο που ορίζεται στις Ρυθμίσεις. Ρητή τιμή στο τιμολόγιο υπερισχύει.
     """
     if invoice.get("withholding_amount") is not None:
-        return round(float(invoice["withholding_amount"]), 2)
+        return round_half_up(float(invoice["withholding_amount"]))
     if not settings.get("withholding_enabled", False):
         return 0.0
     if invoice_type in RETAIL_TYPES or invoice_type in CREDIT_TYPES:
@@ -163,7 +163,8 @@ def withholding_for(invoice: dict, settings: dict, invoice_type: str, net_value:
     if net_value < threshold:
         return 0.0
     rate = float(settings.get("withholding_rate", WITHHOLDING_RATE_FREELANCER) or 0)
-    return round(net_value * rate, 2)
+    # Δεκαδικός υπολογισμός: με float, 300,50 × 15% έδινε 45,07 αντί 45,08 (βλ. tax_utils.round_half_up).
+    return round_half_up(Decimal(str(net_value)) * Decimal(str(rate)))
 
 
 def _split_number(number: str) -> tuple[str, str]:

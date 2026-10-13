@@ -215,9 +215,11 @@ def test_a_valid_request_with_greek_text_still_reaches_the_route_intact(client, 
 # ====================================== 2. Έλεγχος γραμμών και παρακράτησης ====
 
 def _invoice(quantity=1.0, unit_price=100.0, withholding=None):
+    """Χωρίς επικύρωση του μοντέλου (`model_construct`): από το WP15α το ίδιο το μοντέλο αρνείται NaN και άπειρο, οπότε
+    εδώ ελέγχεται η δεύτερη γραμμή άμυνας — ό,τι φτάσει στο route χωρίς να έχει περάσει από την Pydantic."""
     from models import Invoice, InvoiceLineItem
-    return Invoice(client_id="c", date=_today(), withholding_amount=withholding,
-                   line_items=[InvoiceLineItem(description="x", quantity=quantity, unit_price=unit_price, vat_rate=24)])
+    line = InvoiceLineItem.model_construct(description="x", quantity=quantity, unit_price=unit_price, vat_rate=24)
+    return Invoice.model_construct(client_id="c", date=_today(), withholding_amount=withholding, line_items=[line])
 
 
 @pytest.mark.parametrize("quantity,unit_price", [

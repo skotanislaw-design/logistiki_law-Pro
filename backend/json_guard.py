@@ -10,6 +10,12 @@ JSON (RFC 8259) δεν τα επιτρέπει. Η Pydantic τα δέχεται 
 
 Η λύση ανήκει στην είσοδο και όχι σε κάθε route χωριστά: κανένα πεδίο της εφαρμογής δεν χρειάζεται τέτοια τιμή.
 Το αίτημα απορρίπτεται με 400 πριν φτάσει στο route· ό,τι άλλο (μη έγκυρο JSON) αφήνεται στην ίδια τη FastAPI.
+
+Το ίδιο σημείο βάζει και **όριο στο μέγεθος του σώματος JSON**. Ο φραγμός διαβάζει και αναλύει ολόκληρο το σώμα πριν από
+τον έλεγχο ταυτότητας, στον βρόχο γεγονότων που μοιράζονται όλα τα γραφεία· η FastAPI το αναλύει μετά ξανά. Για 20 MB
+(το όριο του nginx) αυτό κοστίζει 1–2 δευτερόλεπτα χωρίς να έχει ταυτοποιηθεί κανείς. Κανένα φυσιολογικό αίτημα JSON δεν
+πλησιάζει αυτό το μέγεθος: οι φόρμες είναι χιλιάδες byte. Το μοναδικό που στέλνει μεγάλο JSON είναι η φωτογραφία απόδειξης
+ως base64 (`LARGE_JSON_PATHS`)· τα αρχεία (αντίγραφα, CSV, ήχος) ανεβαίνουν ως multipart και δεν περνούν από εδώ.
 """
 import json
 import math
@@ -19,6 +25,12 @@ from starlette.responses import JSONResponse
 _METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 MESSAGE = "Το αίτημα περιέχει μη έγκυρο αριθμό (NaN ή άπειρο). Ελέγξτε τα ποσά και τις ποσότητες."
+TOO_LARGE = "Το αίτημα είναι υπερβολικά μεγάλο."
+
+MAX_JSON_BODY = 2 * 1024 * 1024
+# Η φωτογραφία απόδειξης ως base64 μέσα σε JSON: μια φωτογραφία κινητού 7 MB γίνεται 9,5 MB. Ίσο με το όριο του nginx.
+LARGE_JSON_BODY = 20 * 1024 * 1024
+LARGE_JSON_PATHS = frozenset({"/api/expenses/ocr-parse"})
 
 
 class NonFiniteNumber(ValueError):
@@ -75,6 +87,17 @@ def _is_json(scope) -> bool:
     return content_type in ("", "application/json") or content_type.endswith("+json")
 
 
+def _declared_length(scope) -> int | None:
+    """Το Content-Length που δήλωσε ο client, αν διαβάζεται ως ακέραιος (αλλιώς μετράμε τη ροή όπως έρχεται)."""
+    for name, value in scope.get("headers") or ():
+        if name == b"content-length":
+            try:
+                return int(value.decode("latin-1").strip())
+            except ValueError:
+                return None
+    return None
+
+
 class RejectNonFiniteJson:
     """ASGI middleware: αρνείται σώμα JSON με `NaN`/άπειρο. Το υπόλοιπο σώμα το ξαναπαίζει αυτούσιο στην εφαρμογή.
 
@@ -89,12 +112,24 @@ class RejectNonFiniteJson:
             await self.app(scope, receive, send)
             return
 
+        limit = LARGE_JSON_BODY if scope.get("path", "").rstrip("/") in LARGE_JSON_PATHS else MAX_JSON_BODY
+        declared = _declared_length(scope)
+        if declared is not None and declared > limit:     # δεν διαβάζεται καν το σώμα
+            await JSONResponse({"detail": TOO_LARGE}, status_code=413)(scope, receive, send)
+            return
+
         chunks: list[bytes] = []
+        size = 0
         while True:
             message = await receive()
             if message["type"] != "http.request":      # ο client έκλεισε τη σύνδεση πριν ολοκληρώσει το αίτημα
                 return
-            chunks.append(message.get("body", b""))
+            chunk = message.get("body", b"")
+            size += len(chunk)
+            if size > limit:                            # χωρίς Content-Length (chunked): μετράμε όσο έρχεται
+                await JSONResponse({"detail": TOO_LARGE}, status_code=413)(scope, receive, send)
+                return
+            chunks.append(chunk)
             if not message.get("more_body", False):
                 break
         body = b"".join(chunks)

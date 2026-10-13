@@ -49,29 +49,41 @@ class SeriesBusy(Exception):
     """Ο μετρητής ήταν συνεχώς απασχολημένος από άλλα αιτήματα· δεν δόθηκε αριθμός (και δεν χάθηκε κανένας)."""
 
 
+# Το μήνυμα προς τον χρήστη όταν η αρίθμηση υποθέσεων, γραμμάτιων και παράβολων (και κάθε σειρά που δεν έχει δικό της
+# χειρισμό) βρίσκει τον μετρητή απασχολημένο. Η έκδοση τιμολογίου έχει δικό της κείμενο (`SERIES_BUSY_MESSAGE`).
+BUSY_MESSAGE = "Η αρίθμηση ενημερώθηκε ταυτόχρονα από άλλο αίτημα. Δοκιμάστε ξανά σε λίγο."
+
+
 def format_number(prefix: str, year: int, seq: int) -> str:
     return f"{prefix}-{year}-{seq:04d}"
 
 
+MAX_SEQ = 999_999_999      # πολύ πάνω από κάθε πραγματική σειρά, πολύ κάτω από το όριο των 8 byte της Mongo
+
+
 def as_int(value) -> int:
     """Ο αριθμός του μετρητή ως ακέραιος. Ό,τι δεν είναι αριθμός (χειροκίνητη επέμβαση) μετράει ως 0· ο έλεγχος
-    ύπαρξης αριθμών (`floor`, μοναδικό ευρετήριο) προστατεύει τη σειρά και η επόμενη εγγραφή τον διορθώνει."""
+    ύπαρξης αριθμών (`floor`, μοναδικό ευρετήριο) προστατεύει τη σειρά και η επόμενη εγγραφή τον διορθώνει.
+
+    Το ίδιο ισχύει για αρνητικό ή υπέρογκο αριθμό (π.χ. `1e30` ως double): ο επόμενος αριθμός θα ήταν πάνω από 8 byte
+    και η εγγραφή του θα έσκαγε με OverflowError σε κάθε έκδοση παραστατικού, για πάντα."""
     if isinstance(value, bool):
         return 0
     try:
-        return int(value)
+        number = int(value)
     except (TypeError, ValueError, OverflowError):
         return 0
+    return number if 0 <= number <= MAX_SEQ else 0
 
 
 async def _scan_existing_max(collection, firm_id: str, prefix: str, year: int) -> int:
     """Ο μεγαλύτερος αριθμός της σειράς που υπάρχει ήδη στη συλλογή (για την πρώτη χρήση του μετρητή)."""
     existing_max = 0
     async for d in collection.find({"firm_id": firm_id, "number": {"$regex": f"^{prefix}-{year}-"}}, {"number": 1}):
-        try:
-            existing_max = max(existing_max, int(d["number"].rsplit("-", 1)[-1]))
-        except (ValueError, KeyError, TypeError):
-            pass
+        tail = str(d.get("number") or "").rsplit("-", 1)[-1]
+        # Μόνο αριθμός σειράς (1–9 ψηφία): ένας αριθμός 11 ψηφίων από εισαγωγή δεν γίνεται αφετηρία του μετρητή.
+        if tail.isascii() and tail.isdigit() and len(tail) <= len(str(MAX_SEQ)):
+            existing_max = max(existing_max, int(tail))
     return existing_max
 
 

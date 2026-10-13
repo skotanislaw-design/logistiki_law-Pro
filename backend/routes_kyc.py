@@ -2,15 +2,18 @@
 Κάθε πελάτης πρέπει να ταυτοποιείται και να αξιολογείται με βάση κίνδυνο πριν την ανάληψη υπόθεσης.
 """
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from audit import audit_read
 from bson import ObjectId
-from db import db
+from db import db, fetch_capped
+from http_utils import disclose_truncation
 from models import KycRecord
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 
 router = APIRouter(prefix="/kyc", tags=["kyc"])
+
+LIST_LIMIT = 1000         # οι πιο πρόσφατα ενημερωμένοι φάκελοι· αν υπάρχουν κι άλλοι, η απάντηση το δηλώνει (X-List-Truncated)
 
 # Χώρες υψηλού κινδύνου (FATF grey/black list — απλοποιημένη λίστα)
 HIGH_RISK_COUNTRIES = {
@@ -62,8 +65,9 @@ async def kyc_status(user: dict = Depends(get_current_user)):
 
 
 @router.get("/records")
-async def list_records(user: dict = Depends(get_current_user)):
-    docs = await db.kyc.find(tenant_query(user, {})).sort("updated_at", -1).to_list(1000)
+async def list_records(response: Response, user: dict = Depends(get_current_user)):
+    docs, cut = await fetch_capped(db.kyc.find(tenant_query(user, {})).sort("updated_at", -1), LIST_LIMIT)
+    disclose_truncation(response, cut, LIST_LIMIT)
     return [KycRecord.from_mongo(d) for d in docs]
 
 

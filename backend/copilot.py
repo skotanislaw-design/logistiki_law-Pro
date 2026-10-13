@@ -6,7 +6,7 @@ from ai_helpers import EMERGENT_LLM_KEY
 from db import db, fetch_all
 from tenant import tenant_query, firm_id_for
 from tax_utils import athens_today, next_vat_deadline, next_efka_deadline
-from invoice_services import invoice_balances, open_total
+from invoice_services import invoice_balances, open_invoices, open_total
 
 
 def _fmt(v):
@@ -65,11 +65,11 @@ async def build_context(user: dict) -> dict:
             for h in hearings[:20]
         ],
         "ανείσπρακτα_σύνολο": _fmt(open_total(unpaid, balances)),
-        "ανεξόφλητα_πλήθος": len(unpaid),
+        "ανεξόφλητα_πλήθος": len(open_invoices(unpaid, balances)),
         "ανεξόφλητα_τιμολόγια": [
             {"αριθμός": i.get("number"), "πελάτης": i.get("client_name"), "σύνολο": _fmt(i.get("total")),
              "οφειλόμενο": _fmt(balances[str(i["_id"])][1]), "ημερομηνία": i.get("date")}
-            for i in unpaid[:20]
+            for i in open_invoices(unpaid, balances)[:20]
         ],
         "πρόχειρα_τιμολόγια": draft_count,
         "τελευταία_τιμολόγια": [

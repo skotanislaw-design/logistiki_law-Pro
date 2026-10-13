@@ -144,7 +144,8 @@ def test_dashboard_and_the_client_portal_agree_for_the_same_client(client, offic
     summary = client.get("/api/dashboard/summary").json()
     portal = _portal(client, office.alpha)["totals"]
     assert summary["unpaid_total"] == portal["unpaid_total"] == 826.0
-    assert summary["unpaid_count"] == portal["unpaid_count"] == 3
+    # Δύο τιμολόγια οφείλονται (το μεγάλο και το μικρό, που το πιστωτικό δεν κλείνει)· το πιστωτικό δεν είναι «ανεξόφλητο τιμολόγιο».
+    assert summary["unpaid_count"] == portal["unpaid_count"] == 2
 
 
 def test_a_credit_note_reduces_what_its_own_client_owes(client, office):

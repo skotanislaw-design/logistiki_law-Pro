@@ -1,16 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from datetime import date, datetime, timezone
 from typing import Optional
 from bson import ObjectId
-from db import db
+from db import db, fetch_capped
+from http_utils import disclose_truncation
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from models import Paravolo
-from tax_utils import athens_today
+from tax_utils import athens_today, money_limit_error
 from routes_cases import log_case_event
 
 router = APIRouter(prefix="/paravola", tags=["paravola"])
+
+LIST_LIMIT = 500          # τα νεότερα παράβολα· αν υπάρχουν κι άλλα, η απάντηση το δηλώνει (X-List-Truncated)
 
 PARAVOLO_CATEGORIES = [
     "Ένδικα βοηθήματα/μέσα (πολιτικά δικαστήρια)",
@@ -38,20 +41,29 @@ class IssuePayload(BaseModel):
     eparavolo_code: str = ""
 
 
+def _validate_amount(payload: Paravolo) -> None:
+    """Το ποσό παραβόλου: πεπερασμένο, όχι αρνητικό, μέχρι το όριο. Έλεγχος στη διαδρομή (το μοντέλο διαβάζει και παλιές εγγραφές)."""
+    problem = money_limit_error(payload.amount, "Ποσό παραβόλου")
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
+
+
 @router.get("/categories/list")
 async def categories(user: dict = Depends(get_current_user)):
     return PARAVOLO_CATEGORIES
 
 
 @router.get("")
-async def list_paravola(case_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_paravola(response: Response, case_id: Optional[str] = None, user: dict = Depends(get_current_user)):
     query = {"case_id": case_id} if case_id else {}
-    docs = await db.paravola.find(tenant_query(user, query)).sort("created_at", -1).to_list(500)
+    docs, cut = await fetch_capped(db.paravola.find(tenant_query(user, query)).sort("created_at", -1), LIST_LIMIT)
+    disclose_truncation(response, cut, LIST_LIMIT)
     return [Paravolo.from_mongo(d) for d in docs]
 
 
 @router.post("")
 async def create_paravolo(payload: Paravolo, user: dict = Depends(get_current_user)):
+    _validate_amount(payload)
     payload.number = await _next_number(firm_id_for(user))
     payload.firm_id = firm_id_for(user)
     payload.created_by = user["email"]
@@ -65,6 +77,7 @@ async def create_paravolo(payload: Paravolo, user: dict = Depends(get_current_us
 
 @router.put("/{pid}")
 async def update_paravolo(pid: str, payload: Paravolo, user: dict = Depends(get_current_user)):
+    _validate_amount(payload)
     doc = await db.paravola.find_one(tenant_query(user, {"_id": ObjectId(pid)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το παράβολο δεν βρέθηκε")

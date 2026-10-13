@@ -1,10 +1,12 @@
 """Portal Chat — Ασφαλής συνομιλία δικηγόρου ↔ πελάτη.
 Εναλλακτική στο WhatsApp που είναι GDPR problematic. Auto-log στην υπόθεση."""
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from bson import ObjectId
-from db import db
+from db import db, fetch_capped
+from http_utils import disclose_truncation
 from models import PortalMessage
 from auth import get_current_user
 from rate_limit import enforce, key_for_token
@@ -63,13 +65,37 @@ async def list_conversations(user: dict = Depends(get_current_user)):
     return convos
 
 
-async def _newest_messages(query: dict) -> list[dict]:
-    """Τα ``VISIBLE_MESSAGES`` νεότερα μηνύματα, με το παλαιότερο πρώτο.
+def _before_filter(before: Optional[str]) -> dict:
+    """Το φίλτρο «παλαιότερα από» για τη σελίδα που ζητά ο χρήστης. Άκυρη τιμή: 400 (δεν φτάνει ποτέ στη βάση).
+
+    Οι ημερομηνίες των μηνυμάτων είναι κείμενα που ταξινομούνται αλφαβητικά (`now_iso()`: πάντα UTC, `+00:00`). Η
+    `fromisoformat` της Python 3.11 δέχεται όμως και `…Z`, άλλη ζώνη ώρας, `20261001T100000`, εβδομάδα ISO ή μόνο ημερομηνία —
+    μορφές που, συγκρινόμενες ως κείμενο, θα έβγαζαν σελίδα με διπλά ή χαμένα μηνύματα. Γι' αυτό το όριο μετατρέπεται στην
+    ίδια στιγμή σε UTC και γράφεται όπως τα αποθηκευμένα (χωρίς ζώνη ώρας εννοείται UTC). Ο πελάτης (frontend) στέλνει πίσω
+    ακριβώς το `created_at` που πήρε, οπότε κανονικά η μετατροπή δεν αλλάζει τίποτα."""
+    if before is None:
+        return {}
+    try:
+        moment = datetime.fromisoformat(before)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        boundary = moment.astimezone(timezone.utc).isoformat()
+    except (TypeError, ValueError, OverflowError):
+        raise HTTPException(status_code=400, detail="Μη έγκυρη ημερομηνία για τα παλαιότερα μηνύματα.")
+    return {"created_at": {"$lt": boundary}}
+
+
+async def _newest_messages(query: dict, before: Optional[str] = None) -> tuple[list[dict], bool]:
+    """Τα ``VISIBLE_MESSAGES`` νεότερα μηνύματα (ή, με ``before``, τα νεότερα από όσα προηγούνται εκείνης της στιγμής), με το
+    παλαιότερο πρώτο, και αν υπάρχουν κι άλλα παλαιότερα.
 
     Το ``sort(created_at, 1).to_list(500)`` επέστρεφε τα **παλαιότερα** 500: σε μακρά συνομιλία τα νεότερα μηνύματα δεν
-    φαίνονταν ποτέ — ούτε στον δικηγόρο ούτε στον πελάτη."""
-    newest_first = await db.portal_messages.find(query).sort("created_at", -1).to_list(VISIBLE_MESSAGES)
-    return newest_first[::-1]
+    φαίνονταν ποτέ — ούτε στον δικηγόρο ούτε στον πελάτη. Και τα μηνύματα έξω από το παράθυρο έμεναν αδιάβαστα για πάντα,
+    χωρίς τρόπο να εμφανιστούν· τώρα η απάντηση δηλώνει ότι υπάρχουν παλαιότερα (``X-List-Truncated``) και το
+    ``?before=<created_at του παλαιότερου που βλέπετε>`` φέρνει την προηγούμενη σελίδα."""
+    page_query = {**query, **_before_filter(before)}
+    newest_first, more = await fetch_capped(db.portal_messages.find(page_query).sort("created_at", -1), VISIBLE_MESSAGES)
+    return newest_first[::-1], more
 
 
 async def _mark_read(shown: list[dict], sender: str, base_query: dict) -> None:
@@ -84,9 +110,10 @@ async def _mark_read(shown: list[dict], sender: str, base_query: dict) -> None:
 
 
 @router.get("/messages/{client_id}")
-async def get_messages(client_id: str, user: dict = Depends(get_current_user)):
+async def get_messages(client_id: str, response: Response, before: Optional[str] = None, user: dict = Depends(get_current_user)):
     query = tenant_query(user, {"client_id": client_id})
-    docs = await _newest_messages(query)
+    docs, more = await _newest_messages(query, before)
+    disclose_truncation(response, more, VISIBLE_MESSAGES)
     await _mark_read(docs, "client", query)               # Auto-mark ως read όσα ήταν από τον client
     return [PortalMessage.from_mongo(d) for d in docs]
 
@@ -139,10 +166,11 @@ async def unread_count(user: dict = Depends(get_current_user)):
 
 
 @public_router.get("/{token}/chat")
-async def portal_get_messages(token: str, request: Request):
+async def portal_get_messages(token: str, request: Request, response: Response, before: Optional[str] = None):
     tk = await _validate_token(token, request)
     query = {"client_id": tk["client_id"], "firm_id": tk.get("firm_id", "legacy-default-firm")}
-    docs = await _newest_messages(query)
+    docs, more = await _newest_messages(query, before)
+    disclose_truncation(response, more, VISIBLE_MESSAGES)
     await _mark_read(docs, "lawyer", query)               # Auto-mark lawyer messages as read from client side
     return [PortalMessage.from_mongo(d) for d in docs]
 

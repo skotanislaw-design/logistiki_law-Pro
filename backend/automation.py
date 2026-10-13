@@ -40,7 +40,7 @@ from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
     email_invoice, send_reminder, transmit_to_mydata, mark_paid, load_client, InvoiceEmailError, firm_query,
     apply_bank_payment, SettlementRefused, close_tx_notifications, to_cents, numbering_report,
-    invoice_balances, open_total,
+    invoice_balances, open_total, open_invoices, change_unsettled_deposit,
 )
 import outbox
 
@@ -196,12 +196,22 @@ async def resolve_notification(firm_id: str, notification_id: str, user_email: s
                 if result["status"] == "refused":
                     raise SettlementRefused(result["reason"], result["message"])
                 outcome = "confirmed"
-            elif decision == "ignore":
-                await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"match_status": "ignored", "matched_invoice_id": None, "matched_invoice_number": None, "match_ambiguous": False}})
-                outcome = "ignored"
-            elif decision == "unmatch":
-                await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"match_status": "unmatched", "matched_invoice_id": None, "matched_invoice_number": None, "match_confidence": 0, "match_ambiguous": False}})
-                outcome = "unmatched"
+            elif decision in ("ignore", "unmatch"):
+                # Υπό όρο, μέσα στην ίδια εγγραφή: αν στο μεταξύ η κίνηση συμφωνήθηκε (ή την επεξεργάζεται άλλη ενέργεια)
+                # δεν την αντικαθιστούμε — αλλιώς το τιμολόγιο θα έμενε «εξοφλημένο» από κίνηση που φαίνεται ασυμφώνητη.
+                changes = ({"match_status": "ignored", "matched_invoice_id": None, "matched_invoice_number": None,
+                            "match_ambiguous": False} if decision == "ignore" else
+                           {"match_status": "unmatched", "matched_invoice_id": None, "matched_invoice_number": None,
+                            "match_confidence": 0, "match_ambiguous": False})
+                if await change_unsettled_deposit(firm_id, tx["_id"], changes):
+                    outcome = "ignored" if decision == "ignore" else "unmatched"
+                else:
+                    current = await db.bank_transactions.find_one(firm_query(firm_id, {"_id": tx["_id"]})) or {}
+                    if current.get("match_status") not in ("auto_confirmed", "manual_matched"):
+                        raise SettlementRefused(
+                            "tx_busy", "Η κίνηση επεξεργάζεται αυτή τη στιγμή από άλλη ενέργεια — δεν άλλαξε τίποτα. "
+                                       "Ξαναδοκιμάστε σε λίγο.")
+                    outcome = "already_settled"
     elif n.get("entity") == "outbox" and n.get("type") in ("outbox_stuck", "outbox_failed"):
         outcome = await outbox.resolve_stuck(firm_id, n["entity_id"], decision)
     elif n.get("type") == "expense_review" and n.get("entity") == "expense" and decision == "confirm":
@@ -450,6 +460,9 @@ async def job_mydata_retry(firm_id: str, settings: dict) -> dict:
     return {"synced": synced, "failed": failed}
 
 
+RECONCILE_RACE_REASONS = ("tx_settled", "tx_busy", "tx_missing")
+
+
 async def job_reconcile(firm_id: str, settings: dict) -> dict:
     """Εξοφλεί αυτόματα μόνο ό,τι είναι ασφαλές· όλα τα υπόλοιπα πάνε στο inbox με την αιτία τους.
 
@@ -481,13 +494,19 @@ async def job_reconcile(firm_id: str, settings: dict) -> dict:
                          entity="bank_tx", entity_id=tx["_id"])
             continue
 
+        if result["status"] == "refused" and result["reason"] in RECONCILE_RACE_REASONS:
+            # Η κίνηση συμφωνήθηκε (ή αλλάζει) από άλλη ενέργεια ανάμεσα στην ανάγνωση και την εξόφληση — π.χ. άνθρωπος
+            # πάτησε «Ναι, εξοφλήθηκε». Δεν την αγγίζουμε: ό,τι αποφάσισε εκείνος ισχύει· ο επόμενος κύκλος θα δει την τρέχουσα εικόνα.
+            continue
+
         if result["status"] == "refused" and result["reason"] != "amount_mismatch":
             # Το τιμολόγιο δεν είναι πια ανοιχτό ή το έχει εξοφλήσει άλλη κίνηση/κανάλι: η κατάθεση
             # δεν μπορεί να του αποδοθεί (πιθανή διπλοπληρωμή ή επιστροφή). Αποδεσμεύεται και
             # ένας άνθρωπος αποφασίζει — δεν «συμφωνείται» σιωπηλά.
-            await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {
-                "match_status": "unmatched", "matched_invoice_id": None, "matched_invoice_number": None,
-                "match_confidence": 0, "match_ambiguous": False}})
+            if not await change_unsettled_deposit(firm_id, tx["_id"], {
+                    "match_status": "unmatched", "matched_invoice_id": None, "matched_invoice_number": None,
+                    "match_confidence": 0, "match_ambiguous": False}):
+                continue          # στο μεταξύ συμφωνήθηκε ή την επεξεργάζεται άλλος — δεν αποδεσμεύεται
             # Η προηγούμενη κάρτα ελέγχου (αν υπήρχε) αφορούσε σύνδεση που δεν υπάρχει πια.
             await close_tx_notifications(firm_id, tx["_id"], "superseded", "autopilot")
             review += 1
@@ -506,9 +525,12 @@ async def job_reconcile(firm_id: str, settings: dict) -> dict:
                 why = result["message"]
             else:
                 why = f"Η βεβαιότητα ({tx.get('match_confidence')}%) είναι κάτω από το όριο αυτόματης εξόφλησης ({threshold}%)."
+            marked = await db.bank_transactions.update_one(
+                firm_query(firm_id, {"_id": tx["_id"], "match_status": "auto_matched"}),
+                {"$set": {"review_notified": True, "review_due": result.get("due")}})
+            if marked.matched_count == 0:
+                continue          # συμφωνήθηκε/αλλάχτηκε στο μεταξύ — καμία κάρτα ελέγχου για κίνηση που δεν περιμένει
             review += 1
-            await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {
-                "review_notified": True, "review_due": result.get("due")}})
             await notify(firm_id, "reconcile_review", "warning",
                          f"Ταιριάζει η κατάθεση {_fmt(tx.get('amount'))} με το {tx.get('matched_invoice_number')};",
                          f"{tx.get('date')} — «{(tx.get('description') or '')[:80]}» (βεβαιότητα {tx.get('match_confidence')}%). {why}",
@@ -795,7 +817,8 @@ async def firm_snapshot(firm_id: str, settings: dict, since: datetime | None = N
     issued = await fetch_all(db.invoices.find(firm_query(firm_id, {"status": "issued"})))
     # Ανείσπρακτα = ό,τι απομένει να εισπραχθεί (μετά την παρακράτηση και τα εξοφλημένα από πελατολογικό), όχι το μεικτό σύνολο.
     balances = await invoice_balances(firm_id, issued, settings)
-    unpaid = sorted([{**i, "open_amount": balances[str(i["_id"])][1]} for i in issued], key=lambda i: i.get("date", ""))
+    unpaid = sorted([{**i, "open_amount": balances[str(i["_id"])][1]} for i in open_invoices(issued, balances)],
+                    key=lambda i: i.get("date", ""))
     output_vat = round(sum(i.get("vat_amount", 0) for i in month_inv), 2)
     input_vat = round(sum(e.get("vat_amount", 0) for e in expenses), 2)
     since = since or datetime.now(timezone.utc) - timedelta(days=7 if settings.get("digest_frequency") == "weekly" else 1)
@@ -1077,7 +1100,13 @@ def numbering_findings(report: dict) -> dict:
                 f"Οι αριθμοί {', '.join(numbers)} υπάρχουν σε περισσότερα από ένα παραστατικά. Δύο παραστατικά με τον "
                 "ίδιο αριθμό δεν επιτρέπεται να υπάρχουν στην ίδια σειρά· ελέγξτε τα με τον λογιστή πριν από κάθε "
                 "υποβολή ή δήλωση.")
-        if s["gaps_total"]:
+        if s["count"] == 0 and s["gaps_total"]:
+            found[f"numbering:empty:{name}:{s['counter']['seq']}"] = (
+                "warning", f"Η σειρά {name} έχει δώσει αριθμούς χωρίς κανένα παραστατικό",
+                f"Ο μετρητής της σειράς {name} δείχνει {s['counter']['seq']}, δηλαδή έχουν δοθεί αριθμοί, αλλά δεν υπάρχει "
+                "κανένα εκδοθέν παραστατικό με αριθμό αυτής της σειράς (π.χ. κατάρρευση κατά την έκδοση ή παραστατικά που "
+                "χάθηκαν). Ελέγξτε με τον λογιστή αν εκδόθηκαν παραστατικά με αυτούς τους αριθμούς και πού βρίσκονται.")
+        elif s["gaps_total"]:
             shown = ", ".join(f"{n:04d}" for n in s["gaps"][:10])
             more = " και άλλοι" if s["gaps_total"] > 10 else ""
             found[f"numbering:gaps:{name}:{_numbering_digest(s['gaps'] + [s['gaps_total']])}"] = (
@@ -1103,8 +1132,17 @@ def numbering_findings(report: dict) -> dict:
             "warning", "Παραστατικά με αριθμό εκτός της μορφής της σειράς",
             f"Οι αριθμοί {', '.join(numbers[:10])} δεν έχουν τη μορφή ΠΡΟΘΕΜΑ-ΕΤΟΣ-ΑΥΞΩΝ και δεν ελέγχονται ως προς "
             "τη συνέχεια της σειράς. Ελέγξτε αν προέρχονται από εισαγωγή ή παλαιότερο σύστημα.")
+    for note in report.get("observations", []):
+        if note["kind"] == "starts_above_one":
+            found[f"numbering:start:{note['series']}:{note['first']}"] = (
+                "info", f"Η σειρά {note['series']} δεν ξεκινά από το 0001",
+                f"Το πρώτο παραστατικό της σειράς {note['series']} έχει αριθμό {note['first']:04d}. Αν η αρίθμηση συνεχίζει "
+                "από άλλο σύστημα εντός του έτους, κλείστε την κάρτα· αν όχι, λείπουν οι αριθμοί πριν από αυτόν και ο "
+                "λογιστής πρέπει να εξακριβώσει πού βρίσκονται τα αντίστοιχα παραστατικά.")
     if report["problems"]["unnumbered"]:
-        found[f"numbering:unnumbered:{report['problems']['unnumbered']}"] = (
+        # Το κλειδί περιέχει και σύνοψη των ίδιων των παραστατικών: αν ο λογιστής κλείσει την κάρτα για 3 παραστατικά και
+        # αργότερα εμφανιστούν 3 ΑΛΛΑ, είναι νέο πρόβλημα και θέλει νέα κάρτα (το πλήθος μόνο του δεν τα ξεχωρίζει).
+        found[f"numbering:unnumbered:{report['problems']['unnumbered']}:{_numbering_digest(report.get('unnumbered_ids', []))}"] = (
             "critical", "Εκδοθέντα παραστατικά χωρίς αριθμό",
             f"{report['problems']['unnumbered']} εκδοθέντα/εξοφλημένα/ακυρωμένα παραστατικά δεν έχουν αριθμό. "
             "Ένα εκδοθέν παραστατικό πρέπει να φέρει αριθμό σειράς· ελέγξτε τα με τον λογιστή.")
@@ -1142,23 +1180,76 @@ async def job_numbering_check(firm_id: str, settings: dict) -> dict:
                                entity_id=key.split(":")[2] if key.count(":") >= 2 else "", requires_action=True,
                                dedupe_key=key)
         raised += 1 if created else 0
-    return {"ok": not wanted, "unique_index": report["unique_index"], "problems": report["problems"],
+    # Οι ενημερωτικές κάρτες («η σειρά δεν ξεκινά από το 0001») δεν κάνουν τον έλεγχο «όχι ok»: δεν είναι σφάλμα.
+    return {"ok": all(level == "info" for level, _title, _message in wanted.values()),
+            "unique_index": report["unique_index"], "problems": report["problems"],
             "series": len(report["series"]), "raised": raised, "resolved": resolved}
 
 
 # --------------------------------------------------------- πληρωμές κάρτας ----
 
 CARD_APPLY_GRACE_MINUTES = 5       # η ζωντανή κλήση (webhook) ίσως δουλεύει ακόμη· δεν της παίρνουμε τη δουλειά
+CARD_POLL_AFTER_MINUTES = 10       # μια συνεδρία που μόλις άνοιξε δεν ρωτιέται: ο πελάτης ίσως πληρώνει αυτή τη στιγμή
+CARD_POLL_EVERY_MINUTES = 30       # ανά συνεδρία, το πολύ μία ερώτηση στο Stripe κάθε μισή ώρα
+CARD_POLL_WINDOW_DAYS = 14         # τα ασύγχρονα μέσα πληρωμής ολοκληρώνονται μέσα σε δύο εβδομάδες το πολύ
+CARD_POLL_PER_RUN = 20             # ανά γραφείο και κύκλο: ένα Stripe που αργεί δεν παγώνει τον κύκλο του Autopilot
+CARD_POLL_MAX_ERRORS = 3           # διαδοχικά σφάλματα επικοινωνίας: σταματά ο κύκλος αυτού του γραφείου (θα ξαναδοκιμάσει)
+
+
+async def poll_pending_card_sessions(firm_id: str) -> dict:
+    """Ρωτά το Stripe για συνεδρίες πληρωμής που έμειναν «pending» και καταγράφει όσες πληρώθηκαν ή έληξαν.
+
+    Το webhook και η σελίδα επιτυχίας του πελάτη είναι οι γρήγορες διαδρομές. Αν το webhook δεν έχει ρυθμιστεί
+    (`STRIPE_WEBHOOK_SECRET` κενό → 503), πέσει ή ο πελάτης έκλεισε την καρτέλα πριν επιστρέψει, τα χρήματα θα είχαν
+    εισπραχθεί και το τιμολόγιο θα έμενε ανοιχτό — με υπενθυμίσεις προς τον πελάτη που έχει ήδη πληρώσει. Εδώ ρωτάμε
+    εμείς, φραγμένα: μόνο συνεδρίες ηλικίας 10 λεπτών ως 14 ημερών, το πολύ 20 ανά κύκλο, καθεμία το πολύ ανά 30 λεπτά.
+    Μια συνεδρία που έληξε κλείνει και δεν ξαναρωτιέται.
+    """
+    from routes_payments import _stripe_ready, poll_stripe_session
+    counts = {"polled": 0, "recovered": 0, "expired": 0, "errors": 0}
+    if not _stripe_ready():
+        return counts
+    now = datetime.now(timezone.utc)
+    iso = lambda delta: (now - delta).isoformat()  # noqa: E731
+    query = firm_query(firm_id, {
+        "payment_status": "pending",
+        "created_at": {"$lt": iso(timedelta(minutes=CARD_POLL_AFTER_MINUTES)), "$gte": iso(timedelta(days=CARD_POLL_WINDOW_DAYS))},
+        "$or": [{"polled_at": {"$exists": False}}, {"polled_at": None},
+                {"polled_at": {"$lt": iso(timedelta(minutes=CARD_POLL_EVERY_MINUTES))}}],
+    })
+    consecutive_errors = 0
+    async for tx in db.payment_transactions.find(query).sort("created_at", 1).limit(CARD_POLL_PER_RUN):
+        # Η σήμανση γίνεται ΠΡΙΝ την ερώτηση: αν το Stripe αργεί ή πέσει, η ίδια συνεδρία δεν ξαναρωτιέται σε κάθε κύκλο.
+        await db.payment_transactions.update_one({"_id": tx["_id"]}, {"$set": {"polled_at": _now()}})
+        counts["polled"] += 1
+        outcome = await poll_stripe_session(tx["session_id"])
+        if outcome == "error":
+            counts["errors"] += 1
+            consecutive_errors += 1
+            if consecutive_errors >= CARD_POLL_MAX_ERRORS:
+                break
+            continue
+        consecutive_errors = 0
+        if outcome == "paid":
+            counts["recovered"] += 1
+        elif outcome == "expired":
+            counts["expired"] += 1
+    return counts
 
 
 async def job_card_payments(firm_id: str, settings: dict) -> dict:
-    """Ολοκληρώνει πληρωμές κάρτας που καταγράφηκαν ως εισπραγμένες αλλά δεν εφαρμόστηκαν στο τιμολόγιο.
+    """Εντοπίζει και ολοκληρώνει πληρωμές κάρτας που το webhook και η σελίδα επιτυχίας του πελάτη δεν πρόλαβαν.
 
-    Συμβαίνει όταν η διεργασία πέφτει ανάμεσα στην καταγραφή και την εφαρμογή. Το Stripe ξαναστέλνει το webhook,
-    αλλά όχι για πάντα — και η σελίδα επιτυχίας του πελάτη δεν είναι εγγύηση. Η εφαρμογή είναι ατομική και
-    επαναλήψιμη (βλ. routes_payments.apply_pending_card_payment): ό,τι ολοκληρώθηκε ήδη δεν ξαναγίνεται.
+    1. **Ρωτά το Stripe** για συνεδρίες που είναι ακόμη «pending» (`poll_pending_card_sessions`): χωρίς αυτό, ένα
+       γραφείο χωρίς ρυθμισμένο webhook ή με webhook εκτός λειτουργίας δεν θα μάθαινε ποτέ ότι πληρώθηκε ένα τιμολόγιο
+       αν ο πελάτης δεν επέστρεφε στη σελίδα επιτυχίας.
+    2. **Εφαρμόζει** πληρωμές που καταγράφηκαν ως εισπραγμένες αλλά δεν εφαρμόστηκαν στο τιμολόγιο — συμβαίνει όταν
+       η διεργασία πέφτει ανάμεσα στην καταγραφή και την εφαρμογή. Το Stripe ξαναστέλνει το webhook, αλλά όχι για πάντα.
+       Η εφαρμογή είναι ατομική και επαναλήψιμη (βλ. routes_payments.apply_pending_card_payment): ό,τι ολοκληρώθηκε
+       ήδη δεν ξαναγίνεται.
     """
     from routes_payments import apply_pending_card_payment
+    polled = await poll_pending_card_sessions(firm_id)
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=CARD_APPLY_GRACE_MINUTES)).isoformat()
     pending = applied = 0
     async for tx in db.payment_transactions.find(
@@ -1166,7 +1257,9 @@ async def job_card_payments(firm_id: str, settings: dict) -> dict:
         pending += 1
         if await apply_pending_card_payment(tx["session_id"]):
             applied += 1
-    return {"pending": pending, "applied": applied, "legacy_reported": await report_legacy_card_payments(firm_id)}
+    return {"pending": pending, "applied": applied, "polled": polled["polled"], "recovered": polled["recovered"],
+            "expired": polled["expired"], "poll_errors": polled["errors"],
+            "legacy_reported": await report_legacy_card_payments(firm_id)}
 
 
 async def report_legacy_card_payments(firm_id: str) -> int:
@@ -1227,12 +1320,22 @@ JOB_FUNCS = {
 }
 
 
+# Οι δουλειές που τρέχουν και όταν ο γενικός διακόπτης είναι κλειστός. Ο διακόπτης σταματά ό,τι ενεργεί εκ μέρους του
+# γραφείου: αποστολές σε πελάτες και ΑΑΔΕ, υπενθυμίσεις, αυτόματες συμφωνίες, λήψη εξόδων. Αυτές οι δύο δεν στέλνουν
+# τίποτα σε τρίτους — η μία καταγράφει μια πληρωμή που ο πελάτης ΗΔΗ έκανε (το webhook του Stripe την καταγράφει
+# ούτως ή άλλως, χωρίς να ρωτά τον διακόπτη· χωρίς την ερώτηση προς το Stripe, ένα γραφείο με κλειστό Autopilot θα
+# είχε εισπράξει και θα έβλεπε το τιμολόγιο ανοιχτό) και η άλλη αναφέρει κενό στην αρίθμηση των τιμολογίων.
+ALWAYS_ON_JOBS = ("numbering_check", "card_payments")
+
+
 async def run_firm(firm_id: str, jobs: list[str] | None = None, force: bool = False) -> list[dict]:
     settings = await db.settings.find_one({"firm_id": firm_id}) or {"firm_id": firm_id}
-    if not force and not settings.get("autopilot_enabled", True):
-        return [{"job": "*", "status": "skipped", "stats": {"reason": "autopilot_disabled"}}]
     results = []
-    for job in jobs or JOBS:
+    selected = list(jobs or JOBS)
+    if not force and not settings.get("autopilot_enabled", True):
+        results.append({"job": "*", "status": "skipped", "stats": {"reason": "autopilot_disabled"}})
+        selected = [job for job in selected if job in ALWAYS_ON_JOBS]
+    for job in selected:
         func = JOB_FUNCS[job]
         if job == "digest":
             results.append(await record_run(firm_id, job, func, firm_id, settings, force))

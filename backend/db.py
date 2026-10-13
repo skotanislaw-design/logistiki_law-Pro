@@ -35,6 +35,17 @@ async def fetch_all(cursor) -> list[dict]:
     return [doc async for doc in cursor]
 
 
+async def fetch_capped(cursor, limit: int) -> tuple[list[dict], bool]:
+    """Τα πρώτα `limit` έγγραφα ενός cursor **και αν υπήρχαν κι άλλα** — για λίστες οθόνης, ποτέ για αθροίσματα.
+
+    Το `to_list(limit)` κόβει σιωπηλά: ο χρήστης βλέπει 500 υποθέσεις και δεν μαθαίνει ότι υπάρχει και η 501η. Εδώ ζητείται
+    ένα έγγραφο παραπάνω· το έξτρα δεν επιστρέφεται, δείχνει μόνο ότι κόπηκε κάτι, ώστε η απάντηση να το δηλώσει
+    (`http_utils.disclose_truncation`). Η σειρά και το όριο ανήκουν στον καλούντα: ο cursor πρέπει να έχει `sort()`.
+    """
+    docs = [doc async for doc in cursor.limit(limit + 1)]
+    return docs[:limit], len(docs) > limit
+
+
 def validate_object_id(v: Any) -> str:
     if isinstance(v, ObjectId):
         return str(v)
@@ -47,7 +58,10 @@ PyObjectId = Annotated[str, BeforeValidator(validate_object_id)]
 
 
 class BaseDocument(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, arbitrary_types_allowed=True)
+    # `allow_inf_nan=False`: ούτε `NaN`/`Infinity` ούτε τα κείμενα "NaN", "inf", "1e999" γίνονται πεδίο αριθμού σε κανένα
+    # έγγραφο της εφαρμογής. Ο φραγμός JSON (json_guard) βλέπει μόνο τις σταθερές του JSON· τα κείμενα τα μετατρέπει η Pydantic
+    # σε πραγματικό NaN, και ένα NaN που αποθηκεύεται χαλά κάθε άθροισμα και κάθε απάντηση JSON του γραφείου.
+    model_config = ConfigDict(populate_by_name=True, arbitrary_types_allowed=True, allow_inf_nan=False)
     id: Optional[PyObjectId] = Field(default=None, validation_alias=AliasChoices("_id", "id"))
 
     @classmethod

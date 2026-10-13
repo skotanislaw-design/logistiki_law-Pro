@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from datetime import date, datetime, timezone
 from bson import ObjectId
-from db import db
+from db import db, fetch_capped
+from http_utils import disclose_truncation
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from models import Case
@@ -12,6 +13,8 @@ router = APIRouter(prefix="/cases", tags=["cases"])
 
 CASE_TYPES = ["Αστικό", "Ποινικό", "Διοικητικό", "Εμπορικό", "Οικογενειακό", "Εργατικό", "Ακίνητα/Κτηματολόγιο", "Άλλο"]
 STATUS_LABELS = {"active": "Σε εξέλιξη", "pending": "Σε αναμονή", "completed": "Ολοκληρώθηκε", "archived": "Αρχειοθετήθηκε"}
+CASES_LIST_LIMIT = 500          # οι νεότερες υποθέσεις· αν υπάρχουν κι άλλες, η απάντηση το δηλώνει (X-List-Truncated)
+CASE_SUBLIST_LIMIT = 100        # γραμμάτια και παράβολα που δείχνει η σελίδα της υπόθεσης· τα ΣΥΝΟΛΑ καλύπτουν πάντα όλα
 
 
 def _now():
@@ -56,8 +59,9 @@ async def case_types(user: dict = Depends(get_current_user)):
 
 
 @router.get("")
-async def list_cases(user: dict = Depends(get_current_user)):
-    docs = await db.cases.find(tenant_query(user)).sort("created_at", -1).to_list(500)
+async def list_cases(response: Response, user: dict = Depends(get_current_user)):
+    docs, cut = await fetch_capped(db.cases.find(tenant_query(user)).sort("created_at", -1), CASES_LIST_LIMIT)
+    disclose_truncation(response, cut, CASES_LIST_LIMIT)
     return [Case.from_mongo(d) for d in docs]
 
 
@@ -72,20 +76,34 @@ async def create_case(payload: Case, user: dict = Depends(get_current_user)):
     return Case.from_mongo(doc)
 
 
+async def _case_total(collection, user: dict, case_id: str, field: str) -> float:
+    """Το άθροισμα ενός πεδίου πάνω σε ΟΛΑ τα (μη ακυρωμένα) έγγραφα της υπόθεσης — όχι στα όσα δείχνει η λίστα.
+
+    Πριν, τα «Αμοιβές» και «Έξοδα» της υπόθεσης αθροίζονταν από τα πρώτα 100 γραμμάτια/παράβολα που επιστρέφονταν για
+    εμφάνιση: μια υπόθεση με 101 γραμμάτια έδειχνε σύνολο χωρίς το παλαιότερο, δίχως καμία ένδειξη."""
+    total = 0.0
+    async for doc in collection.find(tenant_query(user, {"case_id": case_id, "status": {"$ne": "cancelled"}}), {field: 1}):
+        total += float(doc.get(field) or 0)
+    return round(total, 2)
+
+
 @router.get("/{case_id}")
-async def get_case(case_id: str, user: dict = Depends(get_current_user)):
+async def get_case(case_id: str, response: Response, user: dict = Depends(get_current_user)):
     doc = await db.cases.find_one(tenant_query(user, {"_id": ObjectId(case_id)}))
     if not doc:
         raise HTTPException(status_code=404, detail="Η υπόθεση δεν βρέθηκε")
-    grammatia = await db.grammatia.find(tenant_query(user, {"case_id": case_id})).sort("created_at", -1).to_list(100)
-    paravola = await db.paravola.find(tenant_query(user, {"case_id": case_id})).sort("created_at", -1).to_list(100)
+    grammatia, cut_g = await fetch_capped(
+        db.grammatia.find(tenant_query(user, {"case_id": case_id})).sort("created_at", -1), CASE_SUBLIST_LIMIT)
+    paravola, cut_p = await fetch_capped(
+        db.paravola.find(tenant_query(user, {"case_id": case_id})).sort("created_at", -1), CASE_SUBLIST_LIMIT)
+    disclose_truncation(response, cut_g or cut_p, CASE_SUBLIST_LIMIT)
     from models import Grammatio, Paravolo
     return {
         "case": Case.from_mongo(doc),
         "grammatia": [Grammatio.from_mongo(g) for g in grammatia],
         "paravola": [Paravolo.from_mongo(p) for p in paravola],
-        "fees_total": round(sum(g.get("total", 0) for g in grammatia if g.get("status") != "cancelled"), 2),
-        "expenses_total": round(sum(p.get("amount", 0) for p in paravola if p.get("status") != "cancelled"), 2),
+        "fees_total": await _case_total(db.grammatia, user, case_id, "total"),
+        "expenses_total": await _case_total(db.paravola, user, case_id, "amount"),
     }
 
 

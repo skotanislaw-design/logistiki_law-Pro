@@ -17,8 +17,9 @@
 import calendar
 import math
 import os
+import re
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
 ATHENS = ZoneInfo("Europe/Athens")
@@ -47,11 +48,11 @@ def athens_date_of(stamp) -> date | None:
         return None
     try:
         parsed = datetime.fromisoformat(stamp.strip())
-    except ValueError:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(ATHENS).date()
+    except (ValueError, OverflowError):      # «9999-12-31T23:59:59Z» ξεπερνά το έτος 9999 όταν μετατραπεί σε ώρα Ελλάδας
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(ATHENS).date()
 
 
 # --------------------------------------------------------------- χρήμα ---
@@ -72,6 +73,40 @@ def is_finite_number(value) -> bool:
 # πάντα λάθος πληκτρολόγησης, και τα πολύ μεγάλα ποσά ξεπερνούν την ακρίβεια του υπολογισμού ΦΠΑ (σφάλμα 500).
 MAX_LINE_VALUE = 1_000_000_000
 
+_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def valid_iso_date(value) -> bool:
+    """Υπαρκτή ημερομηνία ακριβώς της μορφής ΕΕΕΕ-ΜΜ-ΗΗ — τίποτε άλλο.
+
+    Η `date.fromisoformat` της Python 3.11 δέχεται και `20260612`, `2026-W24-5`, ενώ η `\\d` της `re` δέχεται ψηφία
+    οποιασδήποτε γραφής (πλήρους πλάτους, αραβικά-ινδικά). Όλες οι ημερομηνίες της εφαρμογής συγκρίνονται ως κείμενα
+    (`$gte`/`$lte` στις περιόδους ΦΠΑ, μήνας στο dashboard): το `20260612` ταξινομείται μετά από κάθε «2026-…», οπότε ένα
+    τιμολόγιο που το φέρει δεν μπαίνει στην περίοδό του και δεν φαίνεται σε κανένα σφάλμα.
+    """
+    if not isinstance(value, str) or _ISO_DATE.fullmatch(value) is None:
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def money_limit_error(value, label: str, *, negative_ok: bool = False) -> str | None:
+    """Μήνυμα για ποσό που δεν είναι πεπερασμένο, είναι αρνητικό (αν δεν επιτρέπεται) ή ξεπερνά το `MAX_LINE_VALUE`.
+
+    Το όριο δεν είναι αυθαίρετο: δύο πεπερασμένα `1e308` αθροίζονται σε `inf` και το dashboard απαντά 500 για ολόκληρο το
+    γραφείο, ενώ ποσό πάνω από 1 δισ. € είναι πάντα λάθος πληκτρολόγησης.
+    """
+    if not is_finite_number(value):
+        return f"Το πεδίο «{label}» πρέπει να είναι έγκυρος αριθμός."
+    if value < 0 and not negative_ok:
+        return f"Το πεδίο «{label}» δεν μπορεί να είναι αρνητικό."
+    if abs(value) > MAX_LINE_VALUE:
+        return f"Το πεδίο «{label}» είναι υπερβολικά μεγάλο — ελέγξτε το ποσό."
+    return None
+
 # Οι συντελεστές ΦΠΑ που δέχεται το myDATA (βλ. VAT_CATEGORY στο mydata_client).
 VALID_VAT_RATES = (0, 6, 13, 24)
 
@@ -79,6 +114,19 @@ VALID_VAT_RATES = (0, 6, 13, 24)
 def _money(value) -> Decimal:
     """Στρογγυλοποίηση στο λεπτό, μισού προς τα πάνω (λογιστική σύμβαση)."""
     return Decimal(str(value)).quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+def round_half_up(value) -> float:
+    """Στρογγυλοποίηση στο λεπτό, μισού προς τα πάνω, με βάση το δεκαδικό κείμενο της τιμής και όχι τη δυαδική της μορφή.
+
+    Η `round()` των float δίνει `round(300.5 * 0.15, 2) == 45.07`, γιατί το γινόμενο είναι στην πραγματικότητα
+    45,07499999… — ο λογιστής περιμένει 45,08 (45,075 → 45,08). Δέχεται και `Decimal` (ώστε το γινόμενο να
+    υπολογιστεί ακριβώς πριν στρογγυλοποιηθεί). Μη πεπερασμένη τιμή επιστρέφεται όπως είναι: το λάθος ανήκει στην είσοδο.
+    """
+    try:
+        return float(_money(value))
+    except InvalidOperation:
+        return float(value)
 
 
 def _attr(item, name, default=None):

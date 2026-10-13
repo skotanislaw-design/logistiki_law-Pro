@@ -88,35 +88,67 @@ async def _validate_invoice_and_get_amount(invoice_id: str, firm_id: str | None 
     return inv, total
 
 
+MIN_CARD_AMOUNT_CENTS = 50        # το ελάχιστο ποσό που δέχεται το Stripe σε ευρώ (0,50 €)
+
+
+def _stripe_failure(error: Exception, amount: float) -> HTTPException:
+    """Ελεγχόμενη απάντηση για σφάλμα του Stripe στη δημιουργία συνεδρίας — ποτέ «Internal Server Error».
+
+    * Ποσό κάτω από το ελάχιστο (π.χ. 0,30 € που απομένουν αφού ο πελατολογικός λογαριασμός εξόφλησε σχεδόν όλο το
+      τιμολόγιο): 400 με εξήγηση — ο πελάτης δεν μπορεί να πληρώσει με κάρτα, μπορεί με έμβασμα.
+    * Διακοπή ή χρονική υπέρβαση του Stripe: 503 «δοκιμάστε ξανά» — είναι προσωρινό.
+    * Οτιδήποτε άλλο (άκυρο κλειδί, άρνηση του αιτήματος): 503 με παραπομπή στο γραφείο· η αιτία καταγράφεται στο log.
+    """
+    from automation import _fmt
+    logger.warning("Το Stripe απέρριψε τη δημιουργία συνεδρίας πληρωμής (%s): %s", type(error).__name__, error)
+    if isinstance(error, stripe.error.InvalidRequestError):
+        if int(round(amount * 100)) < MIN_CARD_AMOUNT_CENTS:
+            return HTTPException(
+                status_code=400,
+                detail=f"Το ποσό που οφείλεται ({_fmt(amount)}) είναι μικρότερο από το ελάχιστο που δέχεται η πληρωμή με "
+                       f"κάρτα ({_fmt(MIN_CARD_AMOUNT_CENTS / 100)}). Πληρώστε με τραπεζικό έμβασμα ή επικοινωνήστε με το γραφείο.")
+        return HTTPException(status_code=400, detail="Η υπηρεσία πληρωμών δεν δέχθηκε το αίτημα πληρωμής. Επικοινωνήστε με το γραφείο.")
+    if isinstance(error, (stripe.error.APIConnectionError, stripe.error.RateLimitError, stripe.error.APIError)):
+        return HTTPException(
+            status_code=503,
+            detail="Η υπηρεσία πληρωμών με κάρτα δεν απαντά αυτή τη στιγμή. Δοκιμάστε ξανά σε λίγα λεπτά ή πληρώστε με τραπεζικό έμβασμα.")
+    return HTTPException(status_code=503, detail="Οι πληρωμές με κάρτα δεν είναι διαθέσιμες αυτή τη στιγμή. Επικοινωνήστε με το γραφείο.")
+
+
 async def _create_session(inv: dict, amount: float, success_url: str, cancel_url: str) -> dict:
     if not _stripe_ready():
         raise HTTPException(status_code=400, detail="Οι πληρωμές δεν είναι ενεργοποιημένες. Ρυθμίστε τα κλειδιά Stripe στις Ρυθμίσεις ή επικοινωνήστε με τη διαχείριση.")
     invoice_id = str(inv["_id"])
-    session = stripe.checkout.Session.create(
-        mode="payment",
-        line_items=[{
-            "price_data": {
-                "currency": "eur",
-                "product_data": {
-                    "name": f"Τιμολόγιο {inv.get('number', '')}",
-                    "description": f"Νομικές υπηρεσίες προς {inv.get('client_name', '')}",
+    try:
+        # Σε νήμα: η κλήση περιμένει το δίκτυο και ένα Stripe που αργεί δεν πρέπει να παγώνει τον βρόχο γεγονότων όλων των γραφείων.
+        session = await asyncio.to_thread(
+            stripe.checkout.Session.create,
+            mode="payment",
+            line_items=[{
+                "price_data": {
+                    "currency": "eur",
+                    "product_data": {
+                        "name": f"Τιμολόγιο {inv.get('number', '')}",
+                        "description": f"Νομικές υπηρεσίες προς {inv.get('client_name', '')}",
+                    },
+                    "unit_amount": int(round(amount * 100)),
                 },
-                "unit_amount": int(round(amount * 100)),
+                "quantity": 1,
+            }],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={
+                "invoice_id": invoice_id,
+                "invoice_number": inv.get("number", ""),
+                "client_id": inv.get("client_id", ""),
             },
-            "quantity": 1,
-        }],
-        success_url=success_url,
-        cancel_url=cancel_url,
-        metadata={
-            "invoice_id": invoice_id,
-            "invoice_number": inv.get("number", ""),
-            "client_id": inv.get("client_id", ""),
-        },
-        payment_intent_data={
-            "metadata": {"invoice_id": invoice_id, "invoice_number": inv.get("number", "")},
-        },
-        billing_address_collection="auto",
-    )
+            payment_intent_data={
+                "metadata": {"invoice_id": invoice_id, "invoice_number": inv.get("number", "")},
+            },
+            billing_address_collection="auto",
+        )
+    except stripe.error.StripeError as e:
+        raise _stripe_failure(e, amount)
     tx = PaymentTransaction(
         session_id=session.id,
         invoice_id=invoice_id,
@@ -211,13 +243,8 @@ async def get_payment_status(session_id: str):
         raise HTTPException(status_code=404, detail="Δεν βρέθηκε συναλλαγή")
     # Webhook fallback
     if record.get("payment_status") != "paid" and _stripe_ready():
-        try:
-            s = stripe.checkout.Session.retrieve(session_id)
-            if s.payment_status == "paid":
-                await _mark_paid(session_id, s.payment_intent if hasattr(s, "payment_intent") else None)
-                record = await db.payment_transactions.find_one({"session_id": session_id})
-        except stripe.error.StripeError:
-            pass
+        if await poll_stripe_session(session_id) in ("paid", "expired"):
+            record = await db.payment_transactions.find_one({"session_id": session_id}) or record
     elif record.get("payment_status") == "paid" and record.get("apply_pending"):
         # Η είσπραξη έχει καταγραφεί αλλά η εφαρμογή στο τιμολόγιο έμεινε στη μέση (π.χ. κατάρρευση): τελείωσέ την.
         await apply_pending_card_payment(session_id)
@@ -237,6 +264,39 @@ APPLY_MAX_ATTEMPTS = 5            # πόσες φορές επιχειρείτα
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+async def poll_stripe_session(session_id: str) -> str:
+    """Ρωτά το ίδιο το Stripe για μια συνεδρία πληρωμής και καταγράφει όσα απαντά.
+
+    Το webhook και η σελίδα επιτυχίας του πελάτη είναι οι γρήγορες διαδρομές· αυτή είναι η δικλίδα όταν καμία δεν
+    δούλεψε (webhook χωρίς μυστικό ή εκτός λειτουργίας, πελάτης που έκλεισε την καρτέλα πριν επιστρέψει). Καλείται
+    από τη σελίδα κατάστασης και από τον Autopilot (`automation.job_card_payments`). Η ερώτηση γίνεται σε νήμα: ένα
+    Stripe που αργεί δεν παγώνει τον βρόχο γεγονότων όλων των γραφείων.
+
+    Επιστρέφει: "paid" (καταγράφηκε εξόφληση και εφαρμόστηκε), "expired" (η συνεδρία έληξε χωρίς πληρωμή),
+    "pending" (ακόμη ανοιχτή ή σε αναμονή ασύγχρονης πληρωμής) ή "error" (το Stripe δεν απάντησε — δεν αλλάζει τίποτα).
+    """
+    try:
+        session = await asyncio.to_thread(stripe.checkout.Session.retrieve, session_id)
+    except stripe.error.StripeError as e:
+        logger.warning("Δεν ήταν δυνατός ο έλεγχος της συνεδρίας πληρωμής %s στο Stripe: %s", session_id, e)
+        return "error"
+    if getattr(session, "payment_status", None) == "paid":
+        await _mark_paid(session_id, getattr(session, "payment_intent", None))
+        return "paid"
+    if getattr(session, "status", None) == "expired":
+        await _close_unpaid(session_id, "expired")
+        return "expired"
+    return "pending"
+
+
+async def _close_unpaid(session_id: str, state: str) -> None:
+    """Κλείνει μια ΑΝΕΞΟΦΛΗΤΗ συναλλαγή ως «expired»/«failed». Μια συναλλαγή που έχει ήδη καταγραφεί ως πληρωμένη δεν
+    αλλάζει ποτέ από ένα (καθυστερημένο ή εκτός σειράς) γεγονός λήξης/αποτυχίας."""
+    await db.payment_transactions.update_one(
+        {"session_id": session_id, "payment_status": "pending"},
+        {"$set": {"status": state, "payment_status": state, "updated_at": _now()}})
 
 
 async def _mark_paid(session_id: str, payment_intent_id: str = None):
@@ -305,11 +365,13 @@ async def apply_pending_card_payment(session_id: str) -> bool:
     except BaseException:
         await asyncio.shield(_release_apply_claim(session_id, token))
         raise
-    await db.payment_transactions.update_one(
+    done = await db.payment_transactions.update_one(
         {"session_id": session_id, "apply_claim": token},
         {"$set": {"apply_pending": False, "applied_at": _now(), "apply_result": result},
          "$unset": {"apply_claim": "", "apply_claim_at": ""}})
-    return True
+    # Αν το κλείδωμα έληξε όσο δουλεύαμε και κάποιος άλλος πήρε τη δουλειά, το αποτέλεσμα το γράφει εκείνος (η εφαρμογή
+    # είναι επαναλήψιμη και οι ειδοποιήσεις έχουν dedupe_key)· αυτή η κλήση δεν ισχυρίζεται ότι ολοκλήρωσε.
+    return bool(done.matched_count)
 
 
 async def _give_up_applying(tx: dict) -> str:
@@ -364,6 +426,11 @@ async def _apply_card_payment(tx: dict) -> str:
     def _is_settled_by_this_payment(doc: dict) -> bool:
         return doc.get("status") == "paid" and doc.get("paid_via") == "stripe" and doc.get("paid_ref") == session_id
 
+    # Το τι θα συμβεί (αποτέλεσμα + ειδοποίηση, αν χρειάζεται) αποφασίζεται μέσα στο `try`· η ειδοποίηση ΓΡΑΦΕΤΑΙ έξω από
+    # αυτό. Αλλιώς μια παροδική αποτυχία της ίδιας της ειδοποίησης θα έπεφτε στο γενικό `except`, θα έκλεινε την
+    # εκκρεμότητα ως «failed» με μια γενική ειδοποίηση — και η ειδική (π.χ. το ποσό της επιστροφής στην υπερπληρωμή) δεν θα
+    # γραφόταν ποτέ. Έξω από το `try` το σφάλμα φεύγει προς τα πάνω, η εφαρμογή μένει εκκρεμής και ξαναδοκιμάζεται.
+    notice: tuple[str, str, str] | None = None
     try:
         invoice = await db.invoices.find_one({"_id": ObjectId(invoice_id), "firm_id": firm_id}) or {}
         number = invoice.get("number") or "τιμολόγιο"
@@ -374,49 +441,52 @@ async def _apply_card_payment(tx: dict) -> str:
         if (invoice.get("status") != "issued" or credited) and not settled_here:
             reason = ("για το τιμολόγιο εκδόθηκε πιστωτικό" if credited
                       else f"είχε κατάσταση «{invoice.get('status') or 'άγνωστη'}»")
-            await alert(
+            result = "not_open"
+            notice = (
                 "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} για τιμολόγιο που δεν ήταν ανοιχτό",
                 f"Το {number}: {reason} όταν ολοκληρώθηκε η πληρωμή "
                 f"(συνεδρία {session_id}). Τα χρήματα έχουν εισπραχθεί: ελέγξτε αν χρειάζεται επιστροφή ή σύνδεση "
                 "με άλλο παραστατικό.")
-            return "not_open"
-        settings = await db.settings.find_one({"firm_id": firm_id}) or {}
-        due, _withheld = await outstanding_amount(firm_id, invoice, settings)
-        difference = round(paid - due, 2)
-        if not settled_here:
-            if to_cents(paid) < to_cents(due):
-                await alert(
+        else:
+            settings = await db.settings.find_one({"firm_id": firm_id}) or {}
+            due, _withheld = await outstanding_amount(firm_id, invoice, settings)
+            difference = round(paid - due, 2)
+            result = "settled"
+            if not settled_here and to_cents(paid) < to_cents(due):
+                result = "underpaid"
+                notice = (
                     "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} μικρότερη από το οφειλόμενο",
                     f"Το {number} οφείλει {_fmt(due)}, ο πελάτης πλήρωσε {_fmt(paid)} (συνεδρία {session_id}). "
                     "Το τιμολόγιο ΔΕΝ εξοφλήθηκε και μένει ανοιχτό για το υπόλοιπο· συμφωνήστε την πληρωμή χειροκίνητα "
                     "όταν διευθετηθεί.")
-                return "underpaid"
-            if not await mark_paid(firm_id, invoice["_id"], paid_via="stripe", ref=session_id):
+            elif not settled_here and not await mark_paid(firm_id, invoice["_id"], paid_via="stripe", ref=session_id):
                 fresh = await db.invoices.find_one({"_id": invoice["_id"], "firm_id": firm_id}) or {}
                 # Άλλη προσπάθεια της ΙΔΙΑΣ πληρωμής (το κλείδωμα έληξε ενώ εμείς καθυστερούσαμε) πρόλαβε και
                 # εξόφλησε το τιμολόγιο με αυτή τη συνεδρία: δεν είναι πρόβλημα — συνεχίζουμε με τον έλεγχο ποσού.
                 if not _is_settled_by_this_payment(fresh):
-                    await alert(
+                    result = "not_open"
+                    notice = (
                         "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} για τιμολόγιο που δεν ήταν ανοιχτό",
                         f"Το {number} είχε κατάσταση «{fresh.get('status') or 'άγνωστη'}» όταν ολοκληρώθηκε η πληρωμή "
                         f"(συνεδρία {session_id}). Τα χρήματα έχουν εισπραχθεί: ελέγξτε αν χρειάζεται επιστροφή ή σύνδεση "
                         "με άλλο παραστατικό.")
-                    return "not_open"
-        if to_cents(paid) > to_cents(due):
-            await alert(
-                "card_payment_overpaid", f"Πληρωμή κάρτας {_fmt(paid)} μεγαλύτερη από το οφειλόμενο",
-                f"Το {number} εξοφλήθηκε, αλλά το οφειλόμενο ήταν {_fmt(due)} και εισπράχθηκαν {_fmt(paid)} "
-                f"(συνεδρία {session_id}). Επιστρέψτε στον πελάτη τη διαφορά {_fmt(difference)} ή πιστώστε τον "
-                "πελατολογικό του λογαριασμό.")
-            return "overpaid"
-        return "settled"
+            if result == "settled" and to_cents(paid) > to_cents(due):
+                result = "overpaid"
+                notice = (
+                    "card_payment_overpaid", f"Πληρωμή κάρτας {_fmt(paid)} μεγαλύτερη από το οφειλόμενο",
+                    f"Το {number} εξοφλήθηκε, αλλά το οφειλόμενο ήταν {_fmt(due)} και εισπράχθηκαν {_fmt(paid)} "
+                    f"(συνεδρία {session_id}). Επιστρέψτε στον πελάτη τη διαφορά {_fmt(difference)} ή πιστώστε τον "
+                    "πελατολογικό του λογαριασμό.")
     except Exception as e:  # noqa: BLE001 — η πληρωμή έχει γίνει: το σφάλμα πρέπει να φανεί, όχι να χαθεί
         logger.exception("Αποτυχία εφαρμογής πληρωμής κάρτας (συνεδρία %s)", session_id)
-        await alert(
+        result = "failed"
+        notice = (
             "card_payment_unapplied", f"Πληρωμή κάρτας {_fmt(paid)} που δεν εφαρμόστηκε",
             f"Η πληρωμή (συνεδρία {session_id}) εισπράχθηκε αλλά η εφαρμογή απέτυχε: {e}. "
             "Ελέγξτε το τιμολόγιο και συμφωνήστε την πληρωμή χειροκίνητα.")
-        return "failed"
+    if notice:
+        await alert(*notice)
+    return result
 
 
 @public_router.post("/api/stripe/webhook")
@@ -426,7 +496,9 @@ async def stripe_webhook(request: Request):
     if not (STRIPE_WEBHOOK_SECRET or "").strip():
         # Με κενό μυστικό η βιβλιοθήκη του Stripe δέχεται κάθε γεγονός υπογεγραμμένο με κενό κλειδί (HMAC του b""): όποιος
         # ξέρει ένα session_id θα μπορούσε να «εξοφλήσει» τιμολόγιο. Χωρίς μυστικό το webhook δεν λειτουργεί καθόλου·
-        # οι εξοφλήσεις εντοπίζονται από το polling (που ρωτά το ίδιο το Stripe με το μυστικό κλειδί του γραφείου).
+        # οι εξοφλήσεις εντοπίζονται τότε από τη σελίδα επιτυχίας του πελάτη και από τον Autopilot
+        # (`automation.job_card_payments`), που ρωτούν το ίδιο το Stripe με το μυστικό κλειδί — με καθυστέρηση ως
+        # μισή ώρα αντί για άμεσα. Ορίστε STRIPE_WEBHOOK_SECRET για άμεση καταγραφή.
         raise HTTPException(status_code=503, detail="Webhook payments are not configured")
     try:
         event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
@@ -446,15 +518,9 @@ async def stripe_webhook(request: Request):
         # Όχι προ-σήμανση «paid» εδώ: το _mark_paid εφαρμόζει την πληρωμή μόνο στην πρώτη μετάβαση.
         await _mark_paid(obj["id"], obj.get("payment_intent"))
     elif t == "checkout.session.async_payment_failed":
-        await db.payment_transactions.update_one(
-            {"session_id": obj["id"]},
-            {"$set": {"status": "failed", "payment_status": "failed", "updated_at": datetime.now(timezone.utc).isoformat()}},
-        )
+        await _close_unpaid(obj["id"], "failed")
     elif t == "checkout.session.expired":
-        await db.payment_transactions.update_one(
-            {"session_id": obj["id"]},
-            {"$set": {"status": "expired", "payment_status": "expired", "updated_at": datetime.now(timezone.utc).isoformat()}},
-        )
+        await _close_unpaid(obj["id"], "expired")
     return {"status": "ok"}
 
 

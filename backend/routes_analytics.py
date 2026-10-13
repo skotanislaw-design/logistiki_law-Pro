@@ -169,6 +169,8 @@ async def profitability(user: dict = Depends(get_current_user)):
 
     # Εισπραγμένα = πληρωτέο των εξοφλημένων (ό,τι έφτασε στο γραφείο, χωρίς την παρακράτηση που κρατά ο πελάτης)·
     # ανείσπρακτα = ό,τι απομένει να εισπραχθεί. Και τα δύο στην ίδια βάση, ώστε το ποσοστό είσπραξης να βγάζει νόημα.
+    # ΠΡΟΣΟΧΗ στο πεδίο: εδώ μετρούν μόνο τα τιμολόγια του τρέχοντος έτους (`period`), ενώ το dashboard δείχνει τα
+    # ανείσπρακτα ΟΛΩΝ των ετών — ένα ανεξόφλητο περσινό τιμολόγιο φαίνεται εκεί και όχι εδώ, με την ίδια τιμή ανά τιμολόγιο.
     settings = await db.settings.find_one(tenant_query(user, {})) or {}
     balances = await invoice_balances(firm_id_for(user), invoices, settings, {str(c["_id"]): c for c in clients})
 
