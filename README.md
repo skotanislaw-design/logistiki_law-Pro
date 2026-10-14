@@ -27,7 +27,9 @@
 - Σας στέλνει **ένα** ενημερωτικό email (καθημερινά ή κάθε Δευτέρα) με ό,τι έκανε και ό,τι περιμένει απόφαση
 - Ελέγχει ότι τα **αντίγραφα ασφαλείας** υπάρχουν και ανοίγουν, και σας ειδοποιεί αν χαλάσουν
 
-Σελίδα `/autopilot`, τεκμηρίωση: [`docs/AUTOPILOT.md`](./docs/AUTOPILOT.md). Ανάλυση ετοιμότητας: [`docs/READINESS_ANALYSIS.md`](./docs/READINESS_ANALYSIS.md). Ανεξάρτητος έλεγχος: [`docs/AUDIT.md`](./docs/AUDIT.md).
+Σελίδα `/autopilot`, τεκμηρίωση: [`docs/AUTOPILOT.md`](./docs/AUTOPILOT.md). Ασφάλεια (2FA, μυστικά, CSRF, δίκτυο, logs): [`docs/SECURITY.md`](./docs/SECURITY.md). Ανεξάρτητος έλεγχος και **τρέχουσα ετυμηγορία ετοιμότητας**: [`docs/AUDIT.md`](./docs/AUDIT.md) (ενότητα «Ετυμηγορία»). Η ανάλυση ετοιμότητας της 4/9/2026 είναι ιστορική και δεν δείχνει την τρέχουσα κατάσταση: [`docs/READINESS_ANALYSIS.md`](./docs/READINESS_ANALYSIS.md).
+
+> **Κατάσταση.** Το Nomos One είναι **βοηθητικό εργαλείο υπό εποπτεία**, όχι αυτόνομος λογιστής: ο λογιστής του γραφείου παραμένει το σύστημα αναφοράς για κάθε παραστατικό, κάθε δήλωση ΦΠΑ και κάθε διαβίβαση στο myDATA. Ο κώδικας ελέγχεται με αυτοματοποιημένα tests πάνω σε προσομοιωμένες υπηρεσίες· **δεν έχει δοκιμαστεί ακόμη** σε πραγματική MongoDB, Stripe, browser, sandbox του myDATA και πλήρες `docker compose`, το GitHub CI δεν έχει τρέξει ακόμη πάνω στις αλλαγές του πέμπτου γύρου (τρέχει με pull request), και δεν έχει γίνει ποτέ δοκιμή επαναφοράς αντιγράφου. Τι έχει και τι δεν έχει ελεγχθεί, και τι πρέπει να γίνει πριν από παραγωγική χρήση, περιγράφεται στο [`docs/AUDIT.md`](./docs/AUDIT.md).
 
 ---
 
@@ -88,6 +90,11 @@ cp .env.example .env
 # Επεξεργαστείτε το .env με τα δικά σας κλειδιά
 ```
 
+Το `.env.example` περιέχει τιμές-παραδείγματα `change-me…` για το `JWT_SECRET` και το `MONGO_PASSWORD`. Είναι δημόσιες, γι' αυτό
+**ο server αρνείται να ξεκινήσει** όσο μένουν. Ορίστε τυχαίες τιμές (π.χ. `python -c "import secrets; print(secrets.token_urlsafe(48))"`)
+και, ξεχωριστά, ένα `SECRETS_KEY` για την κρυπτογράφηση των μυστικών των Ρυθμίσεων. Ορίστε επίσης `PUBLIC_URL` (η διεύθυνση που ανοίγετε
+στον browser): από αυτήν προκύπτει η επιτρεπόμενη προέλευση για CORS και για τον έλεγχο CSRF.
+
 ### 2. Εκκίνηση
 ```bash
 docker compose up -d
@@ -102,9 +109,14 @@ docker compose up -d
 Συνδεθείτε και ολοκληρώστε τον **Onboarding Wizard**. Έλεγχος υγείας: `GET /api/health`.
 
 ### 4. Backup
-Τα Mongo backups γράφονται αυτόματα καθημερινά στο `./backups/`. Διατηρούνται για 14 ημέρες.
+Η υπηρεσία `backup` γράφει `mongodump` στον φάκελο `./backups/` κάθε 24 ώρες και κρατά τα αρχεία των τελευταίων 14 ημερών.
+Βρίσκονται στον **ίδιο διακομιστή** με τη βάση — αντιγράψτε τον φάκελο και σε δεύτερο μέσο.
 
-Επίσης, από το UI (Ρυθμίσεις → Backup) μπορείτε να κατεβάσετε πλήρες ZIP οποιαδήποτε στιγμή.
+Επίσης, από το UI (Ρυθμίσεις → Backup & Επαναφορά) κατεβάζετε ZIP με τα δεδομένα του γραφείου οποιαδήποτε στιγμή. Δεν περιλαμβάνει
+χρήστες και κωδικούς, συνδέσμους της πύλης πελατών, αρχεία που έχουν ανέβει ούτε το κλειδί `SECRETS_KEY`. Η επαναφορά **προσθέτει
+μόνο όσα λείπουν**: τιμολόγια, πληρωμές, τράπεζα, πελατολογικοί λογαριασμοί, ΦΠΑ και ελεγκτικό ίχνος δεν αντικαθίστανται ποτέ· για
+επιστροφή ολόκληρης της βάσης σε παλαιότερη κατάσταση επαναφέρετε σε κενή βάση. Οδηγίες: [`USER_GUIDE.md`](./USER_GUIDE.md),
+ενότητα 11. **Η επαναφορά δεν έχει δοκιμαστεί ακόμη σε πραγματικά δεδομένα** — κάντε δοκιμή πριν βασιστείτε σε αντίγραφο.
 
 ---
 
@@ -118,14 +130,29 @@ pip install -r requirements.txt        # ή requirements-ci.txt για ελαφ�
 export MONGO_URL=mongodb://localhost:27017 DB_NAME=nomos_one JWT_SECRET=dev
 uvicorn server:app --reload --port 8001
 
-# Unit tests (χωρίς Mongo/δίκτυο)
-python -m pytest
-
 # Frontend (σε άλλο terminal)
 cd frontend
 yarn install
 yarn start
 ```
+
+### Tests
+
+```bash
+# Backend: 2.903 tests, χωρίς Mongo/δίκτυο (mongomock) — τρέξτε τα σε ΞΕΧΩΡΙΣΤΟ terminal από αυτό που έχει το export παραπάνω
+cd backend
+MONGO_URL=mongomock:// python -m pytest
+
+# Frontend: 728 tests σε 34 αρχεία (vitest) και ό,τι τρέχει το CI
+cd frontend
+yarn lint && yarn test && yarn build
+```
+
+Πολλά tests σβήνουν συλλογές για να στήσουν τις συνθήκες τους, γι' αυτό **αρνούνται να τρέξουν** αν το `MONGO_URL` του
+περιβάλλοντος δείχνει σε πραγματική βάση (εκτός αν ορίσετε ρητά `NOMOS_TESTS_ALLOW_REAL_MONGO=1`, μόνο για τα παλιά E2E που χρειάζονται
+ζωντανή εγκατάσταση). Τα tests υποδομής (`tests/test_unit_nginx_lab_r5.py`) τρέχουν τον πραγματικό nginx· στο CI είναι υποχρεωτικά
+(`REQUIRE_NGINX_LAB=1`), τοπικά παραλείπονται αν δεν υπάρχει nginx. Η ζώνη ώρας των tests επιλέγεται ώστε να έχει πάντα άλλη
+ημερομηνία από την Ελλάδα (`NOMOS_TEST_TZ` για επιβολή συγκεκριμένης).
 
 Βλέπε [`USER_GUIDE.md`](./USER_GUIDE.md) για αναλυτικές οδηγίες χρήσης.
 
@@ -162,7 +189,8 @@ yarn start
 │   │   ├── manifest.json   # PWA
 │   │   └── service-worker.js
 │   └── Dockerfile
-├── docker-compose.yml      # 4 services: mongo, backend, frontend, backup
+├── docs/                   # AUTOPILOT, SECURITY, AUDIT (έλεγχος και ετυμηγορία ετοιμότητας), READINESS_ANALYSIS (ιστορική)
+├── docker-compose.yml      # 5 services: mongo, backend, worker, frontend, backup
 ├── .env.example
 ├── README.md               # (αυτό το αρχείο)
 └── USER_GUIDE.md           # Εγχειρίδιο χρήσης στα Ελληνικά
@@ -182,10 +210,12 @@ yarn start
 
 - **Ταυτοποίηση δύο παραγόντων (TOTP)** με εφεδρικούς κωδικούς μιας χρήσης — ο κωδικός μόνος του δεν δίνει συνεδρία
 - **Κρυπτογράφηση μυστικών στη βάση** (SMTP/IMAP passwords, subscription key ΑΑΔΕ) με κλειδί `SECRETS_KEY`· δεν επιστρέφονται ποτέ στον browser
-- JWT authentication με bcrypt password hashing
+- JWT authentication με bcrypt password hashing· ο server **αρνείται να ξεκινήσει** με `JWT_SECRET` ή κωδικό MongoDB ίσο με την τιμή-παράδειγμα `change-me…`
 - Rate limiting σε login endpoints
-- CORS restricted σε PUBLIC_URL
-- Stripe webhook signature verification
+- Προστασία από CSRF σε τρία επίπεδα: cookie `SameSite=Lax` (`COOKIE_SAMESITE`), έλεγχος προέλευσης σε κάθε αίτημα που αλλάζει δεδομένα με cookie συνεδρίας και σε όλα τα `POST /api/auth/…`, και απόρριψη (415) αιτήματος με σώμα και cookie συνεδρίας χωρίς `Content-Type` — λεπτομέρειες στο [`docs/SECURITY.md`](./docs/SECURITY.md)
+- CORS και έλεγχος προέλευσης με βάση το `CORS_ORIGINS` (αν δεν οριστεί, το `PUBLIC_URL`)
+- Το nginx αντικαθιστά το `X-Forwarded-For` με την πραγματική διεύθυνση του πελάτη· το access log δεν γράφει tokens, query strings ούτε Referer. Αν μπροστά από το nginx υπάρχει δεύτερος proxy, χρειάζεται `real_ip` (βλ. `docs/SECURITY.md`)
+- Stripe webhook: υπογραφή υποχρεωτική — χωρίς `STRIPE_WEBHOOK_SECRET` απαντά 503 και δεν κάνει τίποτα· οι εξοφλήσεις τότε εντοπίζονται από τον Autopilot
 - Client portal tokens λήγουν σε 30 ημέρες
 - Digital signatures με SHA-256 hash επαλήθευση
 
