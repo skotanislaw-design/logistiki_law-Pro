@@ -37,9 +37,9 @@
 
 ### 💼 Οικονομικά & Λογιστικά
 - **Τιμολόγηση** με αυτόματη σειροποίηση ανά είδος (ΤΠΥ-/ΑΠΥ-/ΠΙΣ-YYYY-NNNN, αριθμός στην έκδοση — το πρόχειρο δεν έχει), PDF letterhead, email αποστολή, 1-click υπενθύμιση ανείσπρακτων
-- **Έξοδα** με OCR από φωτογραφία αποδείξεων
+- **Έξοδα** με OCR από φωτογραφία αποδείξεων· ανά πελάτη, υπόθεση και δικηγόρο, με ρητή εκπτωσιμότητα ΦΠΑ (βλ. `USER_GUIDE.md` §1δ)
 - **Μισθοδοσία** — υπολογισμός καθαρών, εισφορές ΕΦΚΑ, φόρος
-- **ΦΠΑ** — αυτόματος υπολογισμός εκροών/εισροών, μηνιαία/τριμηνιαία δήλωση
+- **ΦΠΑ** — αυτόματος υπολογισμός εκροών/εισροών (οι εισροές μόνο στο εκπιπτόμενο μέρος, με πίνακα που ορίζει ο λογιστής), μηνιαία/τριμηνιαία δήλωση
 - **Trust Accounts** (Πελατολογικός Λογαριασμός) — Ν.4194/2013 άρθρο 32
 
 ### ⚖️ Νομική Διαχείριση
@@ -139,11 +139,11 @@ yarn start
 ### Tests
 
 ```bash
-# Backend: 2.903 tests, χωρίς Mongo/δίκτυο (mongomock) — τρέξτε τα σε ΞΕΧΩΡΙΣΤΟ terminal από αυτό που έχει το export παραπάνω
+# Backend: 3.153 tests, χωρίς Mongo/δίκτυο (mongomock) — τρέξτε τα σε ΞΕΧΩΡΙΣΤΟ terminal από αυτό που έχει το export παραπάνω
 cd backend
 MONGO_URL=mongomock:// python -m pytest
 
-# Frontend: 728 tests σε 34 αρχεία (vitest) και ό,τι τρέχει το CI
+# Frontend: 900 tests σε 42 αρχεία (vitest) και ό,τι τρέχει το CI
 cd frontend
 yarn lint && yarn test && yarn build
 ```
@@ -171,6 +171,8 @@ yarn lint && yarn test && yarn build
 │   ├── outbox.py           # Ουρά αποστολών με ανάκαμψη από διακοπή
 │   ├── openbanking.py      # PSD2 (GoCardless Bank Account Data)
 │   ├── vat_return.py       # Έντυπο Φ2 (δήλωση ΦΠΑ)
+│   ├── vat_rules.py        # Εκπτωσιμότητα ΦΠΑ εισροών: κανόνες ανά κατηγορία, ρητό ποσοστό ανά έξοδο
+│   ├── dimensions.py       # Σε ποιον ανήκει ένα έξοδο/τιμολόγιο: πελάτης, υπόθεση, δικηγόρος
 │   ├── scripts/            # verify_mydata_sandbox.py — επαλήθευση ΑΑΔΕ
 │   ├── invoice_services.py # Κοινή λογική email/υπενθύμισης/myDATA (routes + Autopilot)
 │   ├── ai_runtime.py       # Προαιρετικός LLM provider (503 αν λείπει)
@@ -189,7 +191,7 @@ yarn lint && yarn test && yarn build
 │   │   ├── manifest.json   # PWA
 │   │   └── service-worker.js
 │   └── Dockerfile
-├── docs/                   # AUTOPILOT, SECURITY, AUDIT (έλεγχος και ετυμηγορία ετοιμότητας), READINESS_ANALYSIS (ιστορική)
+├── docs/                   # AUTOPILOT, SECURITY, AUDIT (έλεγχος και ετυμηγορία ετοιμότητας), ACCOUNTANT_AGENT (σχεδιασμός «ψηφιακού λογιστή»), READINESS_ANALYSIS (ιστορική)
 ├── docker-compose.yml      # 5 services: mongo, backend, worker, frontend, backup
 ├── .env.example
 ├── README.md               # (αυτό το αρχείο)
