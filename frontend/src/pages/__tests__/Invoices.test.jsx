@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Toaster } from "@/components/ui/sonner";
 import Invoices from "@/pages/Invoices";
 import { invoiceLabel, owedAmount, todayAthens, unpaidTotal } from "@/lib/utils";
+import { lookupHandlers } from "@/test/lookupFixtures";
 import { server } from "@/test/server";
 
 const API = "http://localhost:8001/api";
@@ -60,8 +61,8 @@ describe("Τιμολόγια — νέα φόρμα", () => {
     vi.setSystemTime(new Date("2026-10-11T22:30:00Z"));
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     server.use(
+      ...lookupHandlers(),
       http.get(`${API}/invoices`, () => HttpResponse.json([])),
-      http.get(`${API}/clients`, () => HttpResponse.json([])),
     );
     render(<><Invoices /><Toaster /></>);
     await user.click(await screen.findByTestId("new-invoice-button"));

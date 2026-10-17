@@ -12,6 +12,7 @@ import { GrammatioFormDialog, GrammatioIssueDialog } from "@/components/Grammati
 import { ParavoloFormDialog, ParavoloIssueDialog } from "@/components/ParavoloDialogs";
 import { HearingFormDialog } from "@/components/HearingFormDialog";
 import { CASE_STATUS } from "./Cases";
+import { NONE, useMatterLookups, withCurrent } from "@/lib/matters";
 import {
   ArrowLeft, User, Scales, CalendarBlank, PencilSimple, Plus, Archive,
   Lightning, NotePencil, FilePdf, PaperPlaneTilt, ClockCounterClockwise, CheckCircle, Gavel,
@@ -34,6 +35,7 @@ export default function CaseDetail() {
   const [actionForm, setActionForm] = useState({ next_action: "", next_action_date: "" });
   const [editGak, setEditGak] = useState(false);
   const [gakForm, setGakForm] = useState({ gak: "", eak: "", gak_year: "" });
+  const { lawyers, failed: lookupFailed } = useMatterLookups(true, { cases: false, clients: false });
 
   const load = useCallback(() => {
     axios.get(`${API}/cases/${id}`).then((r) => setData(r.data)).catch((e) => {
@@ -82,11 +84,27 @@ export default function CaseDetail() {
     }
   };
 
+  // Το PUT της υπόθεσης αντικαθιστά τα στοιχεία της· ο πελάτης και ο υπεύθυνος δικηγόρος όμως αλλάζουν μόνο αν σταλούν. Μια
+  // ενέργεια που δεν τα αφορά (ΓΑΚ/ΕΑΚ, αλλαγή δικηγόρου) δεν τα στέλνει, ώστε η εικόνα της υπόθεσης που φορτώθηκε νωρίτερα να
+  // μην τα γράψει πάνω σε ό,τι άλλαξε στο μεταξύ (ο πελάτης μεταφέρεται και στα έξοδα της υπόθεσης).
+  const caseBody = (omit) => Object.fromEntries(Object.entries(c).filter(([key]) => !omit.includes(key)));
+
   const saveGak = async () => {
     try {
-      await axios.put(`${API}/cases/${id}`, { ...c, gak: gakForm.gak, eak: gakForm.eak, gak_year: gakForm.gak_year });
+      await axios.put(`${API}/cases/${id}`, { ...caseBody(["client_id", "client_name", "lawyer_id"]), gak: gakForm.gak, eak: gakForm.eak, gak_year: gakForm.gak_year });
       setEditGak(false);
       toast.success("Τα στοιχεία ΣΟΛΩΝ ενημερώθηκαν");
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  // Η αλλαγή υπεύθυνου δικηγόρου αποθηκεύεται αμέσως, με το ίδιο PUT που χρησιμοποιεί και η αποθήκευση ΓΑΚ/ΕΑΚ.
+  const saveLawyer = async (value) => {
+    try {
+      await axios.put(`${API}/cases/${id}`, { ...caseBody(["client_id", "client_name"]), lawyer_id: value === NONE ? "" : value });
+      toast.success("Ο υπεύθυνος δικηγόρος ενημερώθηκε");
       load();
     } catch (e) {
       toast.error(errMsg(e));
@@ -143,6 +161,19 @@ export default function CaseDetail() {
             </div>
           </div>
 
+          <div className="lux-card p-5">
+            <div className="lux-overline mb-3">Υπεύθυνος δικηγόρος</div>
+            <Select value={c.lawyer_id || NONE} onValueChange={saveLawyer}>
+              <SelectTrigger data-testid="case-detail-lawyer-select"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NONE}>Δεν έχει οριστεί</SelectItem>
+                {withCurrent(lawyers.map((u) => ({ value: u.id, label: u.name || u.email })), c.lawyer_id, "(άγνωστος χρήστης)")
+                  .map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            {lookupFailed.lawyers && <p className="text-[11px] text-destructive mt-1" role="alert">Η λίστα δικηγόρων δεν φορτώθηκε.</p>}
+          </div>
+
           <div className="lux-card p-5 space-y-3 text-sm">
             <div className="flex items-start gap-2.5">
               <Scales size={16} className="text-[hsl(var(--gold))] mt-0.5" />
@@ -192,6 +223,19 @@ export default function CaseDetail() {
               <span className="text-muted-foreground">Έξοδα (παράβολα)</span>
               <span className="font-mono text-[hsl(var(--destructive))]" data-testid="case-expenses-total">{money(data.expenses_total)}</span>
             </div>
+            {data.linked && (
+              <div className="mt-3 pt-3 border-t border-border/50 space-y-2" data-testid="case-linked">
+                <div className="lux-overline">Συνδεδεμένα παραστατικά</div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Τιμολόγια ({data.linked.invoices.count}) · καθαρά</span>
+                  <span className="font-mono text-[hsl(var(--success))]" data-testid="case-linked-invoices-total">{money(data.linked.invoices.subtotal)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Έξοδα ({data.linked.expenses.count}) · με ΦΠΑ</span>
+                  <span className="font-mono text-[hsl(var(--destructive))]" data-testid="case-linked-expenses-total">{money(data.linked.expenses.total)}</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

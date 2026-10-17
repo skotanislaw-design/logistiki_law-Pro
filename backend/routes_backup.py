@@ -909,6 +909,9 @@ async def gdpr_export_client(client_id: str, request: Request, user: dict = Depe
     tracker_events = await fetch_all(db.case_tracker_events.find(by_case))
     bank_lines = await fetch_all(db.bank_transactions.find(
         tenant_query(user, {"matched_invoice_id": {"$in": invoice_ids}})))
+    # Έξοδα του γραφείου που αφορούν τον πελάτη: δηλωμένα στον ίδιο ή σε υπόθεσή του (Φάση 1 του «ψηφιακού λογιστή»).
+    expenses = await fetch_all(db.expenses.find(
+        tenant_query(user, {"$or": [{"client_id": cid}, {"case_id": {"$in": case_ids}}]})))
     email = (client.get("email") or "").strip()
     signatures = []
     if email:
@@ -928,6 +931,7 @@ async def gdpr_export_client(client_id: str, request: Request, user: dict = Depe
         "kyc": [_to_json_safe(d) for d in kyc],
         "payment_transactions": [_to_json_safe(d) for d in payments],
         "bank_transactions": [_to_json_safe(d) for d in bank_lines],
+        "expenses": [_to_json_safe(d) for d in expenses],
         "portal_messages": [_to_json_safe(d) for d in messages],
         "portal_access": [_to_json_safe(d) for d in portal_access],
         "signatures": [_to_json_safe(d) for d in signatures],
@@ -944,7 +948,8 @@ async def gdpr_export_client(client_id: str, request: Request, user: dict = Depe
             "Το data.json περιέχει τα προσωπικά δεδομένα που τηρούνται στο σύστημα Nomos One για τον πελάτη: "
             "στοιχεία πελάτη, τιμολόγια, υποθέσεις (με δικασίμους, παράβολα και αλλαγές παρακολούθησης), γραμμάτια, "
             "πελατολογικό λογαριασμό και κινήσεις, KYC, πληρωμές κάρτας, τραπεζικές κινήσεις που συμφωνήθηκαν με "
-            "τιμολόγιά του, μηνύματα πύλης, ιστορικό πρόσβασης στην πύλη και υπογραφές με το email του.\n"
+            "τιμολόγιά του, έξοδα του γραφείου που αφορούν τον ίδιο ή τις υποθέσεις του, μηνύματα πύλης, ιστορικό "
+            "πρόσβασης στην πύλη και υπογραφές με το email του.\n"
             "Δεν περιλαμβάνονται αρχεία (π.χ. έγγραφα που ανέβηκαν) και το ελεγκτικό ίχνος του συστήματος.\n"
         ))
     buf.seek(0)

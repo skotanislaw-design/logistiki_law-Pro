@@ -110,6 +110,10 @@ class Invoice(BaseDocument):
     # Ποσό που έχει ήδη εξοφληθεί από τον πελατολογικό λογαριασμό του πελάτη (μερική ή πλήρης
     # εξόφληση). Το ποσό που οφείλεται πλέον είναι πληρωτέο − trust_applied.
     trust_applied: Optional[float] = None
+    # --- Φάση 1 «ψηφιακού λογιστή»: σε ποια υπόθεση και σε ποιον δικηγόρο ανήκει η αμοιβή. Μεταδεδομένα οργάνωσης: δεν
+    # επηρεάζουν το παραστατικό, δεν διαβιβάζονται στην ΑΑΔΕ και μπορούν να οριστούν και μετά την έκδοση.
+    case_id: str = ""
+    lawyer_id: str = ""
 
 
 class Expense(BaseDocument):
@@ -128,6 +132,17 @@ class Expense(BaseDocument):
     mydata_mark: Optional[str] = None
     supplier_afm: str = ""
     mydata_invoice_type: str = ""
+    # --- Φάση 1 «ψηφιακού λογιστή»: σε ποιον ανήκει το έξοδο, και πόσο ΦΠΑ του εκπίπτει ---
+    # unassigned = κανείς δεν το έχει ταξινομήσει ακόμη (η τιμή όλων των παλιών εξόδων)· office = γενικό έξοδο γραφείου·
+    # client = κόστος πελάτη χωρίς υπόθεση· case = κόστος υπόθεσης (ο πελάτης προκύπτει από την υπόθεση, βλ. dimensions.py).
+    scope: Literal["unassigned", "office", "client", "case"] = "unassigned"
+    case_id: str = ""
+    client_id: str = ""
+    lawyer_id: str = ""                      # ο δικηγόρος που το έκανε ή στον οποίο αποδίδεται (προεπιλογή: της υπόθεσης)
+    rebillable: bool = False                 # θα χρεωθεί στον πελάτη (π.χ. έξοδα μετακίνησης για την υπόθεση)
+    # Ρητό ποσοστό εκπτωσιμότητας ΦΠΑ για αυτό το έξοδο (0–100). None = ακολουθεί τον κανόνα της κατηγορίας στις
+    # Ρυθμίσεις, και αν δεν υπάρχει κανόνας εκπίπτει 100% (βλ. vat_rules.py).
+    vat_deductible_pct: Optional[float] = None
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
@@ -185,6 +200,7 @@ class Case(BaseDocument):
     status: Literal["active", "pending", "completed", "archived"] = "active"
     next_action: str = ""
     next_action_date: str = ""
+    lawyer_id: str = ""                      # υπεύθυνος δικηγόρος (χρήστης του γραφείου)· κενό = δεν έχει οριστεί
     notes: List[dict] = Field(default_factory=list)
     history: List[dict] = Field(default_factory=list)
     created_by: Optional[str] = None
@@ -280,6 +296,11 @@ class Settings(BaseDocument):
     mydata_expense_last_mark: str = "0"
     # Κωδικοί εντύπου Φ2 (αλλάζουν με αποφάσεις ΑΑΔΕ) — {γραμμή: κωδικός}
     vat_form_codes: dict = Field(default_factory=dict)
+    # Εκπτωσιμότητα ΦΠΑ εισροών ανά κατηγορία εξόδου — {κατηγορία: ποσοστό 0–100}. Τον ορίζει ο λογιστής του γραφείου·
+    # ό,τι δεν έχει κανόνα εκπίπτει 100% και εμφανίζεται ως «χωρίς κανόνα» (βλ. vat_rules.py).
+    vat_deductibility_rules: dict = Field(default_factory=dict)
+    # Ποιος (και πότε) επιβεβαίωσε τον παραπάνω πίνακα — ελεύθερο κείμενο, π.χ. «Χριστόφορος, 20/10/2026». Κενό = ανεπιβεβαίωτος.
+    vat_rules_confirmed_by: str = ""
     # Open banking (PSD2) — GoCardless Bank Account Data
     openbanking_enabled: bool = False
     gocardless_secret_id: str = ""
@@ -540,6 +561,12 @@ class VatPeriod(BaseDocument):
     invoice_count: int = 0
     expense_count: int = 0
     vat_breakdown: dict = Field(default_factory=dict)
+    # ΦΠΑ εισροών που δεν εκπίπτει (έχει γίνει κόστος) και ΦΠΑ που εκπίπτεται 100% μόνο επειδή δεν υπάρχει κανόνας.
+    input_vat_nondeductible: float = 0
+    input_vat_unruled: float = 0
     status: Literal["computed", "submitted"] = "computed"
     submitted_at: Optional[str] = None
+    # Οι κανόνες εκπτωσιμότητας όπως ίσχυαν τη στιγμή της υποβολής· η δήλωση που εμφανίζεται μετά την υποβολή
+    # υπολογίζεται με αυτούς και όχι με τους τρέχοντες (βλ. routes_automation).
+    vat_rules_snapshot: Optional[dict] = None
     computed_at: str = Field(default_factory=now_iso)

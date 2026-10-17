@@ -5,6 +5,7 @@ from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from tax_utils import athens_today, next_vat_deadline, next_efka_deadline
 from invoice_services import invoice_balances, open_invoices, open_total
+from vat_rules import summarize_expenses
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -35,8 +36,11 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
 
     income_total = round(sum(i.get("subtotal", 0) for i in month_invoices), 2)
     output_vat = round(sum(i.get("vat_amount", 0) for i in month_invoices), 2)
-    expense_total = round(sum(e.get("amount", 0) - e.get("vat_amount", 0) for e in month_expenses), 2)
-    input_vat = round(sum(e.get("vat_amount", 0) for e in month_expenses), 2)
+    # Το ΦΠΑ εισροών είναι το εκπιπτόμενο μέρος (πίνακας εκπτωσιμότητας των Ρυθμίσεων)· ό,τι δεν εκπίπτει είναι κόστος,
+    # άρα `expense_total + input_vat` = σύνολο ποσών των εξόδων (βλ. vat_rules).
+    month_spend = summarize_expenses(month_expenses, settings)
+    expense_total = month_spend["net_cost"]
+    input_vat = month_spend["input_vat"]
     vat_due = round(output_vat - input_vat, 2)
 
     pending_mydata = await db.invoices.count_documents(tenant_query(user, {"mydata_status": {"$in": ["not_sent", "pending", "failed"]}}))
@@ -58,13 +62,13 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
             next_y += 1
         next_month_str = f"{next_y}-{next_m:02d}-01"
         m_income = round(sum(inv.get("subtotal", 0) for inv in invoices if month_str <= inv.get("date", "") < next_month_str), 2)
-        m_expense = round(sum(e.get("amount", 0) - e.get("vat_amount", 0) for e in expenses if month_str <= e.get("date", "") < next_month_str), 2)
+        m_expense = summarize_expenses([e for e in expenses if month_str <= e.get("date", "") < next_month_str], settings)["net_cost"]
         chart_data.append({"month": f"{pycal.month_abbr[m]} {y}", "income": m_income, "expense": m_expense})
 
     year_start = f"{today.year}-01-01"
     year_invoices = [i for i in invoices if i.get("date", "") >= year_start]
     year_income = round(sum(i.get("subtotal", 0) for i in year_invoices), 2)
-    year_expense = round(sum(e.get("amount", 0) - e.get("vat_amount", 0) for e in expenses if e.get("date", "") >= year_start), 2)
+    year_expense = summarize_expenses([e for e in expenses if e.get("date", "") >= year_start], settings)["net_cost"]
     # Ανείσπρακτα = ό,τι πράγματι απομένει να εισπραχθεί (μετά την παρακράτηση και ό,τι εξοφλήθηκε από πελατολογικό),
     # όχι το μεικτό σύνολο — ο ίδιος ορισμός με την πύλη του πελάτη (βλ. invoice_services.invoice_balances).
     # ΟΛΑ τα εκδοθέντα, ανεξάρτητα από ημερομηνία: ένα τιμολόγιο του περασμένου έτους που δεν εισπράχθηκε μετράει.
@@ -79,7 +83,7 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
     if vat_due > 0:
         advice = (
             f"Τρέχων ΦΠΑ περιόδου: {vat_due:.2f} € πληρωτέος. Έχεις εκροές {income_total:.2f} € (ΦΠΑ {output_vat:.2f} €) "
-            f"και εισροές {expense_total:.2f} € (ΦΠΑ {input_vat:.2f} €). Κάθε τιμολόγιο δαπάνης με ΦΠΑ που καταχωρείς μειώνει την οφειλή."
+            f"και εισροές {expense_total:.2f} € (ΦΠΑ {input_vat:.2f} €). Κάθε τιμολόγιο δαπάνης με εκπιπτόμενο ΦΠΑ που καταχωρείς μειώνει την οφειλή."
         )
     elif vat_due < 0:
         advice = f"Έχεις πιστωτικό υπόλοιπο ΦΠΑ {abs(vat_due):.2f} € για την τρέχουσα περίοδο — μεταφέρεται στην επόμενη δήλωση."
@@ -110,6 +114,8 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
         "expense_total": expense_total,
         "output_vat": output_vat,
         "input_vat": input_vat,
+        "input_vat_nondeductible": month_spend["input_vat_nondeductible"],
+        "input_vat_unruled": month_spend["unruled_vat"],
         "vat_due": vat_due,
         "pending_mydata": pending_mydata,
         "draft_invoices": draft_invoices,

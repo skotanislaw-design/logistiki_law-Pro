@@ -159,6 +159,16 @@ def require_admin(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 
+def require_roles(*roles: str, detail: str = "Δεν έχετε δικαίωμα για αυτή την ενέργεια"):
+    """Εξάρτηση διαδρομής που δέχεται μόνο τους ρόλους που αναφέρονται, π.χ. `Depends(require_roles("admin", "accountant"))`.
+    Όποιος έχει άλλον ρόλο παίρνει 403 με το μήνυμα `detail`, που διαβάζει ο χρήστης στην οθόνη."""
+    def dependency(user: dict = Depends(get_current_user)) -> dict:
+        if user.get("role") not in roles:
+            raise HTTPException(status_code=403, detail=detail)
+        return user
+    return dependency
+
+
 MAX_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
 

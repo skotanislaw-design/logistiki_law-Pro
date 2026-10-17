@@ -8,8 +8,14 @@
 παραμετρικοί (`Settings.vat_form_codes`) και οι default τιμές πρέπει να
 επιβεβαιωθούν με τον λογιστή σας πριν την πρώτη υποβολή. Ο υπολογισμός των ποσών
 δεν εξαρτάται από αυτούς — μόνο η ετικέτα κάθε γραμμής.
+
+ΦΠΑ εισροών: στη γραμμή «ΦΠΑ εισροών» μπαίνει μόνο το **εκπιπτόμενο** μέρος (βλ. `vat_rules`)· το υπόλοιπο φαίνεται
+χωριστά, ως ενημερωτική γραμμή χωρίς κωδικό. Η «βάση εισροών» μένει η καθαρή αξία των παραστατικών (ποσό − ΦΠΑ) — ποια
+ακριβώς τιμή περιμένει ο κωδικός της για μερικώς εκπιπτόμενο ΦΠΑ είναι ερώτημα προς τον λογιστή (βλ. AUDIT.md).
 """
 from __future__ import annotations
+
+from vat_rules import summarize_expenses
 
 
 # Προεπιλεγμένη αντιστοίχιση γραμμής → κωδικός εντύπου.
@@ -76,7 +82,10 @@ def build_vat_return(period: dict, invoices: list[dict], expenses: list[dict],
             outputs_base[24] += float(inv.get("subtotal") or 0)
             outputs_vat[24] += float(inv.get("vat_amount") or 0)
 
-    inputs_vat = sum(float(e.get("vat_amount") or 0) for e in expenses)
+    # ΦΠΑ εισροών = μόνο το εκπιπτόμενο μέρος. Η βάση είναι η καθαρή αξία των παραστατικών, όπως πάντα.
+    inputs = summarize_expenses(expenses, settings)
+    inputs_vat = inputs["input_vat"]
+    inputs_vat_nondeductible = inputs["input_vat_nondeductible"]
     inputs_base = sum(float(e.get("amount") or 0) - float(e.get("vat_amount") or 0) for e in expenses)
 
     total_output_vat = _round(sum(outputs_vat.values()))
@@ -118,8 +127,17 @@ def build_vat_return(period: dict, invoices: list[dict], expenses: list[dict],
             "output_vat": total_output_vat,
             "inputs_base": _round(inputs_base),
             "input_vat": total_input_vat,
+            "input_vat_nondeductible": _round(inputs_vat_nondeductible),
             "vat_payable": _round(balance if balance > 0 else 0),
             "vat_credit": _round(-balance if balance < 0 else 0),
+        },
+        # Ενημερωτικά, εκτός εντύπου: το ΦΠΑ που δεν εκπίπτει (δεν μεταφέρεται σε κωδικό) και πόσο ΦΠΑ εκπίπτεται 100%
+        # μόνο επειδή δεν υπάρχει κανόνας — ώστε η υπόθεση να φαίνεται και να μην παρασύρει σιωπηλά τη δήλωση.
+        "vat_rules": {
+            "confirmed_by": str(settings.get("vat_rules_confirmed_by") or ""),
+            "rule_count": len(settings.get("vat_deductibility_rules") or {}),
+            "unruled_vat": inputs["unruled_vat"],
+            "unruled_categories": inputs["unruled"],
         },
         "counts": {"invoices": len(invoices), "expenses": len(expenses)},
         "status": period.get("status", "computed"),
@@ -127,7 +145,9 @@ def build_vat_return(period: dict, invoices: list[dict], expenses: list[dict],
         "disclaimer": (
             "Οι αριθμοί κωδικών του εντύπου Φ2 μεταβάλλονται με αποφάσεις της ΑΑΔΕ. "
             "Επιβεβαιώστε τους με τον λογιστή σας πριν την υποβολή· τα ποσά προκύπτουν "
-            "από τα καταχωρημένα παραστατικά της περιόδου."
+            "από τα καταχωρημένα παραστατικά της περιόδου. Το ΦΠΑ εισροών περιλαμβάνει μόνο το εκπιπτόμενο μέρος, "
+            "σύμφωνα με τον πίνακα εκπτωσιμότητας των Ρυθμίσεων· όσο ο πίνακας ή μια κατηγορία δεν έχει επιβεβαιωθεί από "
+            "τον λογιστή, το αντίστοιχο ΦΠΑ θεωρείται 100% εκπιπτόμενο από υπόθεση, όχι από απόφαση."
         ),
     }
 
@@ -196,6 +216,26 @@ def build_vat_return_pdf(data: dict) -> bytes:
         Spacer(1, 6 * mm),
         Paragraph(f"Βάσει {data['counts']['invoices']} παραστατικών εσόδων και "
                   f"{data['counts']['expenses']} δαπανών της περιόδου.", sub),
+    ]
+    # Ενημερωτικά για τη μερική έκπτωση του ΦΠΑ εισροών. Το κείμενο προέρχεται από τις Ρυθμίσεις (ονόματα κατηγοριών,
+    # «επιβεβαιώθηκε από»), άρα φεύγει escaped: ένα «<» ή «&» δεν πρέπει να χαλά το PDF.
+    from xml.sax.saxutils import escape
+    rules = data.get("vat_rules") or {}
+    nondeductible = (data.get("totals") or {}).get("input_vat_nondeductible") or 0
+    if nondeductible:
+        story += [Spacer(1, 2 * mm), Paragraph(
+            f"ΦΠΑ εισροών που δεν εκπίπτει (δεν μεταφέρεται σε κωδικό του εντύπου): <b>{money(nondeductible)}</b>", sub)]
+    if rules.get("unruled_vat"):
+        categories = ", ".join(f"{escape(str(c.get('category', '')))} ({money(c.get('vat_amount'))})"
+                               for c in rules.get("unruled_categories") or [])
+        story += [Spacer(1, 2 * mm), Paragraph(
+            f"ΦΠΑ εισροών που εκπίπτεται 100% χωρίς κανόνα εκπτωσιμότητας: <b>{money(rules['unruled_vat'])}</b> — {categories}", sub)]
+    if "vat_rules" in data:
+        confirmed = str(rules.get("confirmed_by") or "").strip()
+        story += [Spacer(1, 2 * mm), Paragraph(
+            f"Πίνακας εκπτωσιμότητας ΦΠΑ: επιβεβαιωμένος από «{escape(confirmed)}»." if confirmed
+            else "Πίνακας εκπτωσιμότητας ΦΠΑ: δεν έχει επιβεβαιωθεί από λογιστή.", sub)]
+    story += [
         Spacer(1, 4 * mm),
         Paragraph(data["disclaimer"], note),
     ]

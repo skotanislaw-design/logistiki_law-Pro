@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { InvoiceDetailDialog } from "@/components/InvoiceDetailDialog";
+import { NONE, caseLabel, lawyerAfterCaseChange, useMatterLookups, withCurrent } from "@/lib/matters";
 import { Plus, Trash, Microphone, PaperPlaneTilt, CloudCheck, Eye, PencilSimple, FilePdf, BellRinging, CheckCircle, ArrowClockwise, WarningCircle, Prohibit, ArrowUUpLeft } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -24,6 +25,7 @@ function emptyForm() {
     client_id: "", date: todayAthens(),
     line_items: [{ description: "", quantity: 1, unit_price: 0, vat_rate: 24 }],
     payment_method: "Τραπεζική κατάθεση", notes: "",
+    case_id: "", lawyer_id: "",         // υπόθεση και δικηγόρος: προαιρετικά μεταδεδομένα οργάνωσης
   };
 }
 
@@ -49,6 +51,8 @@ export default function Invoices() {
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState("");
   const mediaRef = useState({ recorder: null, chunks: [] })[0];
+  // Υποθέσεις και δικηγόροι για τη φόρμα: φορτώνουν όταν ανοίξει. Οι πελάτες υπάρχουν ήδη στη σελίδα.
+  const matters = useMatterLookups(open, { clients: false });
 
   const load = () => {
     setLoadError("");
@@ -85,7 +89,7 @@ export default function Invoices() {
   );
 
   const openNew = () => { setEditing(null); setForm(emptyForm()); setOpen(true); };
-  const openEdit = (inv) => { setEditing(inv); setForm({ client_id: inv.client_id, date: inv.date, line_items: inv.line_items, payment_method: inv.payment_method, notes: inv.notes }); setOpen(true); };
+  const openEdit = (inv) => { setEditing(inv); setForm({ client_id: inv.client_id, date: inv.date, line_items: inv.line_items, payment_method: inv.payment_method, notes: inv.notes, case_id: inv.case_id || "", lawyer_id: inv.lawyer_id || "" }); setOpen(true); };
 
   const handleSubmit = async () => {
     if (!form.client_id) return toast.error("Επιλέξτε πελάτη");
@@ -504,6 +508,40 @@ export default function Invoices() {
                 {clients.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
               </SelectContent>
             </Select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Υπόθεση (προαιρετικό)</Label>
+              <Select value={form.case_id || NONE} onValueChange={(v) => {
+                const next = v === NONE ? "" : v;
+                setForm({ ...form, case_id: next, lawyer_id: lawyerAfterCaseChange(matters.cases, form.case_id, next, form.lawyer_id) });
+              }}>
+                <SelectTrigger className="mt-1.5" data-testid="invoice-case-select"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>Καμία</SelectItem>
+                  {withCurrent(
+                    // πρώτα οι υποθέσεις του επιλεγμένου πελάτη· οι υπόλοιπες μένουν διαθέσιμες (τιμολογείται και τρίτος που πληρώνει)
+                    [...matters.cases].sort((a, b) => Number(b.client_id === form.client_id) - Number(a.client_id === form.client_id))
+                      .map((c) => ({ value: c.id, label: caseLabel(c) + (c.client_name ? ` (${c.client_name})` : "") })),
+                    form.case_id, "(άγνωστη υπόθεση)",
+                  ).map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              {matters.failed.cases && <p className="text-[11px] text-destructive mt-1" role="alert">Η λίστα υποθέσεων δεν φορτώθηκε.</p>}
+            </div>
+            <div>
+              <Label>Δικηγόρος (προαιρετικό)</Label>
+              <Select value={form.lawyer_id || NONE} onValueChange={(v) => setForm({ ...form, lawyer_id: v === NONE ? "" : v })}>
+                <SelectTrigger className="mt-1.5" data-testid="invoice-lawyer-select"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>{form.case_id ? "Ο υπεύθυνος της υπόθεσης" : "Κανένας"}</SelectItem>
+                  {withCurrent(matters.lawyers.map((u) => ({ value: u.id, label: u.name || u.email })), form.lawyer_id, "(άγνωστος χρήστης)")
+                    .map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              {matters.failed.lawyers && <p className="text-[11px] text-destructive mt-1" role="alert">Η λίστα δικηγόρων δεν φορτώθηκε.</p>}
+            </div>
           </div>
 
           <div>

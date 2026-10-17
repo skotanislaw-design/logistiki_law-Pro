@@ -1,7 +1,7 @@
 import tempfile
 import os
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict
 from fastapi.responses import Response
@@ -11,6 +11,7 @@ from http_utils import content_disposition
 from models import Invoice
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
+from dimensions import canonical_id, matter_label, resolve_invoice_matter
 from tax_utils import calculate_invoice_totals, is_finite_number, valid_iso_date, MAX_LINE_VALUE, VALID_VAT_RATES
 from mydata_client import INVOICE_TYPE_LABELS, TYPE_SERVICES_B2B, TYPE_RECEIPT_B2C, TYPE_CREDIT_NOTE, resolve_invoice_type
 from ai_helpers import transcribe_audio, parse_invoice_from_text
@@ -188,6 +189,7 @@ async def create_invoice(payload: Invoice, user: dict = Depends(get_current_user
         raise HTTPException(status_code=404, detail="Ο πελάτης δεν βρέθηκε")
     payload.client_name = client_doc["name"]
     payload.firm_id = firm_id_for(user)
+    payload.case_id, payload.lawyer_id = await resolve_invoice_matter(user, payload.case_id, payload.lawyer_id)
     totals = calculate_invoice_totals(payload.line_items)
     payload.subtotal = totals["subtotal"]
     payload.vat_amount = totals["vat_amount"]
@@ -244,6 +246,12 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
     client_doc = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(payload.client_id)}))
     if not client_doc:
         raise HTTPException(status_code=404, detail="Ο πελάτης δεν βρέθηκε")
+    # Υπόθεση και δικηγόρος αλλάζουν μόνο αν έρθουν στο αίτημα: μια καρτέλα ανοιγμένη πριν την ενημέρωση (ή εξωτερικός
+    # πελάτης του API) που δεν τα ξέρει δεν πρέπει να σβήνει σιωπηλά τη σύνδεση που έκανε ο λογιστής.
+    # Ό,τι από τα δύο στάλθηκε αλλάζει· ό,τι δεν στάλθηκε μένει όπως ήταν (βλ. `dimensions.resolve_invoice_matter`).
+    sent = set(payload.model_fields_set)
+    payload.case_id, payload.lawyer_id = await resolve_invoice_matter(
+        user, payload.case_id if "case_id" in sent else None, payload.lawyer_id if "lawyer_id" in sent else None, existing)
     totals = calculate_invoice_totals(payload.line_items)
     payload.id = invoice_id
     payload.firm_id = firm_id_for(user)
@@ -270,6 +278,52 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
         tenant_query(user, {"_id": invoice_oid, "status": "draft", **not_being_issued()}), {"$set": data})
     if result.matched_count == 0:
         raise HTTPException(status_code=409, detail="Το τιμολόγιο εκδόθηκε, εκδίδεται αυτή τη στιγμή ή δεν υπάρχει πια — δεν τροποποιείται.")
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": invoice_oid}))
+    return Invoice.from_mongo(doc)
+
+
+class MatterTag(BaseModel):
+    """Το σώμα του `PATCH /invoices/{id}/matter`: μόνο υπόθεση και δικηγόρος. Κάθε άλλο πεδίο (ποσά, αριθμός, MARK…)
+    απορρίπτεται, ώστε το endpoint να μην μπορεί ποτέ να αγγίξει ό,τι έχει διαβιβαστεί στην ΑΑΔΕ.
+
+    Αλλάζει **μόνο ό,τι στάλθηκε**: `{"lawyer_id": …}` δεν αποσυνδέει την υπόθεση. Το κενό κείμενο είναι ρητή τιμή:
+    `case_id: ""` = καμία υπόθεση, `lawyer_id: ""` = ο υπεύθυνος της υπόθεσης (αν υπάρχει), αλλιώς κανένας."""
+    model_config = ConfigDict(extra="forbid")
+    case_id: str = ""
+    lawyer_id: str = ""
+
+
+@router.patch("/{invoice_id}/matter")
+async def tag_invoice_matter(invoice_id: str, payload: MatterTag, request: Request, user: dict = Depends(get_current_user)):
+    """Σε ποια υπόθεση και σε ποιον δικηγόρο ανήκει το τιμολόγιο — σε **οποιαδήποτε** κατάσταση.
+
+    Ένα εκδοθέν τιμολόγιο δεν τροποποιείται (είναι το παραστατικό της ΑΑΔΕ)· η υπόθεση και ο δικηγόρος όμως είναι
+    μεταδεδομένα οργάνωσης που δεν εμφανίζονται στο παραστατικό και δεν επηρεάζουν ΦΠΑ, αρίθμηση ή διαβίβαση. Γι' αυτό
+    η σύνδεση επιτρέπεται και μετά την έκδοση (π.χ. τιμολόγιο που εκδόθηκε πριν ταξινομηθεί η υπόθεση). Η αλλαγή
+    καταγράφεται στο αρχείο ελέγχου με το πριν και το μετά. Τα πιστωτικά του τιμολογίου ακολουθούν: αλλιώς η καθαρή αξία
+    κάθε υπόθεσης (αρχικό +, πιστωτικό −) θα έβγαινε λάθος και στις δύο."""
+    try:
+        invoice_oid = ObjectId(invoice_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    existing = await db.invoices.find_one(tenant_query(user, {"_id": invoice_oid}))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    sent = set(payload.model_fields_set)
+    if not sent:
+        raise HTTPException(status_code=400, detail="Δώστε υπόθεση ή δικηγόρο (ή και τα δύο) για να αλλάξει η σύνδεση.")
+    case_id, lawyer_id = await resolve_invoice_matter(
+        user, payload.case_id if "case_id" in sent else None, payload.lawyer_id if "lawyer_id" in sent else None, existing)
+    result = await db.invoices.update_one(
+        tenant_query(user, {"_id": invoice_oid}), {"$set": {"case_id": case_id, "lawyer_id": lawyer_id}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    await db.invoices.update_many(
+        tenant_query(user, {"credit_note_for": str(invoice_oid)}), {"$set": {"case_id": case_id, "lawyer_id": lawyer_id}})
+    request.state.audit_details = (
+        f"Σύνδεση τιμολογίου {existing.get('number') or '(πρόχειρο)'}: "
+        f"{await matter_label(user, canonical_id(existing.get('case_id') or ''), canonical_id(existing.get('lawyer_id') or ''))} → "
+        f"{await matter_label(user, case_id, lawyer_id)}")
     doc = await db.invoices.find_one(tenant_query(user, {"_id": invoice_oid}))
     return Invoice.from_mongo(doc)
 

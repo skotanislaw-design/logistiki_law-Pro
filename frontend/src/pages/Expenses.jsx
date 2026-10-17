@@ -8,19 +8,37 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ImagePreviewDialog } from "@/components/ImagePreviewDialog";
+import { ExpenseMatterFields } from "@/components/ExpenseMatterFields";
+import { SCOPE_LABEL, caseLabel, useMatterLookups } from "@/lib/matters";
+import { EXPENSE_CATEGORIES as CATEGORIES } from "@/lib/vatRules";
 import { Plus, Camera, Sparkle, Eye, PencilSimple, Trash, ImageSquare } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { todayAthens } from "@/lib/utils";
 
 const VAT_RATES = [24, 13, 6, 0];
-const CATEGORIES = [
-  "Ενοίκιο", "Λογαριασμοί ΔΕΚΟ", "Προμήθειες γραφείου", "Δικηγορικά έξοδα",
-  "Αμοιβές τρίτων", "Μεταφορικά", "Τηλεπικοινωνίες", "Ασφάλιστρα",
-  "Συνδρομές / Λογισμικό", "Φιλοξενία / Εστίαση", "Λοιπά",
-];
 
 function emptyForm() {
-  return { vendor: "", date: todayAthens(), amount: 0, vat_amount: 0, vat_rate: 24, category: "Λοιπά", description: "", source: "manual", receipt_image_url: null };
+  return {
+    vendor: "", date: todayAthens(), amount: 0, vat_amount: 0, vat_rate: 24, category: "Λοιπά", description: "", source: "manual", receipt_image_url: null,
+    // Αντιστοίχιση (σε ποιον ανήκει) και ρητή εκπτωσιμότητα ΦΠΑ — βλ. ExpenseMatterFields.
+    scope: "unassigned", case_id: "", client_id: "", lawyer_id: "", rebillable: false, vat_deductible_pct: null,
+  };
+}
+
+/** Η σύντομη ένδειξη της στήλης «Αντιστοίχιση» (η πλήρης επιλογή γίνεται στη φόρμα). */
+function allocationLabel(ex, lookups) {
+  switch (ex.scope) {
+    case "case": {
+      const c = lookups.cases.find((x) => x.id === ex.case_id);
+      return c ? caseLabel(c) : "Υπόθεση";
+    }
+    case "client":
+      return lookups.clients.find((x) => x.id === ex.client_id)?.name || "Πελάτης";
+    case "office":
+      return "Γραφείο";
+    default:
+      return null;
+  }
 }
 
 function receiptSrc(path) {
@@ -35,6 +53,8 @@ export default function Expenses() {
   const [ocrLoading, setOcrLoading] = useState(false);
   const [previewSrc, setPreviewSrc] = useState(null);
   const fileRef = useRef(null);
+  // Οι λίστες υποθέσεων/πελατών/δικηγόρων: δίνουν τα ονόματα στη στήλη «Αντιστοίχιση» και τις επιλογές της φόρμας.
+  const lookups = useMatterLookups(true);
 
   const load = () => axios.get(`${API}/expenses`).then((r) => setExpenses(r.data)).catch((e) => toast.error(errMsg(e)));
   useEffect(() => { load(); }, []);
@@ -52,6 +72,7 @@ export default function Expenses() {
         const { data } = await axios.post(`${API}/expenses/ocr-parse`, { image_base64: base64 });
         const p = data.parsed;
         setForm({
+          ...emptyForm(),
           vendor: p.vendor || "", date: p.date || todayAthens(),
           amount: p.amount || 0, vat_amount: p.vat_amount || 0, vat_rate: p.vat_rate || 24,
           category: CATEGORIES.includes(p.category) ? p.category : "Λοιπά",
@@ -68,7 +89,7 @@ export default function Expenses() {
   };
 
   const openNew = () => { setEditing(null); setForm(emptyForm()); setOpen(true); };
-  const openEdit = (ex) => { setEditing(ex); setForm(ex); setOpen(true); };
+  const openEdit = (ex) => { setEditing(ex); setForm({ ...emptyForm(), ...ex }); setOpen(true); };
   const openPreview = (ex) => setPreviewSrc(receiptSrc(ex.receipt_image_url));
 
   const handleSubmit = async () => {
@@ -124,6 +145,7 @@ export default function Expenses() {
               <TableHead>Προμηθευτής</TableHead>
               <TableHead>Ημερομηνία</TableHead>
               <TableHead>Κατηγορία</TableHead>
+              <TableHead>Αντιστοίχιση</TableHead>
               <TableHead>Πηγή</TableHead>
               <TableHead className="text-right">ΦΠΑ</TableHead>
               <TableHead className="text-right">Ποσό</TableHead>
@@ -145,6 +167,11 @@ export default function Expenses() {
                 <TableCell>{ex.vendor}</TableCell>
                 <TableCell>{dateFmt(ex.date)}</TableCell>
                 <TableCell>{ex.category}</TableCell>
+                <TableCell className="text-xs max-w-[200px] truncate" data-testid={`expense-allocation-${ex.id}`}
+                  title={SCOPE_LABEL[ex.scope || "unassigned"]}>
+                  {allocationLabel(ex, lookups) || <span className="text-muted-foreground">—</span>}
+                  {ex.rebillable && <span className="ml-1 text-[hsl(var(--gold))]" title="Θα χρεωθεί στον πελάτη">↻</span>}
+                </TableCell>
                 <TableCell className="text-xs text-muted-foreground">{ex.source === "photo_ocr" ? "AI OCR" : "Χειροκίνητα"}</TableCell>
                 <TableCell className="text-right font-mono">{money(ex.vat_amount)}</TableCell>
                 <TableCell className="text-right font-mono">{money(ex.amount)}</TableCell>
@@ -158,14 +185,14 @@ export default function Expenses() {
               </TableRow>
             ))}
             {expenses.length === 0 && (
-              <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">Δεν υπάρχουν έξοδα ακόμα.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-8">Δεν υπάρχουν έξοδα ακόμα.</TableCell></TableRow>
             )}
           </TableBody>
         </Table>
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
           <DialogHeader><DialogTitle>{editing ? "Επεξεργασία Εξόδου" : form.source === "photo_ocr" ? "Επιβεβαίωση Στοιχείων Απόδειξης" : "Νέο Έξοδο"}</DialogTitle></DialogHeader>
 
           {ocrLoading ? (
@@ -218,6 +245,7 @@ export default function Expenses() {
                 <Label>Περιγραφή</Label>
                 <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="mt-1.5" />
               </div>
+              <ExpenseMatterFields form={form} onChange={(patch) => setForm((f) => ({ ...f, ...patch }))} lookups={lookups} />
             </div>
           )}
 

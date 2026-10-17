@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Toaster } from "@/components/ui/sonner";
 import Expenses from "@/pages/Expenses";
+import { lookupHandlers } from "@/test/lookupFixtures";
 import { server } from "@/test/server";
 
 const API = "http://localhost:8001/api";
@@ -28,6 +29,7 @@ describe("Έξοδα — ημερομηνία", () => {
     const user = userEvent.setup();
     let posted = null;
     server.use(
+      ...lookupHandlers(),
       http.get(`${API}/expenses`, () => HttpResponse.json([])),
       http.post(`${API}/expenses`, async ({ request }) => {
         posted = await request.json();
@@ -47,6 +49,7 @@ describe("Έξοδα — ημερομηνία", () => {
     atMidnightInAthens();
     const user = userEvent.setup({ applyAccept: false });
     server.use(
+      ...lookupHandlers(),
       http.get(`${API}/expenses`, () => HttpResponse.json([])),
       http.post(`${API}/expenses/ocr-parse`, () => HttpResponse.json({
         parsed: { vendor: "Βιβλιοπωλείο", amount: 12.4, vat_amount: 2.4, vat_rate: 24 },   // χωρίς date

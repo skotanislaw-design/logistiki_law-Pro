@@ -7,6 +7,7 @@ from db import db, fetch_all
 from tenant import tenant_query, firm_id_for
 from tax_utils import athens_today, next_vat_deadline, next_efka_deadline
 from invoice_services import invoice_balances, open_invoices, open_total
+from vat_rules import summarize_expenses
 
 
 def _fmt(v):
@@ -39,7 +40,8 @@ async def build_context(user: dict) -> dict:
     balances = await invoice_balances(firm_id_for(user), unpaid, settings)
 
     output_vat = round(sum(i.get("vat_amount", 0) for i in month_inv), 2)
-    input_vat = round(sum(e.get("vat_amount", 0) for e in month_exp), 2)
+    spend = summarize_expenses(month_exp, settings)
+    input_vat = spend["input_vat"]
 
     return {
         "σήμερα": today.isoformat(),
@@ -48,8 +50,10 @@ async def build_context(user: dict) -> dict:
         "τρέχων_μήνας": {
             "καθαρά_έσοδα": _fmt(sum(i.get("subtotal", 0) for i in month_inv)),
             "ΦΠΑ_εκροών": _fmt(output_vat),
-            "καθαρά_έξοδα": _fmt(sum(e.get("amount", 0) - e.get("vat_amount", 0) for e in month_exp)),
+            "καθαρά_έξοδα": _fmt(spend["net_cost"]),
             "ΦΠΑ_εισροών": _fmt(input_vat),
+            # Μέρος των εισροών που εκπίπτει 100% μόνο επειδή δεν υπάρχει κανόνας· ο βοηθός πρέπει να το λέει όταν αναφέρει το ΦΠΑ.
+            "ΦΠΑ_εισροών_χωρίς_κανόνα_εκπτωσιμότητας": _fmt(spend["unruled_vat"]),
             "ΦΠΑ_προς_πληρωμή_εκτίμηση": _fmt(output_vat - input_vat),
         },
         "επόμενη_προθεσμία_ΦΠΑ": next_vat_deadline(today, settings.get("vat_period", "monthly")).isoformat(),

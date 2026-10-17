@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CheckCircle, ArrowRight, ArrowLeft, Buildings, EnvelopeSimple, Scales, UploadSimple, Confetti } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { settingsPayloadWithoutVatRules } from "@/lib/vatRules";
 
 const STEPS = [
   { id: "company", title: "Στοιχεία Εταιρείας", icon: Buildings },
@@ -33,7 +34,9 @@ export default function Onboarding() {
   const save = async (finalStep = false) => {
     setSaving(true);
     try {
-      const payload = { ...settings };
+      // Ο πίνακας ΦΠΑ και η επιβεβαίωση του λογιστή δεν ορίζονται εδώ: δεν στέλνονται, ώστε να μη γραφτούν πάνω σε ό,τι
+      // άλλαξε στο μεταξύ από τις Ρυθμίσεις.
+      const payload = settingsPayloadWithoutVatRules(settings);
       if (finalStep) payload.onboarding_completed = true;
       const { data } = await axios.put(`${API}/settings`, payload);
       setSettings(data);

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
 import { invoiceLabel } from "@/lib/utils";
+import { InvoiceMatterEditor } from "@/components/InvoiceMatterEditor";
 import { CloudCheck, CloudSlash, FilePdf, EnvelopeSimple, BellRinging, CheckCircle, CreditCard } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -124,6 +125,8 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }
           <div><span className="text-muted-foreground">Κατάσταση: </span><Badge>{STATUS_LABEL[invoice.status]}</Badge></div>
           <div><span className="text-muted-foreground">Τρόπος Πληρωμής: </span>{invoice.payment_method}</div>
         </div>
+
+        <InvoiceMatterEditor key={invoice.id} invoice={invoice} onSaved={onEmailSent} />
 
         <div className="border border-border rounded-sm overflow-hidden mt-2">
           <table className="w-full text-sm">

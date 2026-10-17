@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, Eye, Trash } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { NONE, useMatterLookups } from "@/lib/matters";
 
 export const CASE_STATUS = {
   active: { label: "Σε εξέλιξη", variant: "default" },
@@ -18,7 +19,7 @@ export const CASE_STATUS = {
   archived: { label: "Αρχειοθετήθηκε", variant: "destructive" },
 };
 
-const EMPTY = { title: "", case_type: "Αστικό", client_id: "", client_name: "", court: "", opposing_party: "", next_action: "", gak: "", eak: "", gak_year: "" };
+const EMPTY = { title: "", case_type: "Αστικό", client_id: "", client_name: "", lawyer_id: "", court: "", opposing_party: "", next_action: "", gak: "", eak: "", gak_year: "" };
 
 export default function Cases() {
   const [cases, setCases] = useState([]);
@@ -27,6 +28,8 @@ export default function Cases() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const navigate = useNavigate();
+  // Οι δικηγόροι του γραφείου: για τη στήλη «Δικηγόρος» και την επιλογή υπευθύνου. Οι πελάτες φορτώνονται παρακάτω.
+  const { lawyers, failed } = useMatterLookups(true, { cases: false, clients: false });
 
   const load = () => axios.get(`${API}/cases`).then((r) => setCases(r.data)).catch(() => {});
   useEffect(() => {
@@ -79,6 +82,7 @@ export default function Cases() {
               <TableHead>Τίτλος</TableHead>
               <TableHead>Είδος</TableHead>
               <TableHead>Πελάτης</TableHead>
+              <TableHead>Δικηγόρος</TableHead>
               <TableHead>Δικαστήριο</TableHead>
               <TableHead>Κατάσταση</TableHead>
               <TableHead className="text-right">Ενέργειες</TableHead>
@@ -86,7 +90,7 @@ export default function Cases() {
           </TableHeader>
           <TableBody>
             {cases.length === 0 && (
-              <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-10">Δεν υπάρχουν υποθέσεις — δημιουργήστε την πρώτη</TableCell></TableRow>
+              <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-10">Δεν υπάρχουν υποθέσεις — δημιουργήστε την πρώτη</TableCell></TableRow>
             )}
             {cases.map((c) => (
               <TableRow key={c.id} className="cursor-pointer" onClick={() => navigate(`/cases/${c.id}`)} data-testid={`case-row-${c.id}`}>
@@ -94,6 +98,9 @@ export default function Cases() {
                 <TableCell className="font-medium max-w-[240px] truncate">{c.title}</TableCell>
                 <TableCell className="text-muted-foreground">{c.case_type}</TableCell>
                 <TableCell>{c.client_name || "—"}</TableCell>
+                <TableCell className="text-xs" data-testid={`case-lawyer-${c.id}`}>
+                  {c.lawyer_id ? (lawyers.find((u) => u.id === c.lawyer_id)?.name || "—") : <span className="text-muted-foreground">—</span>}
+                </TableCell>
                 <TableCell className="text-muted-foreground text-xs">{c.court || "—"}</TableCell>
                 <TableCell><Badge variant={CASE_STATUS[c.status]?.variant}>{CASE_STATUS[c.status]?.label}</Badge></TableCell>
                 <TableCell className="text-right">
@@ -129,6 +136,17 @@ export default function Cases() {
                   <SelectContent>{clients.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
+            </div>
+            <div>
+              <Label>Υπεύθυνος δικηγόρος</Label>
+              <Select value={form.lawyer_id || NONE} onValueChange={(v) => setForm({ ...form, lawyer_id: v === NONE ? "" : v })}>
+                <SelectTrigger className="mt-1.5" data-testid="case-lawyer-select"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>Δεν έχει οριστεί</SelectItem>
+                  {lawyers.map((u) => <SelectItem key={u.id} value={u.id}>{u.name || u.email}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              {failed.lawyers && <p className="text-[11px] text-destructive mt-1" role="alert">Η λίστα δικηγόρων δεν φορτώθηκε.</p>}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

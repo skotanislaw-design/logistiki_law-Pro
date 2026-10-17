@@ -8,6 +8,7 @@ from db import db, fetch_capped
 from http_utils import content_disposition, disclose_truncation
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
+from dimensions import inherited_matter
 from models import Grammatio, Invoice, InvoiceLineItem
 from routes_cases import log_case_event
 from tax_utils import athens_today, calculate_invoice_totals, money_limit_error
@@ -208,12 +209,17 @@ async def grammatio_to_invoice(gid: str, user: dict = Depends(get_current_user))
     if not lines:
         raise HTTPException(status_code=400, detail="Το γραμμάτιο δεν έχει ποσό προς τιμολόγηση.")
 
+    # Το τιμολόγιο ανήκει στην υπόθεση του γραμματίου και στον υπεύθυνο δικηγόρο της — ώστε η κερδοφορία ανά υπόθεση να
+    # μη χρειάζεται δεύτερη, χειροκίνητη ταξινόμηση.
+    case_id, lawyer_id = await inherited_matter(firm_id_for(user), doc.get("case_id"))
     inv = Invoice(
         firm_id=firm_id_for(user),
         client_id=doc["client_id"],
         client_name=doc.get("client_name", ""),
         date=athens_today().isoformat(),
         line_items=lines,
+        case_id=case_id,
+        lawyer_id=lawyer_id,
         created_by=user["email"],
         notes=f"Γραμμάτιο: {doc.get('number')} · Υπόθεση: {doc.get('case_title') or '—'}",
     )

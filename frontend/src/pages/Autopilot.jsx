@@ -50,6 +50,8 @@ function Stat({ label, value, testid }) {
 export default function Autopilot() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  // Τη σήμανση «Υποβλήθηκε» την κάνει ο διαχειριστής ή ο λογιστής του γραφείου (το επιβάλλει ο server).
+  const canSignOffVat = ["admin", "accountant"].includes(user?.role);
   const [status, setStatus] = useState(null);
   const [items, setItems] = useState([]);
   const [runs, setRuns] = useState([]);
@@ -145,6 +147,24 @@ export default function Autopilot() {
     } catch (e) {
       toast.error(errMsg(e));
     }
+  };
+
+  // Η σήμανση «Υποβλήθηκε» κλειδώνει τους αριθμούς της περιόδου και τον πίνακα εκπτωσιμότητας που ίσχυε, και η εφαρμογή
+  // δεν την αναιρεί: ρωτάει πριν, και δείχνει στον χρήστη όποια άρνηση του server (π.χ. ρόλος που δεν επιτρέπεται).
+  const markVatSubmitted = async (period) => {
+    const unruled = period.input_vat_unruled > 0
+      ? `\n\nΠροσοχή: ${money(period.input_vat_unruled)} από το ΦΠΑ εισροών εκπίπτουν 100% χωρίς να έχει οριστεί κανόνας εκπτωσιμότητας.`
+      : "";
+    if (!window.confirm(
+      `Σημείωση της περιόδου ${period.period} ως υποβληθείσας;\n\nΟι αριθμοί της περιόδου και ο πίνακας εκπτωσιμότητας ΦΠΑ «παγώνουν» όπως είναι τώρα, και η εφαρμογή δεν τους αλλάζει ξανά. Σημειώστε το μόνο αφού υποβάλετε τη δήλωση στο TAXISnet.${unruled}`,
+    )) return;
+    try {
+      const { data } = await axios.post(`${API}/automation/vat-periods/${period.period}/submitted`);
+      toast.success(data?.message || `Η περίοδος ${period.period} σημειώθηκε ως υποβληθείσα`);
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+    load();
   };
 
   const dismissInfo = async () => {
@@ -299,7 +319,19 @@ export default function Autopilot() {
                   <tr key={v.period} className="border-b border-white/5" data-testid={`vat-period-${v.period}`}>
                     <td className="p-3 font-mono">{v.period}</td>
                     <td className="p-3 text-right font-mono">{money(v.output_vat)}</td>
-                    <td className="p-3 text-right font-mono">{money(v.input_vat)}</td>
+                    <td className="p-3 text-right font-mono">
+                      {money(v.input_vat)}
+                      {v.input_vat_nondeductible > 0 && (
+                        <div className="text-[10px] text-muted-foreground font-sans" data-testid={`vat-period-nondeductible-${v.period}`}>
+                          + {money(v.input_vat_nondeductible)} μη εκπιπτόμενο
+                        </div>
+                      )}
+                      {v.input_vat_unruled > 0 && (
+                        <div className="text-[10px] text-[hsl(var(--warning))] font-sans" data-testid={`vat-period-unruled-${v.period}`}>
+                          {money(v.input_vat_unruled)} χωρίς κανόνα
+                        </div>
+                      )}
+                    </td>
                     <td className={`p-3 text-right font-mono ${v.vat_due > 0 ? "text-destructive" : "text-[hsl(var(--success))]"}`}>{money(v.vat_due)}</td>
                     <td className="p-3">{dateFmt(v.due_date)}</td>
                     <td className="p-3 text-center">
@@ -309,7 +341,9 @@ export default function Autopilot() {
                           <FilePdf size={15} className="mr-1" /> Φ2
                         </Button>
                         {v.status === "submitted" ? <Badge>Υποβλήθηκε</Badge> : (
-                          <Button size="sm" variant="outline" onClick={async () => { await axios.post(`${API}/automation/vat-periods/${v.period}/submitted`); load(); }}>Υποβλήθηκε</Button>
+                          <Button size="sm" variant="outline" onClick={() => markVatSubmitted(v)} disabled={!canSignOffVat}
+                            title={canSignOffVat ? "Σημείωση της περιόδου ως υποβληθείσας" : "Τη σήμανση κάνει ο διαχειριστής ή ο λογιστής του γραφείου"}
+                            data-testid={`vat-submitted-${v.period}`}>Υποβλήθηκε</Button>
                         )}
                       </div>
                     </td>

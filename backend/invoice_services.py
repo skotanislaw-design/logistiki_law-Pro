@@ -1411,6 +1411,10 @@ async def build_credit_note(firm_id: str, invoice: dict, user_email: str,
         correlated_mark=invoice.get("mydata_mark"),
         notes=reason or f"Πιστωτικό για το {invoice.get('number')}",
         payment_method=invoice.get("payment_method", ""),
+        # Το πιστωτικό μειώνει τα έσοδα της ίδιας υπόθεσης και του ίδιου δικηγόρου με το αρχικό — αλλιώς η κερδοφορία ανά
+        # υπόθεση/δικηγόρο θα έβγαινε φουσκωμένη κατά το ποσό που επιστράφηκε.
+        case_id=invoice.get("case_id") or "",
+        lawyer_id=invoice.get("lawyer_id") or "",
         created_by=user_email,
     )
     totals = calculate_invoice_totals(credit.line_items)

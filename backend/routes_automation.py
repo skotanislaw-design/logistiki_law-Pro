@@ -7,11 +7,12 @@ from pydantic import BaseModel
 
 from db import db, fetch_all
 from http_utils import content_disposition
-from auth import get_current_user, require_admin
+from auth import get_current_user, require_admin, require_roles
 from tenant import tenant_query, firm_id_for
 from models import Notification, AutomationRun, VatPeriod
 from automation import (
     JOBS, JOB_LABELS, run_autopilot_cycle, run_firm, resolve_notification, firm_snapshot, build_digest,
+    compute_vat_period, period_from_doc,
 )
 from email_utils import smtp_ready
 from mydata_client import mydata_ready
@@ -165,6 +166,13 @@ async def _vat_return_payload(user: dict, period: str) -> dict:
     if not doc:
         raise HTTPException(status_code=404, detail=f"Η περίοδος {period} δεν έχει υπολογιστεί ακόμη.")
     settings = await db.settings.find_one(tenant_query(user)) or {}
+    if doc.get("status") == "submitted":
+        # Η υποβληθείσα περίοδος δεν ακολουθεί τον πίνακα εκπτωσιμότητας ΦΠΑ που ισχύει σήμερα: η δήλωση που κατατέθηκε
+        # έγινε με τον πίνακα της στιγμής της υποβολής (στιγμιότυπο). Περίοδος που υποβλήθηκε πριν υπάρξει πίνακας δεν έχει
+        # στιγμιότυπο και υπολογίζεται χωρίς κανόνες, δηλαδή όπως υπολογιζόταν τότε (εκπίπτει όλο το ΦΠΑ των εξόδων).
+        frozen = doc.get("vat_rules_snapshot") or {}
+        settings = {**settings, "vat_deductibility_rules": frozen.get("rules") or {},
+                    "vat_rules_confirmed_by": frozen.get("confirmed_by") or ""}
     start, end = doc["period_start"], doc["period_end"] + "T23:59:59"
     # Χωρίς όριο: η δήλωση Φ2 είναι αντίγραφο για το TAXISnet — κάθε παραστατικό της περιόδου πρέπει να μετράει.
     invoices = await fetch_all(db.invoices.find(tenant_query(user, {
@@ -190,11 +198,31 @@ async def vat_return_pdf(period: str, user: dict = Depends(get_current_user)):
 
 
 @router.post("/vat-periods/{period}/submitted")
-async def mark_vat_submitted(period: str, user: dict = Depends(get_current_user)):
-    r = await db.vat_periods.update_one(tenant_query(user, {"period": period}),
-                                        {"$set": {"status": "submitted", "submitted_at": datetime.now(timezone.utc).isoformat()}})
-    if r.matched_count == 0:
+async def mark_vat_submitted(
+    period: str,
+    user: dict = Depends(require_roles(
+        "admin", "accountant", detail="Την υποβολή ΦΠΑ τη σημειώνει μόνο ο διαχειριστής ή ο λογιστής του γραφείου.")),
+):
+    """Σημειώνει την περίοδο ως υποβληθείσα και «παγώνει» ό,τι ίσχυε εκείνη τη στιγμή: τον πίνακα εκπτωσιμότητας ΦΠΑ **και**
+    τους αριθμούς της περιόδου, υπολογισμένους με αυτόν τον πίνακα — όπως ακριβώς εμφανίζονται στη δήλωση Φ2 που αντιγράφηκε
+    στο TAXISnet. (Χωρίς ξαναϋπολογισμό θα έμεναν οι αριθμοί της τελευταίας εκτέλεσης του Autopilot, ίσως παλιού πίνακα.)
+
+    Η κλήση είναι ιδεμπότεντ: δεύτερη φορά δεν αλλάζει ούτε τη χρονική στιγμή ούτε το στιγμιότυπο ούτε τους αριθμούς —
+    αλλιώς ένα κλικ μήνες μετά θα έδενε την περίοδο με τον νεότερο πίνακα. Μόνο ο διαχειριστής και ο λογιστής μπορούν να
+    την καλέσουν: η σήμανση «Υποβλήθηκε» κλειδώνει τους αριθμούς και δεν αναιρείται από την εφαρμογή."""
+    doc = await db.vat_periods.find_one(tenant_query(user, {"period": period}))
+    if not doc:
         raise HTTPException(status_code=404, detail="Η περίοδος δεν βρέθηκε")
+    if doc.get("status") != "submitted":
+        settings = await db.settings.find_one(tenant_query(user)) or {}
+        now = datetime.now(timezone.utc).isoformat()
+        snapshot = {"rules": settings.get("vat_deductibility_rules") or {},
+                    "confirmed_by": settings.get("vat_rules_confirmed_by") or "", "frozen_at": now}
+        fresh = await compute_vat_period(firm_id_for(user), period_from_doc(doc), settings)
+        numbers = {k: v for k, v in fresh.to_mongo().items() if k not in ("status", "_id", "firm_id")}
+        await db.vat_periods.update_one(
+            tenant_query(user, {"_id": doc["_id"], "status": {"$ne": "submitted"}}),
+            {"$set": {**numbers, "status": "submitted", "submitted_at": now, "vat_rules_snapshot": snapshot}})
     return {"message": f"Η περίοδος {period} σημειώθηκε ως υποβληθείσα"}
 
 

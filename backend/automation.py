@@ -35,6 +35,7 @@ from db import db, fetch_all
 from crypto import decrypt
 from models import Notification, AutomationRun, VatPeriod, Expense
 from tax_utils import athens_date_of, athens_today, generate_tax_calendar, vat_deadline_for_period_end
+from vat_rules import summarize_expenses
 from email_utils import smtp_ready, send_email_with_pdf
 from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
@@ -584,14 +585,17 @@ async def job_stale_drafts(firm_id: str, settings: dict) -> dict:
     return {"flagged": flagged}
 
 
-async def compute_vat_period(firm_id: str, period: dict) -> VatPeriod:
+async def compute_vat_period(firm_id: str, period: dict, settings: dict | None = None) -> VatPeriod:
+    """Υπολογίζει μια περίοδο ΦΠΑ. Το ΦΠΑ εισροών είναι το **εκπιπτόμενο** μέρος, με βάση τον πίνακα εκπτωσιμότητας των
+    `settings` (βλ. vat_rules)· χωρίς `settings` ή χωρίς κανόνες κάθε έξοδο εκπίπτει 100%, όπως πριν τη Φάση 1."""
     start, end = period["start"].isoformat(), period["end"].isoformat()
     # Χωρίς όριο: η περίοδος ΦΠΑ είναι φορολογικός υπολογισμός — ένα «μέχρι 10.000 εγγραφές» θα έδινε μικρότερο ΦΠΑ
     # εκροών/εισροών χωρίς κανένα σφάλμα.
     invoices = await fetch_all(db.invoices.find(firm_query(firm_id, {"status": {"$in": ["issued", "paid"]}, "date": {"$gte": start, "$lte": end + "T23:59:59"}})))
     expenses = await fetch_all(db.expenses.find(firm_query(firm_id, {"date": {"$gte": start, "$lte": end + "T23:59:59"}})))
     output_vat = round(sum(i.get("vat_amount", 0) for i in invoices), 2)
-    input_vat = round(sum(e.get("vat_amount", 0) for e in expenses), 2)
+    spend = summarize_expenses(expenses, settings)
+    input_vat = spend["input_vat"]
     breakdown: dict = {}
     for i in invoices:
         for rate, amt in (i.get("vat_breakdown") or {}).items():
@@ -600,26 +604,52 @@ async def compute_vat_period(firm_id: str, period: dict) -> VatPeriod:
         firm_id=firm_id, period=period["period"], period_start=start, period_end=end, due_date=period["due"].isoformat(),
         output_vat=output_vat, input_vat=input_vat, vat_due=round(output_vat - input_vat, 2),
         income_net=round(sum(i.get("subtotal", 0) for i in invoices), 2),
-        expense_net=round(sum(e.get("amount", 0) - e.get("vat_amount", 0) for e in expenses), 2),
+        expense_net=spend["net_cost"],
+        input_vat_nondeductible=spend["input_vat_nondeductible"], input_vat_unruled=spend["unruled_vat"],
         invoice_count=len(invoices), expense_count=len(expenses), vat_breakdown=breakdown,
     )
+
+
+def period_from_doc(doc: dict) -> dict:
+    """Η περίοδος ΦΠΑ όπως τη θέλει ο `compute_vat_period` (ημερομηνίες), από την αποθηκευμένη εγγραφή (κείμενα ΕΕΕΕ-ΜΜ-ΗΗ)."""
+    return {"period": doc["period"], "start": _date.fromisoformat(doc["period_start"]),
+            "end": _date.fromisoformat(doc["period_end"]), "due": _date.fromisoformat(doc["due_date"])}
+
+
+async def refresh_open_vat_period(existing: dict, fresh: VatPeriod) -> bool:
+    """Γράφει τους νέους αριθμούς σε μια περίοδο που είναι ακόμη **ανοιχτή**· επιστρέφει αν έγραψε.
+
+    Ο έλεγχος «δεν έχει υποβληθεί» γίνεται μέσα στην ίδια εντολή εγγραφής και όχι στο `existing`, που ο εργάτης διάβασε
+    νωρίτερα: ο υπολογισμός μιας περιόδου διαρκεί, και αν στο μεταξύ ο λογιστής πατήσει «Υποβλήθηκε», το job δεν πρέπει να
+    ξαναγράψει από πάνω αριθμούς του παλιού πίνακα — η υποβληθείσα περίοδος μένει όπως παγώθηκε."""
+    numbers = {k: v for k, v in fresh.to_mongo().items() if k not in ("status", "_id")}
+    result = await db.vat_periods.update_one({"_id": existing["_id"], "status": {"$ne": "submitted"}}, {"$set": numbers})
+    return result.matched_count > 0
+
+
+def _unruled_sentence(unruled) -> str:
+    """Η σημείωση που συνοδεύει κάθε ΦΠΑ εισροών που στηρίζεται σε προεπιλογή και όχι σε κανόνα του λογιστή (κενή αν δεν υπάρχει)."""
+    if not unruled or unruled <= 0:
+        return ""
+    return (f" Από τις εισροές, {_fmt(unruled)} εκπίπτουν 100% χωρίς κανόνα εκπτωσιμότητας — "
+            "ορίστε τον πίνακα ΦΠΑ στις Ρυθμίσεις και ελέγξτε τον με τον λογιστή πριν την υποβολή.")
 
 
 async def job_vat_periods(firm_id: str, settings: dict) -> dict:
     computed = 0
     for period in closed_vat_periods(athens_today(), settings.get("vat_period", "monthly")):
         existing = await db.vat_periods.find_one(firm_query(firm_id, {"period": period["period"]}))
-        vp = await compute_vat_period(firm_id, period)
+        vp = await compute_vat_period(firm_id, period, settings)
         if existing:
-            if existing.get("status") == "submitted":
-                continue
-            await db.vat_periods.update_one({"_id": existing["_id"]}, {"$set": {k: v for k, v in vp.to_mongo().items() if k != "status"}})
+            if existing.get("status") != "submitted":
+                await refresh_open_vat_period(existing, vp)
             continue
         await db.vat_periods.insert_one(vp.to_mongo())
         computed += 1
         await notify(firm_id, "vat_period", "info" if vp.vat_due <= 0 else "warning",
                      f"Έκλεισε η περίοδος ΦΠΑ {vp.period}: {'πληρωτέο ' + _fmt(vp.vat_due) if vp.vat_due > 0 else 'πιστωτικό ' + _fmt(abs(vp.vat_due))}",
-                     f"Εκροές {_fmt(vp.output_vat)} − Εισροές {_fmt(vp.input_vat)} από {vp.invoice_count} τιμολόγια & {vp.expense_count} έξοδα. Προθεσμία υποβολής: {period['due'].strftime('%d/%m/%Y')}.",
+                     f"Εκροές {_fmt(vp.output_vat)} − Εισροές {_fmt(vp.input_vat)} από {vp.invoice_count} τιμολόγια & {vp.expense_count} έξοδα. "
+                     f"Προθεσμία υποβολής: {period['due'].strftime('%d/%m/%Y')}.{_unruled_sentence(vp.input_vat_unruled)}",
                      entity="vat_period", entity_id=vp.period, dedupe_key=f"vat_period:{vp.period}")
     return {"computed": computed}
 
@@ -820,7 +850,8 @@ async def firm_snapshot(firm_id: str, settings: dict, since: datetime | None = N
     unpaid = sorted([{**i, "open_amount": balances[str(i["_id"])][1]} for i in open_invoices(issued, balances)],
                     key=lambda i: i.get("date", ""))
     output_vat = round(sum(i.get("vat_amount", 0) for i in month_inv), 2)
-    input_vat = round(sum(e.get("vat_amount", 0) for e in expenses), 2)
+    spend = summarize_expenses(expenses, settings)
+    input_vat = spend["input_vat"]
     since = since or datetime.now(timezone.utc) - timedelta(days=7 if settings.get("digest_frequency") == "weekly" else 1)
     since_iso = since.isoformat()
     activity = await db.notifications.find(firm_query(firm_id, {"created_at": {"$gte": since_iso}, "requires_action": False})).sort("created_at", -1).to_list(200)
@@ -830,8 +861,9 @@ async def firm_snapshot(firm_id: str, settings: dict, since: datetime | None = N
     return {
         "today": today, "company": settings.get("company_name") or "Nomos One",
         "income_net": round(sum(i.get("subtotal", 0) for i in month_inv), 2),
-        "expense_net": round(sum(e.get("amount", 0) - e.get("vat_amount", 0) for e in expenses), 2),
+        "expense_net": spend["net_cost"],
         "output_vat": output_vat, "input_vat": input_vat, "vat_due": round(output_vat - input_vat, 2),
+        "input_vat_unruled": spend["unruled_vat"],
         "unpaid": unpaid, "unpaid_total": open_total(issued, balances),
         "deadlines": generate_tax_calendar(today, settings.get("vat_period", "monthly")),
         "activity": activity, "open_items": open_items, "mydata_pending": mydata_pending,
@@ -855,7 +887,11 @@ def build_digest(snapshot: dict, frequency: str = "weekly") -> tuple[str, str, s
     lines += ["ΤΡΕΧΩΝ ΜΗΝΑΣ",
               f"  Καθαρά έσοδα: {_fmt(s['income_net'])}", f"  Καθαρά έξοδα: {_fmt(s['expense_net'])}",
               f"  ΦΠΑ εκτίμηση: {_fmt(s['vat_due'])} (εκροές {_fmt(s['output_vat'])} − εισροές {_fmt(s['input_vat'])})",
-              f"  Ανείσπρακτα: {len(s['unpaid'])} τιμολόγια / {_fmt(s['unpaid_total'])}", ""]
+              f"  Ανείσπρακτα: {len(s['unpaid'])} τιμολόγια / {_fmt(s['unpaid_total'])}"]
+    unruled_note = _unruled_sentence(s.get("input_vat_unruled")).strip()       # στιγμιότυπο παλιότερης μορφής: χωρίς το πεδίο
+    if unruled_note:
+        lines += [f"  ⚠ {unruled_note}"]
+    lines += [""]
     if s["open_items"]:
         lines += [f"ΧΡΕΙΑΖΟΝΤΑΙ ΑΠΟΦΑΣΗ ({len(s['open_items'])})"]
         lines += [f"  • {n['title']}" + (f" — {n['message']}" if n.get("message") else "") for n in s["open_items"][:15]]
@@ -895,6 +931,7 @@ def build_digest(snapshot: dict, frequency: str = "weekly") -> tuple[str, str, s
       </div>
       <div style="padding:20px 24px;">
         <table style="border-collapse:collapse;width:100%"><tr>{kpi}</tr></table>
+        {f"<p style='margin:10px 0 0;color:#8a4b00;font-size:12px'>⚠ {esc(unruled_note)}</p>" if unruled_note else ""}
         {section(f"Χρειάζονται απόφαση ({len(s['open_items'])})", [f"<strong>{esc(n['title'])}</strong>" + (f"<br/><span style='color:#556'>{esc(n['message'])}</span>" if n.get('message') else '') for n in s['open_items'][:15]], empty="Τίποτα — όλα τρέχουν αυτόματα ✔")}
         {section("Προθεσμίες", [f"{d['due_date'][8:10]}/{d['due_date'][5:7]} — {esc(d['title'])}" for d in s['deadlines']])}
         {section("Περίοδοι ΦΠΑ προς υποβολή", [f"{esc(v['period'])}: <strong>{_fmt(v['vat_due'])}</strong> έως {v['due_date'][8:10]}/{v['due_date'][5:7]}" for v in s['vat_periods']])}

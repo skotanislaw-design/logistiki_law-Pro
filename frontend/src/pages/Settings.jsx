@@ -9,6 +9,8 @@ import { DisclaimerBanner } from "@/components/DisclaimerBanner";
 import { DownloadSimple, UploadSimple, Database, ShieldCheck } from "@phosphor-icons/react";
 import { TwoFactorSettings } from "@/components/TwoFactorSettings";
 import { BankConnection } from "@/components/BankConnection";
+import { VatDeductibilityRules } from "@/components/VatDeductibilityRules";
+import { confirmationWithdrawn, settingsPayload, vatBaseline } from "@/lib/vatRules";
 import { toast } from "sonner";
 import { MAX_WITHHOLDING_PERCENT, WITHHOLDING_CATEGORIES, parseRatePercent, percentToRate } from "@/lib/withholding";
 import { todayAthens } from "@/lib/utils";
@@ -50,6 +52,11 @@ export default function Settings() {
   const [overwriteWorking, setOverwriteWorking] = useState(false);
   // Το κείμενο του ποσοστού κρατιέται χωριστά ώστε να πληκτρολογείται «12,5» χωρίς να "τρώγεται" η υποδιαστολή.
   const [rateText, setRateText] = useState(null);
+  // Άκυρο ποσοστό στον πίνακα εκπτωσιμότητας ΦΠΑ: η αποθήκευση απενεργοποιείται (όπως για το ποσοστό παρακράτησης).
+  const [vatRulesInvalid, setVatRulesInvalid] = useState(false);
+  // Ο πίνακας ΦΠΑ και η επιβεβαίωση του λογιστή όπως τα έδωσε τελευταία φορά ο server: μόνο ό,τι διαφέρει από αυτά στέλνεται (βλ. settingsPayload).
+  const loadedVat = useRef(null);
+  const adopt = (settings) => { loadedVat.current = vatBaseline(settings); setForm(settings); };
   const backupFileRef = useRef();
   const clientsFileRef = useRef();
 
@@ -86,7 +93,7 @@ export default function Settings() {
       // πάνω στις επανελθούσες με το επόμενο «Αποθήκευση».
       try {
         const fresh = await axios.get(`${API}/settings`);
-        setForm(fresh.data); setRateText(null);
+        adopt(fresh.data); setRateText(null);
       } catch (e) {
         toast.error(`Οι ρυθμίσεις δεν ανανεώθηκαν μετά την επαναφορά — ανανεώστε τη σελίδα πριν τις αποθηκεύσετε. ${errMsg(e)}`);
       }
@@ -145,15 +152,19 @@ export default function Settings() {
   };
 
   useEffect(() => {
-    axios.get(`${API}/settings`).then((r) => setForm(r.data)).catch((e) => toast.error(errMsg(e)));
+    axios.get(`${API}/settings`).then((r) => adopt(r.data)).catch((e) => toast.error(errMsg(e)));
   }, []);
 
   const handleSubmit = async () => {
     try {
-      const { data } = await axios.put(`${API}/settings`, form);
-      setForm(data);
+      const { data } = await axios.put(`${API}/settings`, settingsPayload(form, loadedVat.current));
+      const withdrawn = confirmationWithdrawn(form, loadedVat.current, data);
+      adopt(data);
       setRateText(null);
       toast.success("Οι ρυθμίσεις αποθηκεύτηκαν");
+      if (withdrawn) {
+        toast.warning("Ο πίνακας ΦΠΑ άλλαξε και η επιβεβαίωση του λογιστή αποσύρθηκε. Καταχωρίστε νέο όνομα και ημερομηνία όταν ο λογιστής εγκρίνει τον νέο πίνακα.");
+      }
     } catch (e) {
       toast.error(errMsg(e));
     }
@@ -271,6 +282,12 @@ export default function Settings() {
         )}
       </div>
 
+      <div className="lux-card p-6 space-y-4" data-testid="settings-vat-deductibility">
+        <h3 className="font-heading text-lg font-medium">Εκπτωσιμότητα ΦΠΑ εισροών</h3>
+        <VatDeductibilityRules key={form.updated_at || "new"} rules={form.vat_deductibility_rules} confirmedBy={form.vat_rules_confirmed_by}
+          onChange={(patch) => setForm((f) => ({ ...f, ...patch }))} onInvalidChange={setVatRulesInvalid} />
+      </div>
+
       <div className="lux-card p-6 space-y-4">
         <h3 className="font-heading text-lg font-medium">Αποστολή Email (SMTP)</h3>
         <p className="text-sm text-muted-foreground">
@@ -341,7 +358,7 @@ export default function Settings() {
         <p className="text-[11px] text-muted-foreground/70">Αποθηκεύστε πρώτα τις ρυθμίσεις και μετά πατήστε «Δοκιμή σύνδεσης ΑΑΔΕ».</p>
       </div>
 
-      <Button onClick={handleSubmit} disabled={rateInvalid} data-testid="save-settings-button">Αποθήκευση Ρυθμίσεων</Button>
+      <Button onClick={handleSubmit} disabled={rateInvalid || vatRulesInvalid} data-testid="save-settings-button">Αποθήκευση Ρυθμίσεων</Button>
 
       <div className="lux-card p-6 space-y-4">
         <div className="flex items-center gap-2">

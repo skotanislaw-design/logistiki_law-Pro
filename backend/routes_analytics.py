@@ -7,6 +7,7 @@ from tax_utils import athens_today
 from auth import get_current_user
 from tenant import tenant_query, firm_id_for
 from invoice_services import invoice_balances, open_total
+from vat_rules import summarize_expenses
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -93,7 +94,7 @@ async def cash_flow_forecast(user: dict = Depends(get_current_user)):
             invs = await fetch_all(db.invoices.find(tenant_query(user, {"date": {"$gte": month_start}, "status": {"$in": ["issued", "paid"]}})))
             exps = await fetch_all(db.expenses.find(tenant_query(user, {"date": {"$gte": month_start}})))
             out_vat = sum(float(i.get("vat_amount", 0)) for i in invs)
-            in_vat = sum(float(e.get("vat_amount", 0)) for e in exps)
+            in_vat = summarize_expenses(exps, settings)["input_vat"]      # μόνο το εκπιπτόμενο ΦΠΑ (βλ. vat_rules)
             vat_due = max(0, out_vat - in_vat)
             tax_deadlines.append({
                 "date": vd.isoformat(),

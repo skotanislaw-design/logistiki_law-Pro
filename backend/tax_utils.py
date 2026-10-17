@@ -66,7 +66,12 @@ def is_finite_number(value) -> bool:
     Η `json` της Python δέχεται τα `NaN`, `Infinity` και `1e999`, και οι συγκρίσεις με `<`/`>` δίνουν για NaN πάντα
     `False` — άρα ένας έλεγχος ορίων του τύπου «αρνητικό ή μεγαλύτερο από το μέγιστο» δεν το πιάνει ποτέ.
     """
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:       # ακέραιος που δεν χωρά σε float (π.χ. 10**400): δεν είναι αριθμός που μπορούμε να χειριστούμε
+        return False
 
 
 # Ανώτατη αξία γραμμής τιμολογίου — ίδιο όριο με την κίνηση πελατολογικού (routes_trust.MAX_AMOUNT). Πάνω από αυτό είναι

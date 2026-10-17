@@ -123,6 +123,7 @@ def _line(client_id, **over):
 FIELDS = [
     ("expense.amount", "amount", "expenses", lambda o, v: _expense(amount=v)),
     ("expense.vat_amount", "vat_amount", "expenses", lambda o, v: _expense(vat_amount=v)),
+    ("expense.vat_deductible_pct", "vat_deductible_pct", "expenses", lambda o, v: _expense(vat_deductible_pct=v)),
     ("grammatio.reference_amount", "reference_amount", "grammatia", lambda o, v: _grammatio(reference_amount=v)),
     ("grammatio.contributions_amount", "contributions_amount", "grammatia",
      lambda o, v: _grammatio(contributions_amount=v)),

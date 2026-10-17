@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DisclaimerBanner } from "@/components/DisclaimerBanner";
@@ -16,7 +17,9 @@ export default function Vat() {
 
   const updateVatPeriod = async (value) => {
     try {
-      await axios.put(`${API}/settings`, { ...settings, vat_period: value });
+      // Μόνο το πεδίο που άλλαξε: ένα ολόκληρο PUT από τις ρυθμίσεις που φορτώθηκαν στη σελίδα θα έγραφε πάνω σε ό,τι
+      // άλλαξε στο μεταξύ (π.χ. τον πίνακα εκπτωσιμότητας ΦΠΑ).
+      await axios.patch(`${API}/settings`, { vat_period: value });
       toast.success("Η περίοδος ΦΠΑ ενημερώθηκε");
       load();
     } catch (e) {
@@ -57,6 +60,17 @@ export default function Vat() {
         <div className="lux-card p-6">
           <span className="text-xs uppercase tracking-[0.15em] font-semibold text-muted-foreground">ΦΠΑ Εισροών (Έξοδα)</span>
           <p className="font-mono text-2xl mt-2" data-testid="input-vat">{money(data.input_vat)}</p>
+          {data.input_vat_nondeductible > 0 && (
+            <p className="text-xs text-muted-foreground mt-2" data-testid="input-vat-nondeductible">
+              Εκτός του ποσού: {money(data.input_vat_nondeductible)} ΦΠΑ που δεν εκπίπτει (έχει γίνει κόστος).
+            </p>
+          )}
+          {data.input_vat_unruled > 0 && (
+            <p className="text-xs text-[hsl(var(--warning))] mt-2" data-testid="input-vat-unruled">
+              {money(data.input_vat_unruled)} εκπίπτουν 100% χωρίς να έχει οριστεί κανόνας εκπτωσιμότητας.{" "}
+              <Link to="/settings" className="underline">Ορίστε τους κανόνες στις Ρυθμίσεις</Link> με τον λογιστή σας.
+            </p>
+          )}
         </div>
         <div className="lux-card p-6 bg-destructive/5">
           <span className="text-xs uppercase tracking-[0.15em] font-semibold text-muted-foreground">ΦΠΑ προς Απόδοση</span>
