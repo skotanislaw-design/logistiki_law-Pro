@@ -282,6 +282,7 @@ class Settings(BaseDocument):
     autopilot_enabled: bool = True
     auto_email_on_issue: bool = True          # στέλνει PDF στον πελάτη μόλις εκδοθεί
     auto_reminders: bool = True               # αυτόματες υπενθυμίσεις ανείσπρακτων
+    early_risk_reminder: bool = True          # νωρίτερη υπενθύμιση όταν ο πελάτης καθυστερεί σε σχέση με το ιστορικό του
     reminder_after_days: int = 30             # πρώτη υπενθύμιση Χ ημέρες μετά την έκδοση
     reminder_interval_days: int = 15          # επόμενες υπενθυμίσεις κάθε Χ ημέρες
     reminder_max: int = 3                     # μέγιστος αριθμός υπενθυμίσεων ανά τιμολόγιο

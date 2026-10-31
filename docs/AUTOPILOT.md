@@ -42,6 +42,7 @@
 | `autopilot_enabled` | true | Γενικός διακόπτης |
 | `auto_email_on_issue` | true | Αποστολή PDF στην έκδοση |
 | `auto_reminders` | true | Αυτόματες υπενθυμίσεις |
+| `early_risk_reminder` | true | Πρώτη υπενθύμιση στον πελάτη νωρίτερα από το γενικό όριο, όταν καθυστερεί ≥14 ημέρες πέρα από το δικό του ιστορικό πληρωμών (και ειδοποίηση `payment_at_risk` στο Inbox) |
 | `reminder_after_days` / `reminder_interval_days` / `reminder_max` | 30 / 15 / 3 | Πολιτική υπενθυμίσεων |
 | `auto_mydata_retry` | true | Επανάληψη διαβίβασης |
 | `mydata_expense_sync` | true | Λήψη εξόδων από την ΑΑΔΕ |

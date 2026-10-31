@@ -283,6 +283,9 @@ async def apply_payment(firm_id: str, invoice_id, paid_via: str = "manual") -> s
     )
     if result.modified_count > 0:
         await _event(firm_id, oid, "invoice:paid", f"via {paid_via}")
+        await db.notifications.update_many(
+            firm_query(firm_id, {"dedupe_key": f"payment_at_risk:{oid}", "resolved_at": None}),
+            {"$set": {"resolved_at": _now(), "resolved_by": "autopilot", "resolution": "auto"}})
         return "paid"
     inv = await db.invoices.find_one(firm_query(firm_id, {"_id": oid}))
     if not inv:

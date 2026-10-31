@@ -637,3 +637,53 @@ async def test_stripe_webhook_retry_completes_payment_and_flags_cancelled():
     assert paid["status"] == "paid" and paid["paid_via"] == "stripe"
     assert (await db.invoices.find_one({"_id": gone.inserted_id}))["status"] == "cancelled"
     assert await db.notifications.count_documents({"type": "payment_conflict"}) == 1
+
+
+# ------------------------------------- πρώιμη υπενθύμιση για πελάτη που καθυστερεί ---
+
+async def _fast_payer_history(client_id):
+    today = date.today()
+    for i in range(3):
+        d = today - timedelta(days=200 + i * 10)
+        await db.invoices.insert_one({"firm_id": FIRM, "number": f"H{i}", "client_id": client_id, "status": "paid", "date": d.isoformat(),
+                                      "paid_at": (d + timedelta(days=7)).isoformat() + "T10:00:00+00:00", "line_items": []})
+
+
+@pytest.mark.asyncio
+async def test_client_late_vs_own_history_gets_early_reminder_and_inbox_alert():
+    settings, client_id = await _seed()
+    await _fast_payer_history(client_id)
+    # 25 ημέρες: κάτω από το γενικό όριο των 30, αλλά 18 ημέρες πέρα από το συνηθισμένο (7)
+    late = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0300", "client_id": client_id, "client_name": "Παπαδόπουλος",
+                                         "status": "issued", "total": 124.0, "date": (date.today() - timedelta(days=25)).isoformat(),
+                                         "reminder_count": 0, "line_items": []})
+    stats = await automation.job_reminders(FIRM, settings)
+    assert stats["queued"] == 1
+    note = await db.notifications.find_one({"type": "payment_at_risk"})
+    assert note and "πληρώνει συνήθως σε 7" in note["message"] and "Στέλνεται υπενθύμιση" in note["message"]
+    assert (await db.outbox.find_one({"kind": "email_reminder"}))["payload"]["to"] == "client@example.gr"
+    # δεύτερος κύκλος: ούτε νέα ειδοποίηση ούτε νέο email
+    assert (await automation.job_reminders(FIRM, settings))["queued"] == 0
+    assert await db.notifications.count_documents({"type": "payment_at_risk"}) == 1
+    # εξόφληση → η ειδοποίηση κλείνει μόνη της
+    await invoice_services.apply_payment(FIRM, late.inserted_id, "manual")
+    assert (await db.notifications.find_one({"type": "payment_at_risk"}))["resolved_at"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_client_is_not_reminded_early_and_opt_out_is_respected():
+    settings, client_id = await _seed()
+    young = {"firm_id": FIRM, "number": "N1", "client_id": client_id, "status": "issued", "date": (date.today() - timedelta(days=25)).isoformat(),
+             "reminder_count": 0, "line_items": []}
+    await db.invoices.insert_one(dict(young))
+    assert (await automation.job_reminders(FIRM, settings))["queued"] == 0
+    assert await db.notifications.count_documents({"type": "payment_at_risk"}) == 0
+
+    await _fast_payer_history(client_id)
+    off = {**settings, "early_risk_reminder": False}
+    assert (await automation.job_reminders(FIRM, off))["queued"] == 0
+    # χωρίς αυτόματες υπενθυμίσεις το γραφείο ενημερώνεται πάντα, αλλά δεν φεύγει email
+    manual = {**settings, "auto_reminders": False}
+    assert (await automation.job_reminders(FIRM, manual)) == {"skipped": True}
+    note = await db.notifications.find_one({"type": "payment_at_risk"})
+    assert note and "Εξετάστε υπενθύμιση" in note["message"]

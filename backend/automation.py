@@ -478,15 +478,38 @@ async def job_send_issued_invoices(firm_id: str, settings: dict) -> dict:
     return {"queued": queued, "skipped": skipped}
 
 
+def early_reminder_due(invoice: dict, settings: dict, forecast: dict | None) -> bool:
+    """Πρώτη υπενθύμιση νωρίτερα από το γενικό όριο, όταν ο πελάτης καθυστερεί σε σχέση
+    με το δικό του ιστορικό. Μόνο με πραγματικό ιστορικό (όχι η προεπιλογή 30 ημερών) και
+    μόνο για την πρώτη υπενθύμιση· οι επόμενες ακολουθούν το κανονικό διάστημα."""
+    if not settings.get("early_risk_reminder", True) or invoice.get("status") != "issued":
+        return False
+    if int(invoice.get("reminder_count") or 0) > 0 or not forecast:
+        return False
+    return bool(forecast["at_risk"]) and forecast["basis"] in ("client", "firm")
+
+
 async def job_reminders(firm_id: str, settings: dict) -> dict:
-    if not settings.get("auto_reminders", True):
-        return {"skipped": True}
-    if not smtp_ready(settings):
-        return {"skipped": True, "reason": "smtp"}
-    queued = skipped = 0
+    from payment_forecast import payment_delays, forecast_invoice
     today = _date.today()
+    paid = await db.invoices.find(firm_query(firm_id, {"status": "paid"})).to_list(5000)
+    by_client, firm_delays = payment_delays(paid)
+    auto = settings.get("auto_reminders", True) and smtp_ready(settings)
+    queued = skipped = 0
     async for inv in db.invoices.find(firm_query(firm_id, {"status": "issued"})):
-        if not reminder_due(inv, settings, today):
+        forecast = forecast_invoice(inv, by_client, firm_delays, today)
+        early = early_reminder_due(inv, settings, forecast)
+        if forecast and forecast["at_risk"] and forecast["basis"] in ("client", "firm"):
+            # Ενημέρωση του γραφείου ανεξάρτητα από το αν στέλνονται αυτόματα υπενθυμίσεις.
+            await notify(firm_id, "payment_at_risk", "warning",
+                         f"Το {inv.get('number')} καθυστερεί πέρα από το συνηθισμένο",
+                         f"{inv.get('client_name', '')} πληρώνει συνήθως σε {forecast['typical_delay_days']} ημέρες· "
+                         f"έχουν περάσει {forecast['days_late']} ημέρες παραπάνω. "
+                         + ("Στέλνεται υπενθύμιση στον πελάτη." if auto and early else "Εξετάστε υπενθύμιση ή επικοινωνία."),
+                         entity="invoice", entity_id=inv["_id"], dedupe_key=f"payment_at_risk:{inv['_id']}")
+        if not auto:
+            continue
+        if not (reminder_due(inv, settings, today) or early):
             skipped += 1
             continue
         client = await load_client(firm_id, inv)
@@ -503,6 +526,10 @@ async def job_reminders(firm_id: str, settings: dict) -> dict:
              "to": client["email"], "expected_reminder_count": count},
             dedupe_key=f"email_reminder:{inv['_id']}:{count}")
         queued += 1 if entry else 0
+    if not settings.get("auto_reminders", True):
+        return {"skipped": True}
+    if not smtp_ready(settings):
+        return {"skipped": True, "reason": "smtp"}
     return {"queued": queued, "not_due": skipped}
 
 
