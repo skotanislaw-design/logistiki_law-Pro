@@ -63,7 +63,7 @@ class NotificationDecisionConflict(NotificationDecisionError):
     pass
 
 JOBS = [
-    "send_issued_invoices", "reminders", "mydata_retry", "mydata_expenses", "reconcile",
+    "send_issued_invoices", "reminders", "mydata_retry", "mydata_expenses", "payables", "reconcile",
     "deadlines", "case_deadlines", "stale_drafts", "vat_periods", "inbox_receipts", "digest",
     "bank_sync", "outbox", "backup_check",
 ]
@@ -72,6 +72,7 @@ JOB_LABELS = {
     "reminders": "Υπενθυμίσεις ανείσπρακτων",
     "mydata_retry": "Διαβίβαση myDATA (επανάληψη)",
     "mydata_expenses": "Λήψη εξόδων από myDATA",
+    "payables": "Πληρωμές προς προμηθευτές",
     "reconcile": "Συμφωνία τραπεζικών κινήσεων",
     "deadlines": "Ειδοποιήσεις προθεσμιών ΦΠΑ/ΕΦΚΑ",
     "case_deadlines": "Δικάσιμοι και επόμενες ενέργειες υποθέσεων",
@@ -183,6 +184,7 @@ async def resolve_notification(firm_id: str, notification_id: str, user_email: s
             ("outbox_stuck", "outbox"): {"retry", "discard"},
             ("outbox_failed", "outbox"): {"retry", "discard"},
             ("expense_review", "expense"): {"confirm", "delete"},
+            ("expense_overdue", "expense"): {"paid", "done"},
         }
         allowed = defaults.get((n.get("type"), n.get("entity")), {"done"})
     if decision not in allowed:
@@ -272,6 +274,11 @@ async def resolve_notification(firm_id: str, notification_id: str, user_email: s
                 if not result.deleted_count:
                     raise NotificationNotFound("Το έξοδο δεν βρέθηκε")
                 outcome = "deleted"
+        elif n.get("type") == "expense_overdue" and n.get("entity") == "expense" and decision == "paid":
+            from expense_services import mark_expense_paid
+            if await mark_expense_paid(firm_id, n.get("entity_id", ""), "inbox", close_notifications=False) == "not_found":
+                raise NotificationNotFound("Το έξοδο δεν βρέθηκε")
+            outcome = "paid"
         elif decision != "done":
             raise InvalidNotificationDecision("Η ενέργεια δεν υποστηρίζεται.")
 
@@ -647,6 +654,33 @@ def _iso_day(value) -> _date | None:
         return None
 
 
+async def job_payables(firm_id: str, settings: dict) -> dict:
+    """Τιμολόγια προμηθευτών: ειδοποίηση 3 ημέρες πριν τη λήξη και όταν έχουν λήξει."""
+    today = _date.today()
+    due_soon = overdue = 0
+    async for exp in db.expenses.find(firm_query(firm_id, {"payment_status": "unpaid"})):
+        try:
+            due = _date.fromisoformat(str(exp.get("due_date") or "")[:10])
+        except ValueError:
+            continue
+        left = (due - today).days
+        eid = str(exp["_id"])
+        label = f"{_fmt(exp.get('amount', 0))} — {exp.get('vendor', '')}"
+        if left < 0:
+            if await notify(firm_id, "expense_overdue", "critical", f"Εκπρόθεσμη πληρωμή προμηθευτή: {label}",
+                            f"Έληξε στις {due.strftime('%d/%m/%Y')} ({-left} ημέρες πριν).",
+                            entity="expense", entity_id=eid, requires_action=True,
+                            actions=[{"key": "paid", "label": "Πληρώθηκε"}, {"key": "done", "label": "Εντάξει"}],
+                            dedupe_key=f"expense_overdue:{eid}"):
+                overdue += 1
+        elif left <= 3:
+            if await notify(firm_id, "expense_due", "warning", f"Λήγει σε {left} ημέρ{'α' if left == 1 else 'ες'}: {label}",
+                            f"Προθεσμία πληρωμής {due.strftime('%d/%m/%Y')}.",
+                            entity="expense", entity_id=eid, dedupe_key=f"expense_due:{eid}"):
+                due_soon += 1
+    return {"due_soon": due_soon, "overdue": overdue}
+
+
 async def job_case_deadlines(firm_id: str, settings: dict) -> dict:
     """Δικάσιμοι (πινάκια) και «επόμενη ενέργεια» υποθέσεων: προειδοποίηση πριν, και κρίσιμη
     απόφαση όταν η ημερομηνία πέρασε χωρίς να ενημερωθεί η εγγραφή. Παράλειψη δικασίμου
@@ -812,7 +846,7 @@ async def job_inbox_receipts(firm_id: str, settings: dict) -> dict:
     from storage import upload_receipt_image
     from ai_runtime import ai_ready
     attachments = await asyncio.to_thread(_fetch_unseen_attachments, settings)
-    created = review = 0
+    created = review = duplicates = 0
     for att in attachments:
         key = f"{att['message_id']}::{att['filename']}"
         if await db.inbox_processed.find_one(firm_query(firm_id, {"key": key})):
@@ -832,6 +866,15 @@ async def job_inbox_receipts(firm_id: str, settings: dict) -> dict:
             except Exception as e:
                 logger.warning("OCR failed for %s: %s", att["filename"], e)
         needs_review = parsed is None or not parsed.get("amount")
+        if parsed and parsed.get("amount") and parsed.get("date"):
+            from expense_services import find_duplicate
+            twin = await find_duplicate(firm_id, amount=float(parsed["amount"]), doc_date=parsed["date"],
+                                        vendor=parsed.get("vendor") or "")
+            if twin:
+                await db.inbox_processed.insert_one({"firm_id": firm_id, "key": key, "expense_id": str(twin["_id"]),
+                                                     "processed_at": _now(), "duplicate": True})
+                duplicates += 1
+                continue
         exp = Expense(
             firm_id=firm_id,
             vendor=(parsed or {}).get("vendor") or att["sender"][:80] or "Άγνωστος προμηθευτής",
@@ -858,7 +901,7 @@ async def job_inbox_receipts(firm_id: str, settings: dict) -> dict:
             await notify(firm_id, "expense_created", "success", f"Καταχωρήθηκε έξοδο {_fmt(exp.amount)} — {exp.vendor}",
                          f"Από email «{att['subject']}» · κατηγορία {exp.category} · ΦΠΑ {exp.vat_rate}%",
                          entity="expense", entity_id=result.inserted_id)
-    return {"created": created, "needs_review": review}
+    return {"created": created, "needs_review": review, "duplicates": duplicates}
 
 
 async def job_mydata_expenses(firm_id: str, settings: dict) -> dict:
@@ -887,13 +930,24 @@ async def job_mydata_expenses(firm_id: str, settings: dict) -> dict:
                      entity="settings", requires_action=False, dedupe_key="mydata_expense_sync_failed")
         raise
 
-    created = skipped = 0
+    created = skipped = merged = 0
     suppliers = {c.get("afm"): c.get("name") for c in await db.clients.find(firm_query(firm_id)).to_list(2000) if c.get("afm")}
     for doc in docs:
         if await db.expenses.find_one(firm_query(firm_id, {"mydata_mark": doc["mark"]})):
             skipped += 1
             continue
         vendor = doc.get("issuer_name") or suppliers.get(doc.get("issuer_afm")) or f"ΑΦΜ {doc.get('issuer_afm') or '—'}"
+        from expense_services import find_duplicate, payment_defaults
+        twin = await find_duplicate(firm_id, amount=doc["gross_value"], doc_date=doc["date"], vendor=vendor,
+                                    supplier_afm=doc.get("issuer_afm", ""), want_mydata=False)
+        if twin:
+            # Ίδιο παραστατικό με χειροκίνητο/OCR έξοδο: το εμπλουτίζουμε αντί να το διπλασιάσουμε.
+            await db.expenses.update_one(firm_query(firm_id, {"_id": twin["_id"]}), {"$set": {
+                "mydata_mark": doc["mark"], "supplier_afm": doc.get("issuer_afm", ""),
+                "mydata_invoice_type": doc.get("invoice_type", ""),
+                "amount": doc["gross_value"], "vat_amount": doc["vat_amount"], "vat_rate": doc["vat_rate"]}})
+            merged += 1
+            continue
         exp = Expense(
             firm_id=firm_id,
             vendor=vendor[:120],
@@ -910,6 +964,7 @@ async def job_mydata_expenses(firm_id: str, settings: dict) -> dict:
             mydata_invoice_type=doc.get("invoice_type", ""),
             # Τα ποσά είναι επίσημα· μόνο η κατηγορία χρειάζεται ματιά για τη φορολογική έκπτωση.
             review_status="needs_review",
+            **payment_defaults(doc.get("invoice_type", ""), doc["date"]),
         )
         result = await db.expenses.insert_one(exp.to_mongo())
         created += 1
@@ -924,7 +979,7 @@ async def job_mydata_expenses(firm_id: str, settings: dict) -> dict:
         await db.notifications.update_many(
             firm_query(firm_id, {"dedupe_key": "mydata_expense_sync_failed", "resolved_at": None}),
             {"$set": {"resolved_at": _now(), "resolved_by": "autopilot", "resolution": "auto"}})
-    return {"created": created, "already_known": skipped, "last_mark": next_mark}
+    return {"created": created, "merged": merged, "already_known": skipped, "last_mark": next_mark}
 
 
 # ---------------------------------------------------------------- digest ----
@@ -1171,6 +1226,7 @@ JOB_FUNCS = {
     "reminders": job_reminders,
     "mydata_retry": job_mydata_retry,
     "mydata_expenses": job_mydata_expenses,
+    "payables": job_payables,
     "reconcile": job_reconcile,
     "deadlines": job_deadlines,
     "case_deadlines": job_case_deadlines,

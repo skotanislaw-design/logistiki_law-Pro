@@ -124,6 +124,11 @@ class Expense(BaseDocument):
     mydata_mark: Optional[str] = None
     supplier_afm: str = ""
     mydata_invoice_type: str = ""
+    # Κατάσταση πληρωμής προς τον προμηθευτή. Παλιές εγγραφές θεωρούνται πληρωμένες.
+    payment_status: Literal["paid", "unpaid"] = "paid"
+    due_date: str = ""
+    paid_at: Optional[str] = None
+    paid_via: Optional[str] = None
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
