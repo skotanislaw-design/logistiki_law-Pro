@@ -5,6 +5,7 @@ import { useState } from "react";
 import axios, { API, money, dateFmt, errMsg } from "@/lib/api";
 import { CloudCheck, CloudSlash, FilePdf, EnvelopeSimple, BellRinging, CheckCircle, CreditCard } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { InvoiceTimeline } from "@/components/InvoiceTimeline";
 
 const STATUS_LABEL = { draft: "Πρόχειρο", issued: "Ανεξόφλητο", paid: "Πληρώθηκε", cancelled: "Ακυρώθηκε" };
 
@@ -189,9 +190,14 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }
             <>
               <CloudCheck size={18} className="text-[hsl(var(--success))]" />
               <div>
-                <div>Στάλθηκε στο myDATA <Badge variant="secondary" className="ml-1">MOCK</Badge></div>
+                <div>Στάλθηκε στο myDATA {String(invoice.mydata_mark || "").startsWith("MOCK-") && <Badge variant="secondary" className="ml-1">MOCK</Badge>}</div>
                 <p className="text-xs text-muted-foreground font-mono">MARK: {invoice.mydata_mark} · UID: {invoice.mydata_uid}</p>
               </div>
+            </>
+          ) : invoice.mydata_status === "needs_review" ? (
+            <>
+              <CloudSlash size={18} className="text-destructive" />
+              <span className="text-destructive">Η διαβίβαση διακόπηκε — ελέγξτε στην ΑΑΔΕ πριν την επαναλάβετε</span>
             </>
           ) : (
             <>
@@ -200,6 +206,8 @@ export function InvoiceDetailDialog({ invoice, open, onOpenChange, onEmailSent }
             </>
           )}
         </div>
+
+        {invoice.status !== "draft" && <InvoiceTimeline invoiceId={invoice.id} />}
       </DialogContent>
     </Dialog>
   );
