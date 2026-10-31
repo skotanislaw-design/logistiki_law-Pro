@@ -117,6 +117,9 @@ async def test_notify_dedupes_unresolved_and_resolve_reconcile(monkeypatch):
     resolved = await db.notifications.find_one({"_id": first["_id"]})
     assert resolved["resolved_by"] == "user@example.gr"
     assert resolved["resolution_status"] == "completed"
+    log = await db.audit_logs.find_one({"entity": "notification", "entity_id": str(first["_id"])})
+    assert log["action"] == "decision:reconcile_review:confirm" and log["user_email"] == "user@example.gr"
+    assert "confirmed" in log["details"]
     repeated = await resolve_notification(FIRM, str(first["_id"]), "another@example.gr", "ignore")
     assert repeated == {"resolution": "confirmed", "already_resolved": True}
     # resolved → same key may be raised again

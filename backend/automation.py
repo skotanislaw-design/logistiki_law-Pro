@@ -291,6 +291,12 @@ async def resolve_notification(firm_id: str, notification_id: str, user_email: s
         )
         if not result.modified_count:
             raise NotificationDecisionConflict("Η απόφαση άλλαξε πριν ολοκληρωθεί. Ελέγξτε την κατάσταση της ενέργειας.")
+        from audit import record as audit_record
+        await audit_record(
+            action=f"decision:{n.get('type')}:{decision}", firm_id=firm_id, entity="notification",
+            entity_id=str(oid), user_email=user_email,
+            details=f"{n.get('title', '')} → {outcome} ({n.get('entity')}:{n.get('entity_id')})",
+        )
         return {"resolution": outcome, "already_resolved": False}
     except Exception:
         await db.notifications.update_one(
