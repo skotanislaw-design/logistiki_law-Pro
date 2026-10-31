@@ -38,7 +38,7 @@ from tax_utils import generate_tax_calendar, vat_deadline_for_period_end
 from email_utils import smtp_ready, send_email_with_pdf
 from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
-    email_invoice, send_reminder, transmit_to_mydata, mark_paid, load_client, InvoiceEmailError, firm_query,
+    email_invoice, send_reminder, transmit_to_mydata, sweep_stale_mydata_claims, mark_paid, load_client, InvoiceEmailError, firm_query,
 )
 import outbox
 
@@ -508,6 +508,12 @@ async def job_reminders(firm_id: str, settings: dict) -> dict:
 async def job_mydata_retry(firm_id: str, settings: dict) -> dict:
     if not settings.get("auto_mydata_retry", True):
         return {"skipped": True}
+    for stuck in await sweep_stale_mydata_claims(firm_id):
+        await notify(firm_id, "mydata_needs_review", "critical",
+                     f"Το {stuck.get('number')}: άγνωστη κατάσταση διαβίβασης",
+                     "Η διαβίβαση διακόπηκε πριν επιβεβαιωθεί. Ελέγξτε στην ΑΑΔΕ· αν δεν υπάρχει, επαναλάβετε χειροκίνητα από το τιμολόγιο.",
+                     entity="invoice", entity_id=stuck["_id"], requires_action=True,
+                     dedupe_key=f"mydata_needs_review:{stuck['_id']}")
     if not mydata_ready(settings):
         pending = await db.invoices.count_documents(firm_query(firm_id, {"status": {"$in": ["issued", "paid"]}, "mydata_status": {"$in": ["not_sent", "pending", "failed"]}}))
         if pending:
@@ -522,6 +528,8 @@ async def job_mydata_retry(firm_id: str, settings: dict) -> dict:
         if not mydata_retry_due(inv, now):
             continue
         update = await transmit_to_mydata(firm_id, inv, settings)
+        if update.get("skipped"):
+            continue
         if update.get("mydata_status") == "synced":
             synced += 1
             await db.notifications.update_many(firm_query(firm_id, {"dedupe_key": f"mydata_failed:{inv['_id']}", "resolved_at": None}),

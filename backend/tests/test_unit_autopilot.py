@@ -501,3 +501,90 @@ def test_autopilot_covers_firms_that_never_opened_the_dashboard():
 
         loop.run_until_complete(run_autopilot_cycle())
         assert loop.run_until_complete(db.automation_runs.count_documents({"firm_id": firm})) > 0
+
+
+# ------------------------------------------- myDATA: exactly-once transmit ---
+
+LIVE = {"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456783"}
+
+
+async def _issued_invoice(**extra):
+    res = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0100", "status": "issued",
+                                        "mydata_status": "not_sent", "line_items": [], **extra})
+    return await db.invoices.find_one({"_id": res.inserted_id})
+
+
+@pytest.mark.asyncio
+async def test_concurrent_transmit_sends_once(monkeypatch):
+    settings, _ = await _seed(LIVE)
+    calls = []
+
+    async def slow_send(settings, invoice, client):
+        calls.append(1)
+        await asyncio.sleep(0.05)
+        return {"mark": "400100", "uid": "UID1"}
+
+    monkeypatch.setattr(invoice_services, "send_invoice", slow_send)
+    inv = await _issued_invoice()
+    results = await asyncio.gather(*[invoice_services.transmit_to_mydata(FIRM, inv, settings) for _ in range(4)])
+    assert len(calls) == 1
+    assert sum(1 for r in results if r.get("skipped")) == 3
+    stored = await db.invoices.find_one({"_id": inv["_id"]})
+    assert stored["mydata_status"] == "synced" and stored["mydata_mark"] == "400100"
+    assert not stored.get("mydata_claim_token")
+
+
+@pytest.mark.asyncio
+async def test_synced_invoice_is_never_resent(monkeypatch):
+    settings, _ = await _seed(LIVE)
+
+    async def boom(*a, **k):
+        raise AssertionError("must not resend")
+
+    monkeypatch.setattr(invoice_services, "send_invoice", boom)
+    inv = await _issued_invoice(mydata_status="synced", mydata_mark="400101")
+    r = await invoice_services.transmit_to_mydata(FIRM, inv, settings)
+    assert r["skipped"] and r["mydata_status"] == "synced"
+
+
+@pytest.mark.asyncio
+async def test_failed_transmit_releases_claim_and_counts_attempt(monkeypatch):
+    settings, _ = await _seed(LIVE)
+
+    async def reject(*a, **k):
+        raise invoice_services.MyDataError("ΑΦΜ άκυρο")
+
+    monkeypatch.setattr(invoice_services, "send_invoice", reject)
+    inv = await _issued_invoice()
+    r = await invoice_services.transmit_to_mydata(FIRM, inv, settings)
+    stored = await db.invoices.find_one({"_id": inv["_id"]})
+    assert r["mydata_status"] == "failed" and stored["mydata_attempts"] == 1
+    assert not stored.get("mydata_claim_token")
+
+
+@pytest.mark.asyncio
+async def test_crashed_transmit_goes_to_review_not_blind_retry(monkeypatch):
+    settings, _ = await _seed(LIVE)
+    old = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+    inv = await _issued_invoice(mydata_claim_token="dead", mydata_claim_at=old)
+
+    async def boom(*a, **k):
+        raise AssertionError("must not resend")
+
+    monkeypatch.setattr(invoice_services, "send_invoice", boom)
+    # Ενώ το claim είναι ενεργό, καμία νέα αποστολή
+    assert (await invoice_services.transmit_to_mydata(FIRM, inv, settings))["skipped"]
+
+    await automation.job_mydata_retry(FIRM, settings)
+    stored = await db.invoices.find_one({"_id": inv["_id"]})
+    assert stored["mydata_status"] == "needs_review" and not stored.get("mydata_claim_token")
+    assert await db.notifications.find_one({"dedupe_key": f"mydata_needs_review:{inv['_id']}"})
+    # Το Autopilot δεν το ξαναστέλνει· μόνο ρητή ενέργεια (force)
+    assert (await invoice_services.transmit_to_mydata(FIRM, stored, settings))["skipped"]
+
+    async def ok(*a, **k):
+        return {"mark": "400102", "uid": "UID2"}
+
+    monkeypatch.setattr(invoice_services, "send_invoice", ok)
+    r = await invoice_services.transmit_to_mydata(FIRM, stored, settings, force=True)
+    assert r["mydata_status"] == "synced"

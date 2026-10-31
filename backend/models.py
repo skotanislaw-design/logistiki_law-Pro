@@ -77,7 +77,7 @@ class Invoice(BaseDocument):
     total: float = 0
     vat_breakdown: dict = Field(default_factory=dict)
     status: Literal["draft", "issued", "paid", "cancelled"] = "draft"
-    mydata_status: Literal["not_sent", "pending", "synced", "failed", "cancelled"] = "not_sent"
+    mydata_status: Literal["not_sent", "pending", "synced", "failed", "cancelled", "needs_review"] = "not_sent"
     # Είδος παραστατικού ΑΑΔΕ· κενό = αυτόματη επιλογή βάσει πελάτη (βλ. mydata_client)
     invoice_type: str = ""
     mydata_mark: Optional[str] = None
