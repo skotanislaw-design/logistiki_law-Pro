@@ -163,10 +163,18 @@ def describe(entry: dict) -> str:
 async def resolve_stuck(firm_id: str, entry_id, decision: str) -> str:
     """Απόφαση χρήστη για μια διακοπείσα ενέργεια."""
     from bson import ObjectId
+    if decision not in ("retry", "discard"):
+        raise ValueError("Μη έγκυρη απόφαση για την ενέργεια.")
     oid = entry_id if isinstance(entry_id, ObjectId) else ObjectId(entry_id)
     entry = await db.outbox.find_one({"_id": oid, "firm_id": firm_id})
     if not entry:
         raise ValueError("Η ενέργεια δεν βρέθηκε")
+    if decision == "retry" and entry.get("status") == "pending":
+        return "requeued"
+    if decision == "discard" and entry.get("status") == "discarded":
+        return "discarded"
+    if entry.get("status") not in ("failed", "needs_review"):
+        raise ValueError("Η ενέργεια δεν βρίσκεται πλέον σε κατάσταση που απαιτεί απόφαση.")
     if decision == "retry":
         await db.outbox.update_one({"_id": oid}, {"$set": {
             "status": "pending", "next_attempt_at": _iso(_now()), "owner": None, "error": None}})

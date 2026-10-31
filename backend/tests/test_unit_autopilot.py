@@ -1,4 +1,5 @@
 """Autopilot engine tests against an in-memory database — no SMTP, no AADE, no network."""
+import asyncio
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -8,6 +9,7 @@ import invoice_services
 from automation import (
     reminder_due, mydata_retry_due, closed_vat_periods, digest_due, build_digest,
     notify, resolve_notification, run_firm, acquire_lock, release_lock, MYDATA_MAX_ATTEMPTS,
+    InvalidNotificationDecision, NotificationNotFound, NotificationDecisionConflict,
 )
 from db import db
 
@@ -109,11 +111,72 @@ async def test_notify_dedupes_unresolved_and_resolve_reconcile(monkeypatch):
 
     out = await resolve_notification(FIRM, str(first["_id"]), "user@example.gr", "confirm")
     assert out["resolution"] == "confirmed"
+    assert out["already_resolved"] is False
     assert (await db.invoices.find_one({"_id": inv.inserted_id}))["status"] == "paid"
     assert (await db.bank_transactions.find_one({"_id": tx.inserted_id}))["match_status"] == "manual_matched"
-    assert (await db.notifications.find_one({"_id": first["_id"]}))["resolved_by"] == "user@example.gr"
+    resolved = await db.notifications.find_one({"_id": first["_id"]})
+    assert resolved["resolved_by"] == "user@example.gr"
+    assert resolved["resolution_status"] == "completed"
+    repeated = await resolve_notification(FIRM, str(first["_id"]), "another@example.gr", "ignore")
+    assert repeated == {"resolution": "confirmed", "already_resolved": True}
     # resolved → same key may be raised again
     assert await notify(FIRM, "reconcile_review", "warning", "t", dedupe_key="k1", requires_action=True)
+
+
+@pytest.mark.asyncio
+async def test_notification_rejects_unoffered_action_without_closing_item():
+    await _seed()
+    note = await notify(
+        FIRM, "expense_review", "warning", "Έλεγχος εξόδου",
+        entity="expense", entity_id="000000000000000000000001",
+        requires_action=True, actions=[{"key": "confirm", "label": "Επιβεβαίωση"}],
+    )
+
+    with pytest.raises(InvalidNotificationDecision):
+        await resolve_notification(FIRM, str(note["_id"]), "user@example.gr", "delete")
+
+    stored = await db.notifications.find_one({"_id": note["_id"]})
+    assert stored.get("resolved_at") is None
+    assert stored["resolution_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_notification_does_not_close_when_entity_is_missing():
+    await _seed()
+    note = await notify(
+        FIRM, "expense_review", "warning", "Έλεγχος εξόδου",
+        entity="expense", entity_id="000000000000000000000001",
+        requires_action=True, actions=[{"key": "confirm", "label": "Επιβεβαίωση"}],
+    )
+
+    with pytest.raises(NotificationNotFound):
+        await resolve_notification(FIRM, str(note["_id"]), "user@example.gr", "confirm")
+
+    stored = await db.notifications.find_one({"_id": note["_id"]})
+    assert stored.get("resolved_at") is None
+    assert stored["resolution_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_notification_resolution_is_claimed_once():
+    await _seed()
+    note = await notify(
+        FIRM, "manual_review", "warning", "Έλεγχος",
+        requires_action=True, actions=[{"key": "done", "label": "Ολοκλήρωση"}],
+    )
+
+    results = await asyncio.gather(
+        resolve_notification(FIRM, str(note["_id"]), "first@example.gr", "done"),
+        resolve_notification(FIRM, str(note["_id"]), "second@example.gr", "done"),
+        return_exceptions=True,
+    )
+    completed = [result for result in results if isinstance(result, dict)]
+    conflicts = [result for result in results if isinstance(result, NotificationDecisionConflict)]
+    assert sum(not result["already_resolved"] for result in completed) == 1
+    assert len(completed) + len(conflicts) == 2
+    stored = await db.notifications.find_one({"_id": note["_id"]})
+    assert stored["resolution_status"] == "completed"
+    assert stored["resolved_by"] in ("first@example.gr", "second@example.gr")
 
 
 @pytest.mark.asyncio

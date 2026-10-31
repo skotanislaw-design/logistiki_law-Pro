@@ -3,7 +3,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from db import db
 from http_utils import content_disposition
@@ -12,6 +12,7 @@ from tenant import tenant_query, firm_id_for
 from models import Notification, AutomationRun, VatPeriod
 from automation import (
     JOBS, JOB_LABELS, run_autopilot_cycle, run_firm, resolve_notification, firm_snapshot, build_digest,
+    InvalidNotificationDecision, NotificationDecisionConflict, NotificationNotFound,
 )
 from email_utils import smtp_ready
 from mydata_client import mydata_ready
@@ -22,7 +23,7 @@ router = APIRouter(prefix="/automation", tags=["automation"])
 
 
 class ResolvePayload(BaseModel):
-    decision: str = "done"
+    decision: str = Field(default="done", min_length=1, max_length=50)
 
 
 class RunPayload(BaseModel):
@@ -88,8 +89,14 @@ async def list_notifications(unresolved: bool = True, limit: int = 100, user: di
 async def resolve(notification_id: str, payload: ResolvePayload, user: dict = Depends(get_current_user)):
     try:
         return await resolve_notification(firm_id_for(user), notification_id, user["email"], payload.decision)
-    except ValueError as e:
+    except InvalidNotificationDecision as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except NotificationDecisionConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except NotificationNotFound as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Αποτυχία: {e}")
 

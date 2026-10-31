@@ -117,3 +117,23 @@ def test_automation_status_reports_mydata_expense_capability(client):
     assert "mydata_expenses" in status["jobs"]
     assert status["jobs"]["mydata_expenses"]["label"] == "Λήψη εξόδων από myDATA"
     assert "expenses_from_mydata" in status["last_7_days"]
+
+
+def test_notification_resolution_rejects_unavailable_action(client):
+    user = _login(client)
+    import asyncio
+    from automation import notify
+
+    note = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+        notify(
+            user["firm_id"], "reconcile_review", "warning", "Επιβεβαίωση κίνησης",
+            entity="bank_tx", entity_id="000000000000000000000001",
+            requires_action=True, actions=[{"key": "confirm", "label": "Επιβεβαίωση"}],
+        )
+    )
+    response = client.post(
+        f"/api/automation/notifications/{note['_id']}/resolve",
+        json={"decision": "delete"},
+    )
+    assert response.status_code == 422
+    assert "δεν είναι διαθέσιμη" in response.json()["detail"]

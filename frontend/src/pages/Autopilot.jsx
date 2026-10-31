@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useAuth } from "@/context/AuthContext";
 import { Robot, CheckCircle, WarningCircle, Info, XCircle, Play, EnvelopeSimple, ArrowsClockwise, FilePdf } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -55,6 +56,8 @@ export default function Autopilot() {
   const [vatPeriods, setVatPeriods] = useState([]);
   const [settings, setSettings] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [resolvingId, setResolvingId] = useState(null);
+  const [pendingDecision, setPendingDecision] = useState(null);
   const [preview, setPreview] = useState(null);
 
   const load = useCallback(async () => {
@@ -86,12 +89,17 @@ export default function Autopilot() {
   };
 
   const resolve = async (id, decision = "done") => {
+    if (resolvingId) return;
+    setResolvingId(id);
     try {
       await axios.post(`${API}/automation/notifications/${id}/resolve`, { decision });
       setItems((prev) => prev.filter((n) => n.id !== id));
+      toast.success("Η απόφαση καταγράφηκε");
       load();
     } catch (e) {
       toast.error(errMsg(e));
+    } finally {
+      setResolvingId(null);
     }
   };
 
@@ -242,7 +250,8 @@ export default function Autopilot() {
                 <div className="flex flex-wrap gap-2 shrink-0">
                   {(n.actions?.length ? n.actions : [{ key: "done", label: "Το τακτοποίησα" }]).map((a) => (
                     <Button key={a.key} size="sm" variant={a.key === "confirm" || a.key === "done" ? "default" : "outline"}
-                      onClick={() => resolve(n.id, a.key)} data-testid={`decision-action-${a.key}`}>{a.label}</Button>
+                      disabled={Boolean(resolvingId)}
+                      onClick={() => setPendingDecision({ notification: n, action: a })} data-testid={`decision-action-${a.key}`}>{a.label}</Button>
                   ))}
                 </div>
               </div>
@@ -422,6 +431,63 @@ export default function Autopilot() {
           </div>
         </TabsContent>
       </Tabs>
+
+      <Dialog
+        open={Boolean(pendingDecision)}
+        onOpenChange={(open) => {
+          if (!open && !resolvingId) setPendingDecision(null);
+        }}
+      >
+        <DialogContent data-testid="decision-review-dialog">
+          <DialogHeader>
+            <DialogTitle>Έλεγχος απόφασης</DialogTitle>
+            <DialogDescription>
+              Η ενέργεια θα καταγραφεί στο ιστορικό του γραφείου.
+            </DialogDescription>
+          </DialogHeader>
+          {pendingDecision && (
+            <div className="space-y-3">
+              <div className="font-medium">{pendingDecision.notification.title}</div>
+              {pendingDecision.notification.message && (
+                <p className="text-sm text-muted-foreground">{pendingDecision.notification.message}</p>
+              )}
+              <div className="rounded-md border border-white/10 p-3 text-sm">
+                Επιλογή: <strong>{pendingDecision.action.label}</strong>
+              </div>
+              {pendingDecision.action.key === "delete" && (
+                <p className="text-sm text-destructive">Η διαγραφή είναι οριστική και δεν αναιρείται από το Autopilot.</p>
+              )}
+              {ENTITY_LINK[pendingDecision.notification.entity] && (
+                <Link
+                  to={ENTITY_LINK[pendingDecision.notification.entity](pendingDecision.notification)}
+                  className="text-sm underline underline-offset-4"
+                  onClick={() => setPendingDecision(null)}
+                >
+                  Έλεγχος σχετικής εγγραφής
+                </Link>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingDecision(null)} disabled={Boolean(resolvingId)}>
+              Ακύρωση
+            </Button>
+            <Button
+              variant={pendingDecision?.action.key === "delete" ? "destructive" : "default"}
+              disabled={!pendingDecision || Boolean(resolvingId)}
+              onClick={() => {
+                if (!pendingDecision) return;
+                const { notification, action } = pendingDecision;
+                setPendingDecision(null);
+                resolve(notification.id, action.key);
+              }}
+              data-testid="decision-review-confirm"
+            >
+              {resolvingId ? "Εκτελείται..." : "Επιβεβαίωση"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

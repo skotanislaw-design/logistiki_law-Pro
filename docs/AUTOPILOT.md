@@ -29,6 +29,12 @@
 3. **Καμπανάκι** — τα ίδια θέματα εμφανίζονται στο bell του topbar.
 4. **Κάρτα στο Dashboard** — «Autopilot ενεργό — N θέματα χρειάζονται την απόφασή σας».
 
+Κάθε επιλογή ανοίγει πρώτα προεπισκόπηση με το σχετικό θέμα, την περιγραφή και την εγγραφή
+που επηρεάζεται. Η ενέργεια εκτελείται μόνο μετά από ρητή επιβεβαίωση. Το API δέχεται μόνο
+τις ενέργειες που δηλώνονται στο συγκεκριμένο θέμα· διπλή ή ταυτόχρονη υποβολή δεν εκτελεί
+την ίδια απόφαση ξανά. Αν λείπει πλέον η σχετική εγγραφή ή η κατάσταση έχει αλλάξει, η
+απόφαση παραμένει ανοιχτή και επιστρέφεται σαφές σφάλμα αντί να κλείσει ως επιτυχής.
+
 ## Ρυθμίσεις (Settings model, PATCH `/api/settings`)
 
 | Πεδίο | Default | Περιγραφή |
@@ -53,7 +59,7 @@
 |---|---|---|
 | `GET /api/automation/status` | user | Κατάσταση, δυνατότητες, στατιστικά 7 ημερών, τελευταίες εκτελέσεις ανά job |
 | `GET /api/automation/notifications?unresolved=1` | user | Inbox |
-| `POST /api/automation/notifications/{id}/resolve` `{decision}` | user | Απόφαση: `done`, `confirm`, `unmatch`, `ignore`, `delete` |
+| `POST /api/automation/notifications/{id}/resolve` `{decision}` | user | Επιβεβαιωμένη, επιτρεπόμενη απόφαση ανά θέμα· `422` για μη διαθέσιμη ενέργεια, `409` για σύγκρουση |
 | `POST /api/automation/notifications/read-all` | user | Σήμανση ως αναγνωσμένα |
 | `POST /api/automation/notifications/dismiss-informational` | user | Καθαρισμός feed |
 | `POST /api/automation/run` `{jobs?}` | admin | Εκτέλεση τώρα για το γραφείο |

@@ -485,6 +485,8 @@ class Notification(BaseDocument):
     actions: List[dict] = Field(default_factory=list)   # [{key,label,payload}]
     dedupe_key: str = ""
     read: bool = False
+    resolution_status: Literal["pending", "processing", "completed"] = "pending"
+    resolution_started_at: Optional[str] = None
     resolved_at: Optional[str] = None
     resolved_by: Optional[str] = None
     resolution: Optional[str] = None

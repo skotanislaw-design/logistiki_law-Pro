@@ -24,6 +24,7 @@ import asyncio
 import base64
 import logging
 import os
+import secrets
 import socket
 from datetime import datetime, timezone, timedelta, date as _date
 from zoneinfo import ZoneInfo
@@ -43,6 +44,23 @@ import outbox
 
 logger = logging.getLogger("autopilot")
 ATHENS = ZoneInfo("Europe/Athens")
+DECISION_CLAIM_TTL = timedelta(minutes=5)
+
+
+class NotificationDecisionError(Exception):
+    """A user decision could not be applied to an inbox item."""
+
+
+class NotificationNotFound(NotificationDecisionError):
+    pass
+
+
+class InvalidNotificationDecision(NotificationDecisionError):
+    pass
+
+
+class NotificationDecisionConflict(NotificationDecisionError):
+    pass
 
 JOBS = [
     "send_issued_invoices", "reminders", "mydata_retry", "mydata_expenses", "reconcile",
@@ -143,37 +161,143 @@ async def notify(firm_id: str, type_: str, level: str, title: str, message: str 
 
 
 async def resolve_notification(firm_id: str, notification_id: str, user_email: str, decision: str = "done") -> dict:
-    """Apply the user's decision for an inbox item and close it."""
-    n = await db.notifications.find_one(firm_query(firm_id, {"_id": ObjectId(notification_id)}))
+    """Apply one allowed decision, safely claim it, then record its outcome."""
+    if not ObjectId.is_valid(notification_id):
+        raise NotificationNotFound("Η ειδοποίηση δεν βρέθηκε")
+    oid = ObjectId(notification_id)
+    n = await db.notifications.find_one(firm_query(firm_id, {"_id": oid}))
     if not n:
-        raise ValueError("Η ειδοποίηση δεν βρέθηκε")
+        raise NotificationNotFound("Η ειδοποίηση δεν βρέθηκε")
+
+    if n.get("resolved_at"):
+        return {"resolution": n.get("resolution") or "completed", "already_resolved": True}
+    if not n.get("requires_action"):
+        raise InvalidNotificationDecision("Η ειδοποίηση δεν απαιτεί απόφαση.")
+
+    allowed = {str(action.get("key")) for action in n.get("actions", []) if action.get("key")}
+    if not allowed:
+        defaults = {
+            ("reconcile_review", "bank_tx"): {"confirm", "unmatch", "ignore"},
+            ("outbox_stuck", "outbox"): {"retry", "discard"},
+            ("outbox_failed", "outbox"): {"retry", "discard"},
+            ("expense_review", "expense"): {"confirm", "delete"},
+        }
+        allowed = defaults.get((n.get("type"), n.get("entity")), {"done"})
+    if decision not in allowed:
+        raise InvalidNotificationDecision("Η ενέργεια δεν είναι διαθέσιμη για αυτή την απόφαση.")
+
+    now = datetime.now(timezone.utc)
+    claim_token = secrets.token_urlsafe(18)
+    claim = await db.notifications.update_one(
+        firm_query(firm_id, {
+            "_id": oid,
+            "requires_action": True,
+            "resolved_at": None,
+            "$or": [
+                {"resolution_status": {"$exists": False}},
+                {"resolution_status": "pending"},
+                {
+                    "resolution_status": "processing",
+                    "resolution_started_at": {"$lt": (now - DECISION_CLAIM_TTL).isoformat()},
+                },
+            ],
+        }),
+        {"$set": {
+            "resolution_status": "processing",
+            "resolution_started_at": now.isoformat(),
+            "resolution_token": claim_token,
+        }},
+    )
+    if not claim.modified_count:
+        current = await db.notifications.find_one(firm_query(firm_id, {"_id": oid}))
+        if not current:
+            raise NotificationNotFound("Η ειδοποίηση δεν βρέθηκε")
+        if current.get("resolved_at"):
+            return {"resolution": current.get("resolution") or "completed", "already_resolved": True}
+        raise NotificationDecisionConflict("Η απόφαση εκτελείται ήδη. Ανανεώστε τη λίστα και δοκιμάστε ξανά.")
+
     outcome = decision
-    if n.get("type") == "reconcile_review" and n.get("entity") == "bank_tx":
-        tx = await db.bank_transactions.find_one(firm_query(firm_id, {"_id": ObjectId(n["entity_id"])}))
-        if tx:
+    try:
+        if n.get("type") == "reconcile_review" and n.get("entity") == "bank_tx":
+            if not ObjectId.is_valid(n.get("entity_id", "")):
+                raise NotificationNotFound("Η τραπεζική κίνηση δεν βρέθηκε")
+            tx = await db.bank_transactions.find_one(firm_query(firm_id, {"_id": ObjectId(n["entity_id"])}))
+            if not tx:
+                raise NotificationNotFound("Η τραπεζική κίνηση δεν βρέθηκε")
             if decision == "confirm" and tx.get("matched_invoice_id"):
-                await mark_paid(firm_id, tx["matched_invoice_id"], paid_via="bank_manual")
-                await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"match_status": "manual_matched", "match_confidence": 100}})
-                outcome = "confirmed"
+                invoice_id = tx["matched_invoice_id"]
+                invoice = await db.invoices.find_one(firm_query(firm_id, {"_id": ObjectId(invoice_id)}))
+                if not invoice:
+                    raise NotificationNotFound("Το συνδεδεμένο τιμολόγιο δεν βρέθηκε")
+                if invoice.get("status") == "issued":
+                    await mark_paid(firm_id, invoice_id, paid_via="bank_manual")
+                    outcome = "confirmed"
+                elif invoice.get("status") == "paid":
+                    outcome = "already_paid"
+                else:
+                    raise NotificationDecisionConflict("Το τιμολόγιο δεν είναι πλέον ανεξόφλητο.")
+                await db.bank_transactions.update_one(
+                    firm_query(firm_id, {"_id": tx["_id"]}),
+                    {"$set": {"match_status": "manual_matched", "match_confidence": 100}},
+                )
             elif decision == "ignore":
-                await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"match_status": "ignored", "matched_invoice_id": None, "matched_invoice_number": None}})
+                await db.bank_transactions.update_one(
+                    firm_query(firm_id, {"_id": tx["_id"]}),
+                    {"$set": {"match_status": "ignored", "matched_invoice_id": None, "matched_invoice_number": None}},
+                )
                 outcome = "ignored"
             elif decision == "unmatch":
-                await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"match_status": "unmatched", "matched_invoice_id": None, "matched_invoice_number": None, "match_confidence": 0}})
+                await db.bank_transactions.update_one(
+                    firm_query(firm_id, {"_id": tx["_id"]}),
+                    {"$set": {"match_status": "unmatched", "matched_invoice_id": None, "matched_invoice_number": None, "match_confidence": 0}},
+                )
                 outcome = "unmatched"
-    elif n.get("entity") == "outbox" and n.get("type") in ("outbox_stuck", "outbox_failed"):
-        outcome = await outbox.resolve_stuck(firm_id, n["entity_id"], decision)
-    elif n.get("type") == "expense_review" and n.get("entity") == "expense" and decision == "confirm":
-        await db.expenses.update_one(firm_query(firm_id, {"_id": ObjectId(n["entity_id"])}), {"$set": {"review_status": "ok"}})
-        outcome = "confirmed"
-    elif n.get("type") == "expense_review" and n.get("entity") == "expense" and decision == "delete":
-        await db.expenses.delete_one(firm_query(firm_id, {"_id": ObjectId(n["entity_id"])}))
-        outcome = "deleted"
-    await db.notifications.update_one(
-        {"_id": n["_id"]},
-        {"$set": {"resolved_at": _now(), "resolved_by": user_email, "resolution": outcome, "read": True}},
-    )
-    return {"resolution": outcome}
+            else:
+                raise NotificationDecisionConflict("Η τραπεζική κίνηση δεν έχει πλέον προτεινόμενο τιμολόγιο.")
+        elif n.get("entity") == "outbox" and n.get("type") in ("outbox_stuck", "outbox_failed"):
+            outcome = await outbox.resolve_stuck(firm_id, n["entity_id"], decision)
+        elif n.get("type") == "expense_review" and n.get("entity") == "expense":
+            if not ObjectId.is_valid(n.get("entity_id", "")):
+                raise NotificationNotFound("Το έξοδο δεν βρέθηκε")
+            expense_query = firm_query(firm_id, {"_id": ObjectId(n["entity_id"])})
+            if decision == "confirm":
+                result = await db.expenses.update_one(expense_query, {"$set": {"review_status": "ok"}})
+                if not result.matched_count:
+                    raise NotificationNotFound("Το έξοδο δεν βρέθηκε")
+                outcome = "confirmed"
+            elif decision == "delete":
+                result = await db.expenses.delete_one(expense_query)
+                if not result.deleted_count:
+                    raise NotificationNotFound("Το έξοδο δεν βρέθηκε")
+                outcome = "deleted"
+        elif decision != "done":
+            raise InvalidNotificationDecision("Η ενέργεια δεν υποστηρίζεται.")
+
+        completed_at = _now()
+        result = await db.notifications.update_one(
+            firm_query(firm_id, {
+                "_id": oid,
+                "resolution_status": "processing",
+                "resolution_token": claim_token,
+                "resolved_at": None,
+            }),
+            {"$set": {
+                "resolution_status": "completed",
+                "resolved_at": completed_at,
+                "resolved_by": user_email,
+                "resolution": outcome,
+                "read": True,
+            }, "$unset": {"resolution_token": "", "resolution_started_at": ""}},
+        )
+        if not result.modified_count:
+            raise NotificationDecisionConflict("Η απόφαση άλλαξε πριν ολοκληρωθεί. Ελέγξτε την κατάσταση της ενέργειας.")
+        return {"resolution": outcome, "already_resolved": False}
+    except Exception:
+        await db.notifications.update_one(
+            firm_query(firm_id, {"_id": oid, "resolution_token": claim_token}),
+            {"$set": {"resolution_status": "pending"}, "$unset": {"resolution_token": "", "resolution_started_at": ""}},
+        )
+        raise
 
 
 # ----------------------------------------------------------------- locking --
