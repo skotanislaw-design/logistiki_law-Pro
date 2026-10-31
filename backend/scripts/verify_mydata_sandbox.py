@@ -90,16 +90,26 @@ async def run(args) -> Report:
         "income_classification_category": args.classification_category,
         "withholding_enabled": True,
         "withholding_min_net": 0,
-        "withholding_rate": md.WITHHOLDING_RATE_FREELANCER,
+        "withholding_rate": args.withholding_rate,
+        "withholding_category": args.withholding_category,
     }
     company = {"name": "Δοκιμαστική ΑΕ", "afm": args.counterpart_afm, "client_type": "company"}
     individual = {"name": "Δοκιμαστικός Ιδιώτης", "client_type": "individual"}
     today = date.today().isoformat()
     stamp = date.today().strftime("%m%d")
 
-    print(f"\n{YELLOW}Περιβάλλον:{RESET} {settings['aade_environment']}  ·  ΑΦΜ {args.afm}\n")
+    if args.entity_afm:
+        settings["aade_entity_vat_number"] = args.entity_afm
 
-    print("1. Διαπιστευτήρια")
+    print(f"\n{YELLOW}Περιβάλλον:{RESET} {settings['aade_environment']}  ·  ΑΦΜ {args.afm}"
+          + (f"  ·  για λογαριασμό {args.entity_afm}" if args.entity_afm else "") + "\n")
+
+    print("0. Ρυθμίσεις")
+    mismatch = md.withholding_mismatch(settings)
+    report.add("Κατηγορία/συντελεστής παρακράτησης (πίν. 8.4)", mismatch is None, mismatch or
+               f"κατηγορία {settings['withholding_category']} @ {settings['withholding_rate']:.0%}")
+
+    print("\n1. Διαπιστευτήρια")
     try:
         await md.validate_credentials(settings)
         report.add("Σύνδεση με την ΑΑΔΕ", True)
@@ -130,8 +140,8 @@ async def run(args) -> Report:
     except md.MyDataError as e:
         report.add("Παρακράτηση 20%: σύνθεση", False, str(e))
     if xml:
-        expected = "<totalWithheldAmount>200.00</totalWithheldAmount>"
-        report.add("Παρακράτηση 20% στο XML", expected in xml,
+        expected = f"<totalWithheldAmount>{1000 * args.withholding_rate:.2f}</totalWithheldAmount>"
+        report.add(f"Παρακράτηση {args.withholding_rate:.0%} στο XML", expected in xml,
                    "βρέθηκε" if expected in xml else "λείπει το totalWithheldAmount")
         mark_withheld = await _send(settings, withheld, company, report, "ΤΠΥ με παρακράτηση")
         if mark_withheld:
@@ -187,6 +197,12 @@ def main():
                         help="ΑΦΜ δοκιμαστικού πελάτη-επιχείρησης (προεπιλογή: έγκυρο ψηφίο ελέγχου, placeholder)")
     parser.add_argument("--classification-type", default="E3_561_001")
     parser.add_argument("--classification-category", default="category1_3")
+    parser.add_argument("--entity-afm", help="ΑΦΜ οντότητας για λογαριασμό της οποίας διαβιβάζουμε "
+                                             "(μόνο για λογιστή/λογιστικό γραφείο ή εκπρόσωπο Ν.Π.)")
+    parser.add_argument("--withholding-category", default=md.WITHHOLDING_CATEGORY_SERVICES,
+                        help="Κατηγορία παρακράτησης, πίνακας 8.4 ΑΑΔΕ (default 3 = Αμοιβές Συμβουλών 20%%)")
+    parser.add_argument("--withholding-rate", type=float, default=md.WITHHOLDING_RATE_FREELANCER,
+                        help="Συντελεστής παρακράτησης, π.χ. 0.15 για δικηγόρους (κατηγορία 10)")
     parser.add_argument("--production", action="store_true", help="Πραγματικό περιβάλλον (δημιουργεί αληθινά παραστατικά!)")
     parser.add_argument("--skip-cancel", action="store_true")
     parser.add_argument("--json", help="Αρχείο αποθήκευσης αναφοράς")

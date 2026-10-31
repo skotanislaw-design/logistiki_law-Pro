@@ -14,7 +14,7 @@ from automation import (
     JOBS, JOB_LABELS, run_autopilot_cycle, run_firm, resolve_notification, firm_snapshot, build_digest,
 )
 from email_utils import smtp_ready
-from mydata_client import mydata_ready
+from mydata_client import mydata_ready, withholding_mismatch
 from ai_runtime import ai_ready
 from outbox import stats as outbox_stats
 
@@ -68,6 +68,9 @@ async def automation_status(user: dict = Depends(get_current_user)):
             "openbanking": bool(settings.get("openbanking_enabled") and (settings.get("gocardless_account_ids") or [])),
             "stripe": bool(__import__("os").environ.get("STRIPE_SECRET_KEY", "").startswith("sk_")),
         },
+        # Προειδοποιήσεις ρύθμισης: δεν μπλοκάρουν τίποτα, αλλά το λάθος που περιγράφουν
+        # το δέχεται η ΑΑΔΕ σιωπηλά και φαίνεται μόνο σε έλεγχο.
+        "config_warnings": [w for w in (withholding_mismatch(settings),) if w],
         "jobs": last_runs,
         "last_7_days": week,
         "outbox": await outbox_stats(firm_id),

@@ -252,15 +252,23 @@ class Settings(BaseDocument):
     aade_user_id: str = ""
     aade_subscription_key: str = ""
     aade_environment: Literal["sandbox", "production"] = "sandbox"
+    # ΑΦΜ οντότητας για λογαριασμό της οποίας διαβιβάζουμε (§4.2.5-4.2.7 ΑΑΔΕ v1.0.10).
+    # Κενό = διαβιβάζουμε για τον ΑΦΜ της δικής μας εγγραφής, που είναι η συνήθης
+    # περίπτωση. Συμπληρώνεται μόνο από λογιστή/λογιστικό γραφείο ή εκπρόσωπο Ν.Π.
+    aade_entity_vat_number: str = ""
     mydata_connected: bool = False
     # Κωδικοί χαρακτηρισμού εσόδων (πίνακες ΑΑΔΕ — επαληθεύστε στο sandbox)
     income_classification_type: str = "E3_561_001"
     income_classification_category: str = "category1_3"
-    # Παρακράτηση φόρου αμοιβών ελεύθερων επαγγελματιών
+    # Παρακράτηση φόρου αμοιβών ελεύθερων επαγγελματιών.
+    # Η κατηγορία είναι του πίνακα 8.4 της ΑΑΔΕ και πρέπει να συμφωνεί με τον
+    # συντελεστή: «3» = Αμοιβές Συμβουλών Διοίκησης 20%. Το παλιό default «2» ήταν
+    # «Δικαιώματα» (royalties), που δεν αφορά αμοιβές υπηρεσιών — λάθος που το myDATA
+    # δέχεται σιωπηλά. Για προκαταβλητέο φόρο δικηγόρων: κατηγορία «10» με rate 0.15.
     withholding_enabled: bool = False
     withholding_rate: float = 0.20
     withholding_min_net: float = 300.0
-    withholding_category: str = "2"
+    withholding_category: str = "3"
     # Αυτόματη λήψη εξόδων από το myDATA (παραστατικά προμηθευτών)
     mydata_expense_sync: bool = True
     mydata_expense_last_mark: str = "0"

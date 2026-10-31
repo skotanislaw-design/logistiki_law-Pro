@@ -212,6 +212,20 @@ export default function Autopilot() {
         )}
       </div>
 
+      {(status.config_warnings || []).length > 0 && (
+        <div className="lux-card p-5 space-y-2 border-[hsl(var(--warning))]/40" data-testid="autopilot-config-warnings">
+          <h3 className="font-heading text-sm font-medium flex items-center gap-2">
+            <WarningCircle size={18} className="text-[hsl(var(--warning))]" /> Έλεγχος ρυθμίσεων ΑΑΔΕ
+          </h3>
+          {status.config_warnings.map((w, i) => (
+            <p key={i} className="text-sm text-muted-foreground">{w}</p>
+          ))}
+          <Link to="/settings" className="text-xs text-[hsl(var(--gold))] underline underline-offset-4">
+            Διόρθωση στις Ρυθμίσεις →
+          </Link>
+        </div>
+      )}
+
       <Tabs defaultValue="decisions">
         <TabsList>
           <TabsTrigger value="decisions" data-testid="tab-decisions">Χρειάζονται απόφαση ({decisions.length})</TabsTrigger>
