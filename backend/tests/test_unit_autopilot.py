@@ -588,3 +588,52 @@ async def test_crashed_transmit_goes_to_review_not_blind_retry(monkeypatch):
     monkeypatch.setattr(invoice_services, "send_invoice", ok)
     r = await invoice_services.transmit_to_mydata(FIRM, stored, settings, force=True)
     assert r["mydata_status"] == "synced"
+
+
+# ------------------------------------------- είσπραξη: δεν εξοφλεί ό,τι δεν ισχύει ---
+
+@pytest.mark.asyncio
+async def test_bank_match_on_cancelled_invoice_is_not_confirmed():
+    settings, client_id = await _seed()
+    inv = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0200", "client_id": client_id,
+                                        "status": "cancelled", "total": 124.0, "line_items": []})
+    tx = await db.bank_transactions.insert_one({"firm_id": FIRM, "amount": 124.0, "date": "2026-08-03", "description": "x",
+                                                "match_status": "auto_matched", "match_confidence": 99,
+                                                "matched_invoice_id": str(inv.inserted_id), "matched_invoice_number": "ΤΠΥ-2026-0200"})
+    for _ in range(2):  # η δεύτερη εκτέλεση δεν διπλογράφει ειδοποίηση
+        stats = await automation.job_reconcile(FIRM, settings)
+    assert stats["confirmed"] == 0
+    stored = await db.bank_transactions.find_one({"_id": tx.inserted_id})
+    assert stored["match_status"] == "auto_matched"
+    assert (await db.invoices.find_one({"_id": inv.inserted_id}))["status"] == "cancelled"
+    notes = await db.notifications.find({"type": "reconcile_conflict"}).to_list(10)
+    assert len(notes) == 1 and [a["key"] for a in notes[0]["actions"]] == ["unmatch", "ignore"]
+
+
+@pytest.mark.asyncio
+async def test_apply_payment_outcomes():
+    for status, expected in (("issued", "paid"), ("paid", "already_paid"), ("cancelled", "not_payable"), ("draft", "not_payable")):
+        res = await db.invoices.insert_one({"firm_id": FIRM, "status": status, "line_items": []})
+        assert await invoice_services.apply_payment(FIRM, res.inserted_id, "test") == expected
+    assert await invoice_services.apply_payment(FIRM, "not-an-id") == "not_found"
+    other = await db.invoices.insert_one({"firm_id": "other-firm", "status": "issued", "line_items": []})
+    assert await invoice_services.apply_payment(FIRM, other.inserted_id) == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_stripe_webhook_retry_completes_payment_and_flags_cancelled():
+    import routes_payments
+    ok = await db.invoices.insert_one({"firm_id": FIRM, "status": "issued", "line_items": []})
+    gone = await db.invoices.insert_one({"firm_id": FIRM, "status": "cancelled", "line_items": []})
+    for sid, inv in (("cs_ok", ok), ("cs_gone", gone)):
+        await db.payment_transactions.insert_one({"firm_id": FIRM, "session_id": sid, "invoice_id": str(inv.inserted_id),
+                                                  "payment_status": "initiated", "amount": 124.0})
+    # Η συναλλαγή είχε ήδη σημειωθεί paid αλλά το τιμολόγιο όχι (κρασάρισμα): η επανάληψη το διορθώνει
+    await db.payment_transactions.update_one({"session_id": "cs_ok"}, {"$set": {"payment_status": "paid"}})
+    await routes_payments._mark_paid("cs_ok", "pi_1")
+    await routes_payments._mark_paid("cs_gone", "pi_2")
+    await routes_payments._mark_paid("cs_gone", "pi_2")
+    paid = await db.invoices.find_one({"_id": ok.inserted_id})
+    assert paid["status"] == "paid" and paid["paid_via"] == "stripe"
+    assert (await db.invoices.find_one({"_id": gone.inserted_id}))["status"] == "cancelled"
+    assert await db.notifications.count_documents({"type": "payment_conflict"}) == 1

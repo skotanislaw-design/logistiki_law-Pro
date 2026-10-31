@@ -256,14 +256,31 @@ async def send_reminder(firm_id: str, invoice: dict, settings: dict, client: dic
     return {"reminder_sent_at": _now(), "payment_link": payment_link}
 
 
-async def mark_paid(firm_id: str, invoice_id, paid_via: str = "manual") -> bool:
-    """Idempotent: returns True only if the invoice transitioned issued → paid."""
-    oid = invoice_id if isinstance(invoice_id, ObjectId) else ObjectId(invoice_id)
+async def apply_payment(firm_id: str, invoice_id, paid_via: str = "manual") -> str:
+    """Idempotent εξόφληση. Επιστρέφει ``paid`` | ``already_paid`` | ``not_payable`` | ``not_found``.
+
+    ``not_payable`` = πρόχειρο ή ακυρωμένο τιμολόγιο: ένα ποσό που εισπράχθηκε δεν πρέπει
+    ποτέ να «εξοφλεί» σιωπηλά παραστατικό που δεν ισχύει — χρειάζεται ανθρώπινη απόφαση.
+    """
+    try:
+        oid = invoice_id if isinstance(invoice_id, ObjectId) else ObjectId(invoice_id)
+    except Exception:
+        return "not_found"
     result = await db.invoices.update_one(
         firm_query(firm_id, {"_id": oid, "status": "issued"}),
         {"$set": {"status": "paid", "paid_at": _now(), "paid_via": paid_via}},
     )
-    return result.modified_count > 0
+    if result.modified_count > 0:
+        return "paid"
+    inv = await db.invoices.find_one(firm_query(firm_id, {"_id": oid}))
+    if not inv:
+        return "not_found"
+    return "already_paid" if inv.get("status") == "paid" else "not_payable"
+
+
+async def mark_paid(firm_id: str, invoice_id, paid_via: str = "manual") -> bool:
+    """Idempotent: returns True only if the invoice transitioned issued → paid."""
+    return await apply_payment(firm_id, invoice_id, paid_via) == "paid"
 
 
 # ------------------------------------------------- cancellation / credit ----

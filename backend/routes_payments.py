@@ -159,19 +159,22 @@ async def _mark_paid(session_id: str, payment_intent_id: str = None):
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }},
     )
-    if result.modified_count > 0:
-        tx = await db.payment_transactions.find_one({"session_id": session_id})
-        if tx and tx.get("invoice_id"):
-            try:
-                await db.invoices.update_one(
-                    {"_id": ObjectId(tx["invoice_id"]), "firm_id": tx.get("firm_id", "legacy-default-firm"), "status": {"$ne": "paid"}},
-                    {"$set": {
-                        "status": "paid",
-                        "paid_at": datetime.now(timezone.utc).isoformat(),
-                    }},
-                )
-            except Exception:
-                pass
+    # Η εξόφληση του τιμολογίου εφαρμόζεται και σε επανάληψη του webhook: αν η πρώτη
+    # προσπάθεια έσκασε μετά τη σήμανση της συναλλαγής, αλλιώς δεν θα ξαναδοκιμαζόταν ποτέ.
+    tx = await db.payment_transactions.find_one({"session_id": session_id, "payment_status": "paid"})
+    if not tx or not tx.get("invoice_id"):
+        return
+    from invoice_services import apply_payment
+    firm_id = tx.get("firm_id", "legacy-default-firm")
+    outcome = await apply_payment(firm_id, tx["invoice_id"], paid_via="stripe")
+    if outcome in ("not_payable", "not_found"):
+        from automation import notify
+        await notify(firm_id, "payment_conflict", "critical",
+                     f"Πληρωμή Stripe για μη εξοφλήσιμο τιμολόγιο {tx.get('invoice_number', '')}",
+                     f"Εισπράχθηκαν {tx.get('amount', 0):.2f}€ αλλά το τιμολόγιο είναι ακυρωμένο, πρόχειρο ή δεν υπάρχει. "
+                     "Ελέγξτε και, αν χρειάζεται, επιστρέψτε το ποσό από το Stripe.",
+                     entity="invoice", entity_id=tx["invoice_id"], requires_action=True,
+                     dedupe_key=f"payment_conflict:{session_id}")
 
 
 @public_router.post("/api/stripe/webhook")

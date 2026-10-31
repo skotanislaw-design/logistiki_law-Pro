@@ -38,7 +38,7 @@ from tax_utils import generate_tax_calendar, vat_deadline_for_period_end
 from email_utils import smtp_ready, send_email_with_pdf
 from mydata_client import mydata_ready, request_docs, MyDataError
 from invoice_services import (
-    email_invoice, send_reminder, transmit_to_mydata, sweep_stale_mydata_claims, mark_paid, load_client, InvoiceEmailError, firm_query,
+    email_invoice, send_reminder, transmit_to_mydata, sweep_stale_mydata_claims, mark_paid, apply_payment, load_client, InvoiceEmailError, firm_query,
 )
 import outbox
 
@@ -178,6 +178,7 @@ async def resolve_notification(firm_id: str, notification_id: str, user_email: s
     if not allowed:
         defaults = {
             ("reconcile_review", "bank_tx"): {"confirm", "unmatch", "ignore"},
+            ("reconcile_conflict", "bank_tx"): {"unmatch", "ignore"},
             ("outbox_stuck", "outbox"): {"retry", "discard"},
             ("outbox_failed", "outbox"): {"retry", "discard"},
             ("expense_review", "expense"): {"confirm", "delete"},
@@ -557,7 +558,20 @@ async def job_reconcile(firm_id: str, settings: dict) -> dict:
         if not inv_id:
             continue
         if threshold and int(tx.get("match_confidence") or 0) >= threshold:
-            paid = await mark_paid(firm_id, inv_id, paid_via="bank_auto")
+            outcome = await apply_payment(firm_id, inv_id, paid_via="bank_auto")
+            if outcome in ("not_payable", "not_found"):
+                if not tx.get("conflict_notified"):
+                    await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"conflict_notified": True}})
+                    review += 1
+                    await notify(firm_id, "reconcile_conflict", "critical",
+                                 f"Κατάθεση {_fmt(tx.get('amount'))} για μη εξοφλήσιμο τιμολόγιο {tx.get('matched_invoice_number')}",
+                                 f"{tx.get('date')} — «{(tx.get('description') or '')[:80]}». Το τιμολόγιο είναι ακυρωμένο, πρόχειρο ή δεν υπάρχει· "
+                                 "η κατάθεση δεν εξόφλησε τίποτα. Αντιστοιχίστε την σε άλλο τιμολόγιο ή αγνοήστε την.",
+                                 entity="bank_tx", entity_id=tx["_id"], requires_action=True,
+                                 actions=[{"key": "unmatch", "label": "Άλλο τιμολόγιο"}, {"key": "ignore", "label": "Αγνόησε την κίνηση"}],
+                                 dedupe_key=f"reconcile_conflict:{tx['_id']}")
+                continue
+            paid = outcome == "paid"
             await db.bank_transactions.update_one({"_id": tx["_id"]}, {"$set": {"match_status": "auto_confirmed", "confirmed_at": _now()}})
             confirmed += 1
             await notify(firm_id, "reconciled", "success", f"Εξοφλήθηκε το {tx.get('matched_invoice_number')}",
