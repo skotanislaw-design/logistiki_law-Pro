@@ -64,7 +64,7 @@ class NotificationDecisionConflict(NotificationDecisionError):
 
 JOBS = [
     "send_issued_invoices", "reminders", "mydata_retry", "mydata_expenses", "reconcile",
-    "deadlines", "stale_drafts", "vat_periods", "inbox_receipts", "digest",
+    "deadlines", "case_deadlines", "stale_drafts", "vat_periods", "inbox_receipts", "digest",
     "bank_sync", "outbox", "backup_check",
 ]
 JOB_LABELS = {
@@ -74,6 +74,7 @@ JOB_LABELS = {
     "mydata_expenses": "Λήψη εξόδων από myDATA",
     "reconcile": "Συμφωνία τραπεζικών κινήσεων",
     "deadlines": "Ειδοποιήσεις προθεσμιών ΦΠΑ/ΕΦΚΑ",
+    "case_deadlines": "Δικάσιμοι και επόμενες ενέργειες υποθέσεων",
     "stale_drafts": "Ξεχασμένα πρόχειρα τιμολόγια",
     "vat_periods": "Κλείσιμο περιόδου ΦΠΑ",
     "inbox_receipts": "Παραστατικά από email (OCR)",
@@ -639,6 +640,63 @@ async def job_deadlines(firm_id: str, settings: dict) -> dict:
     return {"raised": raised}
 
 
+def _iso_day(value) -> _date | None:
+    try:
+        return _date.fromisoformat(str(value or "")[:10])
+    except ValueError:
+        return None
+
+
+async def job_case_deadlines(firm_id: str, settings: dict) -> dict:
+    """Δικάσιμοι (πινάκια) και «επόμενη ενέργεια» υποθέσεων: προειδοποίηση πριν, και κρίσιμη
+    απόφαση όταν η ημερομηνία πέρασε χωρίς να ενημερωθεί η εγγραφή. Παράλειψη δικασίμου
+    είναι το ακριβότερο λάθος ενός γραφείου — δεν πρέπει να εξαρτάται από τη μνήμη."""
+    today = _date.today()
+    alert_days = settings.get("deadline_alert_days") or [7, 1]
+    raised = overdue = 0
+
+    async def upcoming(kind, title, when, due, entity, entity_id, detail):
+        nonlocal raised
+        left = (due - today).days
+        if left in alert_days:
+            created = await notify(
+                firm_id, kind, "critical" if left <= 1 else "warning",
+                f"{title} σε {left} ημέρ{'α' if left == 1 else 'ες'} ({due.strftime('%d/%m/%Y')}{when})", detail,
+                entity=entity, entity_id=entity_id, dedupe_key=f"{kind}:{entity_id}:{due.isoformat()}:{left}")
+            raised += 1 if created else 0
+
+    async for h in db.hearings.find(firm_query(firm_id, {"status": {"$in": ["scheduled", "in_progress", "interrupted"]}})):
+        due = _iso_day(h.get("date"))
+        if not due:
+            continue
+        where = f"{h.get('court', '')}" + (f", αίθουσα {h['room']}" if h.get("room") else "")
+        detail = f"{h.get('case_title', '')} — {where} — πινάκιο {h.get('pinakio_number', '')}".strip(" —")
+        when = f" {h['time']}" if h.get("time") else ""
+        await upcoming("hearing_upcoming", "Δικάσιμος", when, due, "hearing", h["_id"], detail)
+        if due < today:
+            created = await notify(
+                firm_id, "hearing_overdue", "critical", f"Η δικάσιμος της {due.strftime('%d/%m/%Y')} δεν έχει ενημερωθεί",
+                f"{detail}. Καταχωρήστε το αποτέλεσμα ή τη νέα ημερομηνία.",
+                entity="hearing", entity_id=h["_id"], requires_action=True,
+                dedupe_key=f"hearing_overdue:{h['_id']}:{due.isoformat()}")
+            overdue += 1 if created else 0
+
+    async for c in db.cases.find(firm_query(firm_id, {"status": {"$in": ["active", "pending"]}, "next_action_date": {"$nin": [None, ""]}})):
+        due = _iso_day(c.get("next_action_date"))
+        if not due:
+            continue
+        detail = f"{c.get('title', '')} — {c.get('next_action') or 'επόμενη ενέργεια'}"
+        await upcoming("case_action_upcoming", "Επόμενη ενέργεια υπόθεσης", "", due, "case", c["_id"], detail)
+        if due < today:
+            created = await notify(
+                firm_id, "case_action_overdue", "warning", f"Εκπρόθεσμη ενέργεια υπόθεσης ({due.strftime('%d/%m/%Y')})",
+                f"{detail}. Ολοκληρώστε την ή ορίστε νέα ημερομηνία.",
+                entity="case", entity_id=c["_id"], requires_action=True,
+                dedupe_key=f"case_action_overdue:{c['_id']}:{due.isoformat()}")
+            overdue += 1 if created else 0
+    return {"raised": raised, "overdue": overdue}
+
+
 async def job_stale_drafts(firm_id: str, settings: dict) -> dict:
     days = int(settings.get("stale_draft_days", 7) or 0)
     if days <= 0:
@@ -1115,6 +1173,7 @@ JOB_FUNCS = {
     "mydata_expenses": job_mydata_expenses,
     "reconcile": job_reconcile,
     "deadlines": job_deadlines,
+    "case_deadlines": job_case_deadlines,
     "stale_drafts": job_stale_drafts,
     "vat_periods": job_vat_periods,
     "inbox_receipts": job_inbox_receipts,

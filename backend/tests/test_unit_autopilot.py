@@ -687,3 +687,42 @@ async def test_unknown_client_is_not_reminded_early_and_opt_out_is_respected():
     assert (await automation.job_reminders(FIRM, manual)) == {"skipped": True}
     note = await db.notifications.find_one({"type": "payment_at_risk"})
     assert note and "Εξετάστε υπενθύμιση" in note["message"]
+
+
+# ------------------------------------------------ δικάσιμοι και προθεσμίες υποθέσεων ---
+
+@pytest.mark.asyncio
+async def test_case_deadlines_warn_before_and_escalate_when_overdue():
+    today = date.today()
+    iso = lambda n: (today + timedelta(days=n)).isoformat()
+    h7 = await db.hearings.insert_one({"firm_id": FIRM, "court": "Πρωτοδικείο Αθηνών", "room": "Α1", "date": iso(7), "time": "09:00",
+                                       "pinakio_number": 12, "case_title": "Α ν. Β", "status": "scheduled"})
+    h1 = await db.hearings.insert_one({"firm_id": FIRM, "court": "Ειρηνοδικείο", "date": iso(1), "pinakio_number": 3, "status": "interrupted"})
+    await db.hearings.insert_one({"firm_id": FIRM, "court": "Εφετείο", "date": iso(3), "pinakio_number": 1, "status": "scheduled"})  # εκτός ορίων ειδοποίησης
+    await db.hearings.insert_one({"firm_id": FIRM, "court": "Άλλο", "date": iso(1), "pinakio_number": 2, "status": "completed"})
+    old = await db.hearings.insert_one({"firm_id": FIRM, "court": "Μονομελές", "date": iso(-2), "pinakio_number": 9, "status": "scheduled"})
+    await db.hearings.insert_one({"firm_id": "other-firm", "court": "Ξένο", "date": iso(1), "pinakio_number": 1, "status": "scheduled"})
+    case = await db.cases.insert_one({"firm_id": FIRM, "title": "Υπόθεση Γ", "status": "active", "next_action": "Κατάθεση προτάσεων", "next_action_date": iso(-5)})
+    await db.cases.insert_one({"firm_id": FIRM, "title": "Αρχειοθετημένη", "status": "archived", "next_action_date": iso(-9)})
+
+    stats = await automation.job_case_deadlines(FIRM, BASE_SETTINGS)
+    assert stats == {"raised": 2, "overdue": 2}
+    by = {n["entity_id"]: n for n in await db.notifications.find({"firm_id": FIRM}).to_list(50)}
+    assert by[str(h7.inserted_id)]["level"] == "warning" and "09:00" in by[str(h7.inserted_id)]["title"]
+    assert "αίθουσα Α1" in by[str(h7.inserted_id)]["message"]
+    assert by[str(h1.inserted_id)]["level"] == "critical"
+    assert by[str(old.inserted_id)]["requires_action"] and by[str(old.inserted_id)]["type"] == "hearing_overdue"
+    assert by[str(case.inserted_id)]["type"] == "case_action_overdue"
+    assert len(by) == 4
+
+    # δεύτερος κύκλος: κανένα διπλότυπο
+    assert await automation.job_case_deadlines(FIRM, BASE_SETTINGS) == {"raised": 0, "overdue": 0}
+    assert await db.notifications.count_documents({"firm_id": FIRM}) == 4
+
+
+@pytest.mark.asyncio
+async def test_case_deadlines_ignore_bad_dates_and_run_in_cycle():
+    await db.hearings.insert_one({"firm_id": FIRM, "court": "Χ", "date": "αύριο", "pinakio_number": 1, "status": "scheduled"})
+    await db.cases.insert_one({"firm_id": FIRM, "title": "Y", "status": "active", "next_action_date": "??"})
+    assert await automation.job_case_deadlines(FIRM, BASE_SETTINGS) == {"raised": 0, "overdue": 0}
+    assert "case_deadlines" in automation.JOBS and "case_deadlines" in automation.JOB_LABELS
