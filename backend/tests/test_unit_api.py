@@ -155,3 +155,29 @@ def test_invoice_timeline_tells_the_story_without_leaking_internals(client):
     assert all(set(e) == {"at", "action", "actor", "actor_type", "details"} for e in events)
     assert client.get("/api/invoices/000000000000000000000001/timeline").status_code == 404
     assert client.get("/api/invoices/bad/timeline").status_code == 404
+
+
+def test_cashflow_flags_invoices_far_later_than_client_history(client):
+    from datetime import date, timedelta
+    import asyncio
+    from db import db
+    user = _login(client)
+    firm = user["firm_id"]
+    c = client.post("/api/clients", json={"name": "Γρήγορος", "afm": "123456783", "email": ""}).json()
+    today = date.today()
+
+    def inv(number, days_ago, status, paid_after=None):
+        d = today - timedelta(days=days_ago)
+        doc = {"firm_id": firm, "number": number, "client_id": c["id"], "client_name": "Γρήγορος", "status": status,
+               "total": 500.0, "date": d.isoformat(), "line_items": []}
+        if paid_after is not None:
+            doc["paid_at"] = (d + timedelta(days=paid_after)).isoformat() + "T10:00:00+00:00"
+        return doc
+
+    docs = [inv(f"P{i}", 100 + i * 10, "paid", 7) for i in range(3)] + [inv("LATE", 60, "issued")]
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(db.invoices.insert_many(docs))
+    data = client.get("/api/analytics/cashflow").json()
+    assert [r["number"] for r in data["at_risk"]] == ["LATE"]
+    assert data["at_risk"][0]["typical_delay_days"] == 7 and data["at_risk_total"] == 500.0
+    ev = [e for e in data["events"] if "LATE" in e["label"]][0]
+    assert ev["confidence"] == "low"

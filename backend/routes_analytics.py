@@ -23,26 +23,32 @@ async def cash_flow_forecast(user: dict = Depends(get_current_user)):
     today = date.today()
     horizon_end = _add_months(today, 3)
 
-    # 1) Αναμενόμενες εισπράξεις = ανεξόφλητα τιμολόγια, projected στις 30 μέρες μετά την ημερομηνία τους
+    # 1) Αναμενόμενες εισπράξεις από το πραγματικό ιστορικό πληρωμών κάθε πελάτη
+    from payment_forecast import payment_delays, forecast_invoice
+    paid = await db.invoices.find(tenant_query(user, {"status": "paid"})).to_list(5000)
+    by_client, firm_delays = payment_delays(paid)
     unpaid = await db.invoices.find(tenant_query(user, {"status": "issued"})).to_list(2000)
     expected_income = []
+    at_risk = []
     for inv in unpaid:
-        try:
-            issue = date.fromisoformat((inv.get("date") or "")[:10])
-        except Exception:
+        f = forecast_invoice(inv, by_client, firm_delays, today)
+        if not f:
             continue
-        expected_pay = issue + timedelta(days=30)
-        if expected_pay < today:
-            # ήδη ληξιπρόθεσμο — θεωρώ ότι θα πληρωθεί εντός 15 ημερών από σήμερα
-            expected_pay = today + timedelta(days=15)
-        if expected_pay <= horizon_end:
+        if f["at_risk"]:
+            at_risk.append({
+                "invoice_id": str(inv["_id"]), "number": inv.get("number"), "client_name": inv.get("client_name", ""),
+                "amount": float(inv.get("total", 0)), "days_late": f["days_late"],
+                "typical_delay_days": f["typical_delay_days"], "basis": f["basis"],
+            })
+        if f["expected_date"] <= horizon_end:
             expected_income.append({
-                "date": expected_pay.isoformat(),
+                "date": f["expected_date"].isoformat(),
                 "label": f"Είσπραξη {inv.get('number')} — {inv.get('client_name', '')}",
                 "amount": float(inv.get("total", 0)),
                 "type": "income",
-                "confidence": "medium",
+                "confidence": f["confidence"],
             })
+    at_risk.sort(key=lambda r: r["amount"], reverse=True)
 
     # 2) Επαναλαμβανόμενα έξοδα = μέσος όρος τελευταίων 3 μηνών ανά κατηγορία
     three_months_ago = _add_months(today, -3).isoformat()
@@ -143,6 +149,8 @@ async def cash_flow_forecast(user: dict = Depends(get_current_user)):
         "events": projected[:50],
         "monthly": monthly,
         "expense_by_category": expense_by_cat,
+        "at_risk": at_risk[:10],
+        "at_risk_total": round(sum(r["amount"] for r in at_risk), 2),
     }
 
 

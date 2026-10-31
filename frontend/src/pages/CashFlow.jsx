@@ -57,6 +57,29 @@ export default function CashFlow() {
         </div>
       </div>
 
+      {data.at_risk?.length > 0 && (
+        <div className="lux-card p-5" data-testid="cf-at-risk">
+          <div className="flex items-center gap-2 mb-1">
+            <Warning size={18} className="text-[hsl(var(--gold))]" />
+            <h3 className="font-semibold">Σε κίνδυνο καθυστέρησης — {money(data.at_risk_total)}</h3>
+          </div>
+          <p className="text-xs text-muted-foreground mb-3">
+            Τιμολόγια που καθυστερούν πολύ περισσότερο από όσο συνήθως πληρώνει ο πελάτης.
+          </p>
+          <ul className="divide-y divide-border text-sm">
+            {data.at_risk.map((r) => (
+              <li key={r.invoice_id} className="py-2 flex items-center justify-between gap-3" data-testid="cf-at-risk-item">
+                <span>{r.number} — {r.client_name}</span>
+                <span className="text-xs text-muted-foreground">
+                  {r.days_late} ημέρες πέρα από το συνηθισμένο ({r.typical_delay_days}{r.basis === "default" ? " εκτιμώμενες" : ""})
+                </span>
+                <span className="font-mono">{money(r.amount)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {data.net < 0 && (
         <div className="lux-card p-4 border-[hsl(var(--destructive))]/40 flex items-start gap-3">
           <Warning size={20} className="text-[hsl(var(--destructive))] shrink-0 mt-0.5" />
