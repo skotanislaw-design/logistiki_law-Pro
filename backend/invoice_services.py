@@ -23,6 +23,13 @@ from email_utils import (
 logger = logging.getLogger(__name__)
 
 
+async def _event(firm_id: str, invoice_id, action: str, details: str = "") -> None:
+    """Γεγονός στο χρονολόγιο του τιμολογίου (audit_logs, εκτελεστής «system»)."""
+    from audit import record
+    await record(action=action, firm_id=firm_id, entity="invoices", entity_id=str(invoice_id),
+                 actor_type="system", details=details)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -110,6 +117,9 @@ async def transmit_to_mydata(firm_id: str, invoice: dict, settings: dict, force:
     if inc:
         ops["$inc"] = inc
     await db.invoices.update_one(firm_query(firm_id, {"_id": invoice["_id"], "mydata_claim_token": token}), ops)
+    if update["mydata_status"] != "pending":
+        detail = update.get("mydata_mark") or update.get("mydata_error") or ""
+        await _event(firm_id, invoice["_id"], f"invoice:mydata_{update['mydata_status']}", str(detail))
     return update
 
 
@@ -131,6 +141,7 @@ async def sweep_stale_mydata_claims(firm_id: str, now: datetime | None = None) -
         )
         if getattr(res, "modified_count", 0):
             stuck.append(inv)
+            await _event(firm_id, inv["_id"], "invoice:mydata_needs_review", "Διακοπή πριν την επιβεβαίωση")
     return stuck
 
 
@@ -271,6 +282,7 @@ async def apply_payment(firm_id: str, invoice_id, paid_via: str = "manual") -> s
         {"$set": {"status": "paid", "paid_at": _now(), "paid_via": paid_via}},
     )
     if result.modified_count > 0:
+        await _event(firm_id, oid, "invoice:paid", f"via {paid_via}")
         return "paid"
     inv = await db.invoices.find_one(firm_query(firm_id, {"_id": oid}))
     if not inv:

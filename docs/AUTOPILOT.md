@@ -104,6 +104,14 @@ python -m pytest            # 30 offline tests, in-memory Mongo, χωρίς δί
 
 ## myDATA — τι καλύπτεται
 
+### Χρονολόγιο τιμολογίου
+
+`GET /api/invoices/{id}/timeline` επιστρέφει με χρονολογική σειρά τι έγινε στο τιμολόγιο:
+ενέργειες χρηστών (έκδοση, ακύρωση, αποστολή) και γεγονότα συστήματος
+(`invoice:mydata_synced|failed|needs_review`, `invoice:paid`). Τροφοδοτείται από το
+ελεγκτικό ίχνος και εκθέτει μόνο `at, action, actor, actor_type, details` — ποτέ IP ή
+user agent. Διαθέσιμο σε κάθε χρήστη του γραφείου, μόνο για τα δικά του τιμολόγια.
+
 ### Είσπραξη
 
 Κάθε εξόφληση (τράπεζα, Stripe, χειροκίνητη) περνά από το `apply_payment`, που επιστρέφει

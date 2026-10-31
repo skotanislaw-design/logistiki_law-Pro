@@ -137,3 +137,21 @@ def test_notification_resolution_rejects_unavailable_action(client):
     )
     assert response.status_code == 422
     assert "δεν είναι διαθέσιμη" in response.json()["detail"]
+
+
+def test_invoice_timeline_tells_the_story_without_leaking_internals(client):
+    _login(client)
+    c = client.post("/api/clients", json={"name": "Πελάτης Β", "afm": "123456783", "email": ""}).json()
+    inv = client.post("/api/invoices", json={"client_id": c["id"], "date": "2026-09-01",
+                                              "line_items": [{"description": "Υπηρεσία", "quantity": 1, "unit_price": 100, "vat_rate": 24}]}).json()
+    client.post(f"/api/invoices/{inv['id']}/issue")
+    assert client.post(f"/api/invoices/{inv['id']}/mark-paid").status_code == 200
+    r = client.get(f"/api/invoices/{inv['id']}/timeline")
+    assert r.status_code == 200
+    events = r.json()
+    actions = [e["action"] for e in events]
+    assert "post:invoices:issue" in actions and "invoice:paid" in actions
+    assert actions.index("post:invoices:issue") < actions.index("invoice:paid")
+    assert all(set(e) == {"at", "action", "actor", "actor_type", "details"} for e in events)
+    assert client.get("/api/invoices/000000000000000000000001/timeline").status_code == 404
+    assert client.get("/api/invoices/bad/timeline").status_code == 404
