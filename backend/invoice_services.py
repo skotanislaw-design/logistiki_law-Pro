@@ -59,7 +59,8 @@ async def payable_amount(firm_id: str, invoice: dict, settings: dict, client: di
 
 
 def safe_pdf_name(invoice: dict) -> str:
-    return (invoice.get("number") or "invoice").replace("ΤΠΥ", "TPY") + ".pdf"
+    from http_utils import ascii_filename
+    return ascii_filename(invoice.get("number") or "invoice") + ".pdf"
 
 
 # ---------------------------------------------------------------- myDATA ----

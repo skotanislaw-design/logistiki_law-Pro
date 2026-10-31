@@ -16,6 +16,13 @@ from ai_helpers import transcribe_audio, parse_invoice_from_text
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
 
+def number_prefix(invoice, client: dict) -> str:
+    """ΑΠΥ για λιανική (ιδιώτης χωρίς ΑΦΜ), αλλιώς ΤΠΥ — ώστε αριθμός, τύπος και PDF να συμφωνούν."""
+    from mydata_client import resolve_invoice_type, TYPE_RECEIPT_B2C
+    data = invoice if isinstance(invoice, dict) else invoice.model_dump()
+    return "ΑΠΥ" if resolve_invoice_type(data, client) == TYPE_RECEIPT_B2C else "ΤΠΥ"
+
+
 async def _next_invoice_number(firm_id: str, prefix: str = "ΤΠΥ") -> str:
     from datetime import datetime, timezone
     from pymongo import ReturnDocument
@@ -148,7 +155,7 @@ async def create_invoice(payload: Invoice, user: dict = Depends(get_current_user
     payload.vat_breakdown = totals["vat_breakdown"]
     if payload.total <= 0:
         raise HTTPException(status_code=400, detail="Το σύνολο του τιμολογίου πρέπει να είναι θετικό.")
-    payload.number = await _next_invoice_number(firm_id_for(user))
+    payload.number = await _next_invoice_number(firm_id_for(user), number_prefix(payload, client_doc))
     payload.created_by = user["email"]
     result = await db.invoices.insert_one(payload.to_mongo())
     doc = await db.invoices.find_one(tenant_query(user, {"_id": result.inserted_id}))
@@ -186,6 +193,10 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
     payload.total = totals["total"]
     payload.vat_breakdown = totals["vat_breakdown"]
     payload.number = existing["number"]
+    wanted = number_prefix(payload, client_doc)
+    if not payload.number.startswith(wanted + "-"):
+        # Πρόχειρο που άλλαξε είδος παραστατικού (π.χ. άλλος πελάτης): νέα αρίθμηση στη σωστή σειρά.
+        payload.number = await _next_invoice_number(firm_id_for(user), wanted)
     data = payload.to_mongo()
     data.pop("_id", None)
     await db.invoices.update_one(tenant_query(user, {"_id": invoice_oid}), {"$set": data})

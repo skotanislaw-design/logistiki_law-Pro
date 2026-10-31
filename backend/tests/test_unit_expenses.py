@@ -102,3 +102,19 @@ async def test_payables_job_alerts_once_and_inbox_pay_is_idempotent():
     assert (await db.expenses.find_one({"_id": late.inserted_id}))["payment_status"] == "paid"
     assert await mark_expense_paid(FIRM, late.inserted_id) == "already_paid"
     assert await mark_expense_paid(FIRM, "bad") == "not_found"
+
+
+# ------------------------------------------ outgoing: numbering & titles ---
+
+def test_receipt_prefix_title_and_filename():
+    from routes_invoices import number_prefix
+    from pdf_utils import _document_title
+    from invoice_services import safe_pdf_name
+    person, company = {"client_type": "individual", "afm": ""}, {"client_type": "company", "afm": "123456783"}
+    assert number_prefix({}, person) == "ΑΠΥ" and number_prefix({}, company) == "ΤΠΥ"
+    assert number_prefix({"invoice_type": "2.1"}, person) == "ΤΠΥ"
+    assert _document_title({}, person) == "ΑΠΟΔΕΙΞΗ ΠΑΡΟΧΗΣ ΥΠΗΡΕΣΙΩΝ"
+    assert _document_title({}, company) == "ΤΙΜΟΛΟΓΙΟ ΠΑΡΟΧΗΣ ΥΠΗΡΕΣΙΩΝ"
+    assert _document_title({"credit_note_for": "x"}, company) == "ΠΙΣΤΩΤΙΚΟ ΤΙΜΟΛΟΓΙΟ"
+    assert safe_pdf_name({"number": "ΑΠΥ-2026-0001"}) == "APY-2026-0001.pdf"
+    assert safe_pdf_name({"number": "ΤΠΥ-2026-0001"}) == "TPY-2026-0001.pdf"
