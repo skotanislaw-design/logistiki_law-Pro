@@ -63,7 +63,7 @@ class NotificationDecisionConflict(NotificationDecisionError):
     pass
 
 JOBS = [
-    "send_issued_invoices", "reminders", "mydata_retry", "mydata_expenses", "payables", "reconcile",
+    "send_issued_invoices", "reminders", "mydata_retry", "mydata_expenses", "payables", "insights", "reconcile",
     "deadlines", "case_deadlines", "stale_drafts", "vat_periods", "inbox_receipts", "digest",
     "bank_sync", "outbox", "backup_check",
 ]
@@ -73,6 +73,7 @@ JOB_LABELS = {
     "mydata_retry": "Διαβίβαση myDATA (επανάληψη)",
     "mydata_expenses": "Λήψη εξόδων από myDATA",
     "payables": "Πληρωμές προς προμηθευτές",
+    "insights": "Προληπτικά αναλυτικά (δαπάνες, εξάρτηση από πελάτη)",
     "reconcile": "Συμφωνία τραπεζικών κινήσεων",
     "deadlines": "Ειδοποιήσεις προθεσμιών ΦΠΑ/ΕΦΚΑ",
     "case_deadlines": "Δικάσιμοι και επόμενες ενέργειες υποθέσεων",
@@ -681,6 +682,29 @@ async def job_payables(firm_id: str, settings: dict) -> dict:
     return {"due_soon": due_soon, "overdue": overdue}
 
 
+async def job_insights(firm_id: str, settings: dict) -> dict:
+    """Ειδοποιεί μία φορά τον μήνα για απότομη αύξηση δαπανών και για υπερβολική εξάρτηση από πελάτη."""
+    from insights import expense_spikes, client_concentration
+    today = _date.today()
+    month = today.strftime("%Y-%m")
+    expenses = await db.expenses.find(firm_query(firm_id)).to_list(10000)
+    invoices = await db.invoices.find(firm_query(firm_id, {"status": {"$in": ["issued", "paid"]}})).to_list(10000)
+    raised = 0
+    for s in expense_spikes(expenses, today):
+        if await notify(firm_id, "insight_expense_spike", "warning",
+                        f"Αυξημένες δαπάνες «{s['category']}»: {_fmt(s['current'])} αυτό τον μήνα",
+                        f"{s['ratio']}× του μέσου όρου των 3 προηγούμενων μηνών ({_fmt(s['average'])}). Ελέγξτε αν είναι αναμενόμενο ή διπλοκαταχώρηση.",
+                        entity="expense", dedupe_key=f"insight_expense_spike:{month}:{s['category']}"):
+            raised += 1
+    top = client_concentration(invoices, today)
+    if top and await notify(firm_id, "insight_client_concentration", "info",
+                            f"{top['share']}% του τζίρου προέρχεται από έναν πελάτη: {top['client_name']}",
+                            f"{_fmt(top['revenue'])} από {_fmt(top['total_revenue'])} τους τελευταίους 12 μήνες. Η απώλειά του θα επηρέαζε σοβαρά τα έσοδα.",
+                            entity="client", entity_id=top["client_id"], dedupe_key=f"insight_client_concentration:{month}"):
+        raised += 1
+    return {"raised": raised}
+
+
 async def job_case_deadlines(firm_id: str, settings: dict) -> dict:
     """Δικάσιμοι (πινάκια) και «επόμενη ενέργεια» υποθέσεων: προειδοποίηση πριν, και κρίσιμη
     απόφαση όταν η ημερομηνία πέρασε χωρίς να ενημερωθεί η εγγραφή. Παράλειψη δικασίμου
@@ -1227,6 +1251,7 @@ JOB_FUNCS = {
     "mydata_retry": job_mydata_retry,
     "mydata_expenses": job_mydata_expenses,
     "payables": job_payables,
+    "insights": job_insights,
     "reconcile": job_reconcile,
     "deadlines": job_deadlines,
     "case_deadlines": job_case_deadlines,
