@@ -181,3 +181,11 @@ def test_cashflow_flags_invoices_far_later_than_client_history(client):
     assert data["at_risk"][0]["typical_delay_days"] == 7 and data["at_risk_total"] == 500.0
     ev = [e for e in data["events"] if "LATE" in e["label"]][0]
     assert ev["confidence"] == "low"
+
+
+def test_early_risk_reminder_setting_defaults_on_and_can_be_switched_off(client):
+    _login(client)
+    assert client.get("/api/settings").json()["early_risk_reminder"] is True
+    r = client.patch("/api/settings", json={"early_risk_reminder": False})
+    assert r.status_code == 200 and r.json()["early_risk_reminder"] is False
+    assert client.get("/api/settings").json()["early_risk_reminder"] is False
