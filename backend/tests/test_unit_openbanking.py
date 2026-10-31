@@ -143,3 +143,66 @@ def test_secret_key_is_in_the_encrypted_field_list():
     assert "gocardless_secret_key" in crypto.SECRET_SETTINGS_FIELDS
     masked = crypto.mask_settings_secrets(crypto.encrypt_settings_secrets({"gocardless_secret_key": "s3cret"}))
     assert masked["gocardless_secret_key"] == crypto.MASK
+
+
+@pytest.mark.asyncio
+async def test_authorization_header_carries_the_real_token(monkeypatch):
+    """Ο access token φτάνει αυτούσιος στο header — όχι μασκαρισμένος.
+
+    Εργαλείο ελέγχου ανέφερε ότι το header έπαιρνε τη λεκτική τιμή «******». Ήταν
+    artifact της δικής του απόκρυψης μυστικών: το `f"Bearer {token}"` μοιάζει με
+    διαρροή διαπιστευτηρίου, μασκαρίστηκε στο log, και η μάσκα διαβάστηκε ως κώδικας.
+    Το test κλειδώνει τη συμπεριφορά ώστε το ερώτημα να απαντιέται με εκτέλεση.
+    """
+    captured: dict = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def request(self, method, url, headers=None, json=None, params=None):
+            captured.update(headers or {})
+            return _Resp()
+
+    monkeypatch.setattr(openbanking.httpx, "AsyncClient", lambda *a, **k: _Client())
+
+    await openbanking._request("GET", "/institutions/", token="SECRET-TOKEN-xyz")
+    assert captured["Authorization"] == "Bearer SECRET-TOKEN-xyz"
+    assert "*" not in captured["Authorization"]
+
+
+@pytest.mark.asyncio
+async def test_no_authorization_header_when_there_is_no_token(monkeypatch):
+    """Το /token/new/ καλείται χωρίς token — κενό header θα το απέρριπτε ο πάροχος."""
+    captured: dict = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"access": "t"}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def request(self, method, url, headers=None, json=None, params=None):
+            captured.update({"headers": dict(headers or {})})
+            return _Resp()
+
+    monkeypatch.setattr(openbanking.httpx, "AsyncClient", lambda *a, **k: _Client())
+
+    await openbanking._request("POST", "/token/new/", json={"secret_id": "a", "secret_key": "b"})
+    assert "Authorization" not in captured["headers"]
