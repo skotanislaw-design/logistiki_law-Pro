@@ -28,7 +28,10 @@ ICLS_NS = "https://www.aade.gr/myDATA/incomeClassificaton/v1.0"
 SANDBOX_BASE = "https://mydataapidev.aade.gr"
 PROD_BASE = "https://mydatapi.aade.gr/myDATA"
 
-VAT_CATEGORY = {24: "1", 13: "2", 6: "3", 0: "7"}
+# Κατηγορία ΦΠΑ — Παράρτημα 8.2 του «Τεχνική περιγραφή διεπαφών REST API», έκδ. 1.0.10
+# (Νοέμβριος 2024). Ο κωδικός 8 («εγγραφές χωρίς ΦΠΑ», π.χ. μισθοδοσία, αποσβέσεις) δεν
+# αντιστοιχεί σε συντελεστή και δεν προκύπτει από τιμολόγιο παροχής υπηρεσιών.
+VAT_CATEGORY = {24: "1", 13: "2", 6: "3", 17: "4", 9: "5", 4: "6", 0: "7", 3: "9"}
 
 # Είδη παραστατικού που εκδίδει δικηγορικό γραφείο
 TYPE_SERVICES_B2B = "2.1"    # Τιμολόγιο Παροχής Υπηρεσιών προς επιχείρηση/επαγγελματία
@@ -57,16 +60,73 @@ CLASSIFICATION_RETAIL = "E3_561_003"      # Λιανικές — επιτρεπ�
 # Παρακρατούμενος φόρος: taxType 1, κατηγορία 2 = αμοιβές ελεύθερων επαγγελματιών 20%
 WITHHOLDING_TAX_TYPE = "1"
 
-# Κατηγορία συντελεστή παρακράτησης (Παράρτημα 8.4 του οδηγού ERP v2.0.1):
-#   2  = Δικαιώματα — 20%
-#   3  = Αμοιβές Συμβουλών Διοίκησης — 20%
-#   10 = Προκαταβλητέος Φόρος στις Αμοιβές Δικηγόρων — 15%
-# Η προεπιλογή ήταν «2» (δικαιώματα), που δεν αφορά αμοιβές υπηρεσιών. Το «3» είναι
-# το μόνο συνεπές με τον συντελεστή 20% που ήδη χρησιμοποιεί ο κώδικας και με το
-# επίσημο δείγμα αναφοράς. Αν η πρακτική του γραφείου εμπίπτει στο 10 (15%
-# προκαταβλητέος), ορίζεται μαζί με το `withholding_rate` στις Ρυθμίσεις.
+# Κατηγορία παρακρατούμενου φόρου — Παράρτημα 8.4 της τεχνικής περιγραφής v1.0.10.
+# Κρατάμε τον επίσημο πίνακα ώστε η ρύθμιση του γραφείου να επικυρώνεται ως προς τον
+# συντελεστή: κατηγορία και ποσοστό ταξιδεύουν μαζί στο XML και μια ασυμφωνία περνά
+# σιωπηλά από την ΑΑΔΕ — το λάθος φαίνεται μόνο σε έλεγχο.
+# `None` = η κατηγορία δηλώνεται σε απόλυτο ποσό, όχι σε ποσοστό.
+WITHHOLDING_CATEGORIES: dict[str, tuple[float | None, str]] = {
+    "1": (0.15, "Περιπτ. β' — Τόκοι 15%"),
+    "2": (0.20, "Περιπτ. γ' — Δικαιώματα 20%"),
+    "3": (0.20, "Περιπτ. δ' — Αμοιβές Συμβουλών Διοίκησης 20%"),
+    "4": (0.03, "Περιπτ. δ' — Τεχνικά Έργα 3%"),
+    "5": (0.01, "Υγρά καύσιμα και προϊόντα καπνοβιομηχανίας 1%"),
+    "6": (0.04, "Λοιπά Αγαθά 4%"),
+    "7": (0.08, "Παροχή Υπηρεσιών 8%"),
+    "8": (0.04, "Προκαταβλητέος Φόρος Αρχιτεκτόνων/Μηχανικών — μελέτες 4%"),
+    "9": (0.10, "Προκαταβλητέος Φόρος Αρχιτεκτόνων/Μηχανικών — λοιπά έργα 10%"),
+    "10": (0.15, "Προκαταβλητέος Φόρος στις Αμοιβές Δικηγόρων 15%"),
+    "11": (None, "Παρακράτηση ΦΜΥ παρ. 1 αρ. 15 ν. 4172/2013"),
+    "12": (0.15, "ΦΜΥ — Αξιωματικοί Εμπορικού Ναυτικού 15%"),
+    "13": (0.10, "ΦΜΥ — Κατώτερο Πλήρωμα Εμπορικού Ναυτικού 10%"),
+    "14": (None, "Παρακράτηση Ειδικής Εισφοράς Αλληλεγγύης"),
+    "15": (None, "Παρακράτηση Φόρου Αποζημίωσης λόγω Διακοπής Σχέσης Εργασίας"),
+    "16": (None, "Παρακρατήσεις συναλλαγών αλλοδαπής (Σ.Α.Δ.Φ.)"),
+    "17": (None, "Λοιπές Παρακρατήσεις Φόρου"),
+    "18": (0.05, "Παρακράτηση Φόρου Μερίσματα 5%"),
+}
+
+# Προεπιλογή για αμοιβές νομικών υπηρεσιών προς επιχείρηση. Η κατηγορία «2»
+# (δικαιώματα) που υπήρχε ως default **δεν** αφορά αμοιβές υπηρεσιών· το «3» είναι το
+# μόνο συνεπές με τον συντελεστή 20%. Αν το γραφείο εφαρμόζει τον προκαταβλητέο φόρο
+# δικηγόρων, η σωστή ρύθμιση είναι κατηγορία «10» με `withholding_rate = 0.15` — δύο
+# ρυθμίσεις που αλλάζουν μαζί, γι' αυτό τις επικυρώνει η `withholding_mismatch()`.
 WITHHOLDING_CATEGORY_SERVICES = "3"
+WITHHOLDING_CATEGORY_LAWYERS = "10"
 WITHHOLDING_RATE_FREELANCER = 0.20
+
+
+def withholding_mismatch(settings: dict) -> str | None:
+    """Μήνυμα αν η κατηγορία παρακράτησης δεν ταιριάζει με τον συντελεστή, αλλιώς None.
+
+    Δεν μπλοκάρει τη διαβίβαση — ο επίσημος πίνακας αλλάζει με αποφάσεις και δεν θέλουμε
+    ο κώδικας να γίνει πιο αυστηρός από την ΑΑΔΕ. Εμφανίζεται στις Ρυθμίσεις και στο
+    `verify_mydata_sandbox.py`, ώστε το λάθος να φαίνεται πριν σταλεί παραστατικό.
+    """
+    if not settings.get("withholding_enabled", False):
+        return None
+    category = str(settings.get("withholding_category") or WITHHOLDING_CATEGORY_SERVICES)
+    known = WITHHOLDING_CATEGORIES.get(category)
+    if known is None:
+        return (f"Η κατηγορία παρακράτησης «{category}» δεν υπάρχει στον πίνακα 8.4 της ΑΑΔΕ "
+                f"(έκδ. 1.0.10). Επαληθεύστε την με τον λογιστή σας.")
+    expected, label = known
+    rate = float(settings.get("withholding_rate", WITHHOLDING_RATE_FREELANCER) or 0)
+    if category == "2":
+        # Ο συντελεστής συμφωνεί (20%), άρα ο αριθμητικός έλεγχος δεν το πιάνει — αλλά η
+        # κατηγορία αφορά δικαιώματα, όχι αμοιβές. Παλιές εγκαταστάσεις έχουν αυτή την
+        # τιμή αποθηκευμένη από προηγούμενο default και δεν τη διορθώνει καμία migration.
+        return ("Η κατηγορία παρακράτησης «2» είναι «Δικαιώματα» (royalties) και δεν αφορά "
+                "αμοιβές υπηρεσιών. Για νομικές υπηρεσίες ισχύει «3» (Αμοιβές Συμβουλών "
+                "Διοίκησης 20%) ή «10» (Προκαταβλητέος Φόρος Αμοιβών Δικηγόρων 15% — "
+                "ορίστε και withholding_rate = 0.15). Επιβεβαιώστε με τον λογιστή σας.")
+    if expected is None:
+        return None          # κατηγορία σε απόλυτο ποσό — ο συντελεστής δεν ελέγχεται
+    if abs(expected - rate) > 0.0001:
+        return (f"Η κατηγορία παρακράτησης «{category}» ({label}) αντιστοιχεί σε "
+                f"{expected:.0%}, αλλά οι Ρυθμίσεις έχουν {rate:.0%}. "
+                f"Διορθώστε κατηγορία ή συντελεστή — το myDATA δεν θα το απορρίψει.")
+    return None
 
 
 class MyDataError(Exception):
@@ -99,6 +159,21 @@ def _urls(settings: dict) -> dict:
     }
 
 
+def _entity_params(settings: dict) -> dict:
+    """`entityVatNumber` — ΑΦΜ της οντότητας για λογαριασμό της οποίας καλούμε.
+
+    §4.2.5-4.2.7 της τεχνικής περιγραφής: όταν η κλήση γίνεται από τρίτο πρόσωπο
+    (εκπρόσωπος Ν.Π. ή λογιστής/λογιστικό γραφείο), ο ΑΦΜ της οντότητας στέλνεται εδώ·
+    αλλιώς η παράμετρος παραλείπεται και η ΑΑΔΕ χρησιμοποιεί τον ΑΦΜ της εγγραφής.
+
+    Χωρίς αυτό, ένα λογιστικό γραφείο που διαβιβάζει για πελάτη του δεν παίρνει σφάλμα —
+    τα δεδομένα καταχωρούνται στον **δικό του** ΑΦΜ. Το κενό είναι σιωπηλό, γι' αυτό η
+    ρύθμιση είναι ρητή και προαιρετική.
+    """
+    afm = str(settings.get("aade_entity_vat_number") or "").strip()
+    return {"entityVatNumber": afm} if afm else {}
+
+
 def _headers(settings: dict) -> dict:
     return {
         "aade-user-id": settings["aade_user_id"].strip(),
@@ -108,17 +183,40 @@ def _headers(settings: dict) -> dict:
     }
 
 
+def _unaccented(text: str) -> str:
+    """Πεζά χωρίς τόνους, για σύγκριση ελληνικού ελεύθερου κειμένου.
+
+    Ο τόνος μετακινείται στις κλίσεις («πίστωση» → «επί πιστώσει») και ένα pattern με
+    τονισμένο φωνήεν αστοχεί σιωπηλά — ο τρόπος πληρωμής έπεφτε τότε στο default.
+    """
+    import unicodedata
+    decomposed = unicodedata.normalize("NFD", str(text or "").lower())
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
+# Τρόποι πληρωμής — Παράρτημα 8.12. Σειρά σημασίας: ο πρώτος που ταιριάζει κερδίζει.
+PAYMENT_TYPE_PATTERNS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("μετρητ", "cash"), "3"),
+    (("iris",), "8"),
+    (("pos", "καρτ", "card"), "7"),
+    (("επιταγ", "cheque", "check"), "4"),
+    (("πιστωσ", "credit"), "5"),
+    (("web banking", "webbanking", "e-banking", "ebanking", "internet banking"), "6"),
+    (("αλλοδαπ", "foreign", "iban ", "swift"), "2"),
+)
+
+
 def _payment_type(method) -> str:
-    """Τρόπος πληρωμής ΑΑΔΕ. Ανεκτικό σε μη-string (legacy/imported δεδομένα)."""
-    m = str(method or "").strip().lower()
-    if "μετρητ" in m:
-        return "3"
-    if "κάρτ" in m or "pos" in m:
-        return "7"
-    if "επιταγ" in m:
-        return "4"
-    if "πίστωσ" in m:
-        return "5"
+    """Τρόπος πληρωμής ΑΑΔΕ (πίν. 8.12). Ανεκτικό σε μη-string (legacy/imported δεδομένα).
+
+    Default «1» (Επαγ. Λογαριασμός Πληρωμών Ημεδαπής): η τραπεζική κατάθεση σε ελληνικό
+    επαγγελματικό λογαριασμό είναι ο συνήθης τρόπος και όσα δεν αναγνωρίζονται είναι
+    σχεδόν πάντα αυτό.
+    """
+    m = _unaccented(method)
+    for needles, code in PAYMENT_TYPE_PATTERNS:
+        if any(needle in m for needle in needles):
+            return code
     return "1"
 
 
@@ -361,7 +459,7 @@ async def cancel_invoice(settings: dict, mark: str) -> dict:
     try:
         async with httpx.AsyncClient(timeout=30) as http:
             resp = await http.post(_urls(settings)["cancel"], headers=_headers(settings),
-                                   params={"mark": str(mark).strip()})
+                                   params={"mark": str(mark).strip(), **_entity_params(settings)})
     except httpx.RequestError as e:
         raise MyDataError(f"Αδυναμία επικοινωνίας με την ΑΑΔΕ: {e}")
     _raise_for_status(resp)
@@ -388,7 +486,8 @@ async def cancel_invoice(settings: dict, mark: str) -> dict:
 async def validate_credentials(settings: dict) -> dict:
     try:
         async with httpx.AsyncClient(timeout=20) as http:
-            resp = await http.get(_urls(settings)["transmitted"], headers=_headers(settings), params={"mark": "1"})
+            resp = await http.get(_urls(settings)["transmitted"], headers=_headers(settings),
+                                  params={"mark": "1", **_entity_params(settings)})
     except httpx.RequestError as e:
         raise MyDataError(f"Αδυναμία επικοινωνίας με την ΑΑΔΕ: {e}")
     _raise_for_status(resp)
@@ -484,17 +583,62 @@ def next_mark_from(xml_text: str, fallback: str = "0") -> str:
     return str(max(numeric)) if numeric else fallback
 
 
+# Ανώτατος αριθμός σελίδων ανά κλήση `request_docs`. Η ΑΑΔΕ δεν δηλώνει πλήθος
+# σελίδων· το όριο υπάρχει ώστε μια ελλιπής απόκριση (ίδιο token ξανά και ξανά) να μη
+# γυρίζει ατέρμονα. Ό,τι μείνει έρχεται στον επόμενο κύκλο του Autopilot.
+MAX_DOC_PAGES = 40
+
+
+def parse_continuation(xml_text: str) -> dict | None:
+    """Τα `nextPartitionKey`/`nextRowKey` της απόκρισης, ή None όταν τελείωσε.
+
+    §4.2.6 παρ. 1 και §6.2: όταν ο όγκος ξεπερνά το όριο, η ΑΑΔΕ επιστρέφει μέρος των
+    αποτελεσμάτων μαζί με `continuationToken`, και η επόμενη κλήση συνεχίζει από εκεί.
+    """
+    try:
+        root = fromstring(xml_text)
+    except Exception:
+        return None
+    token = _find(root, "continuationToken") or root
+    partition = _text(_find(token, "nextPartitionKey"))
+    row = _text(_find(token, "nextRowKey"))
+    return {"nextPartitionKey": partition, "nextRowKey": row} if partition and row else None
+
+
 async def request_docs(settings: dict, mark: str = "0") -> tuple[list[dict], str]:
     """Κατεβάζει τα παραστατικά με MARK μεγαλύτερο του δοθέντος.
 
     Επιστρέφει (υποψήφια έξοδα, τελευταίο MARK) για incremental λήψη.
+
+    Η ΑΑΔΕ σελιδοποιεί: με μήνες παραστατικών προμηθευτών η πρώτη απόκριση είναι μερική
+    και φέρει `continuationToken`. Παλιότερα κρατούσαμε μόνο την πρώτη σελίδα και
+    προωθούσαμε τον δείκτη MARK στο μέγιστο που είχαμε δει — όσα έξοδα έμεναν πίσω δεν
+    ξανακατέβαιναν **ποτέ**. Εδώ διατρέχουμε όλες τις σελίδες πριν προωθηθεί ο δείκτης.
     """
-    try:
-        async with httpx.AsyncClient(timeout=60) as http:
-            resp = await http.get(_urls(settings)["docs"], headers=_headers(settings),
-                                  params={"mark": str(mark or "0")})
-    except httpx.RequestError as e:
-        raise MyDataError(f"Αδυναμία επικοινωνίας με την ΑΑΔΕ: {e}")
-    _raise_for_status(resp)
-    expenses = parse_requested_docs(resp.text, settings.get("afm", ""))
-    return expenses, next_mark_from(resp.text, str(mark or "0"))
+    base_params = {"mark": str(mark or "0"), **_entity_params(settings)}
+    expenses: list[dict] = []
+    seen_marks: set[str] = set()
+    cursor = str(mark or "0")
+    page_params: dict = {}
+
+    for _ in range(MAX_DOC_PAGES):
+        try:
+            async with httpx.AsyncClient(timeout=60) as http:
+                resp = await http.get(_urls(settings)["docs"], headers=_headers(settings),
+                                      params={**base_params, **page_params})
+        except httpx.RequestError as e:
+            raise MyDataError(f"Αδυναμία επικοινωνίας με την ΑΑΔΕ: {e}")
+        _raise_for_status(resp)
+
+        for doc in parse_requested_docs(resp.text, settings.get("afm", "")):
+            if doc["mark"] not in seen_marks:      # η ίδια σελίδα μπορεί να επαναληφθεί
+                seen_marks.add(doc["mark"])
+                expenses.append(doc)
+        cursor = next_mark_from(resp.text, cursor)
+
+        nxt = parse_continuation(resp.text)
+        if not nxt or nxt == page_params:
+            break                                  # τέλος, ή η ΑΑΔΕ επαναλαμβάνει token
+        page_params = nxt
+
+    return expenses, cursor

@@ -236,6 +236,16 @@ export default function Settings() {
             </SelectContent>
           </Select>
         </div>
+        <div>
+          <Label>ΑΦΜ οντότητας για λογαριασμό της οποίας διαβιβάζετε <span className="text-muted-foreground font-normal">(προαιρετικό)</span></Label>
+          <Input value={form.aade_entity_vat_number || ""} onChange={(e) => setForm({ ...form, aade_entity_vat_number: e.target.value })}
+            className="mt-1.5" data-testid="settings-aade-entity-afm" placeholder="Κενό — διαβιβάζετε για τον δικό σας ΑΦΜ" />
+          <p className="text-[11px] text-muted-foreground/70 mt-1.5">
+            Συμπληρώνεται <strong>μόνο</strong> από λογιστή / λογιστικό γραφείο ή εκπρόσωπο νομικού προσώπου που
+            διαβιβάζει για πελάτη του (πεδίο <code>entityVatNumber</code>, §4.2.5–4.2.7 της ΑΑΔΕ).
+            Αν μείνει κενό, τα δεδομένα καταχωρούνται στον ΑΦΜ της δικής σας εγγραφής.
+          </p>
+        </div>
         <Button variant="outline" size="sm" onClick={testAade} disabled={testingAade} data-testid="settings-test-aade-button">
           {testingAade ? "Έλεγχος..." : "Δοκιμή σύνδεσης ΑΑΔΕ"}
         </Button>
