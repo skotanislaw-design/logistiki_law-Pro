@@ -17,6 +17,15 @@ def _add_months(d: date, months: int) -> date:
     return date(y, m, day)
 
 
+@router.get("/insights")
+async def insights(user: dict = Depends(get_current_user)):
+    from insights import expense_spikes, client_concentration
+    today = date.today()
+    expenses = await db.expenses.find(tenant_query(user)).to_list(10000)
+    invoices = await db.invoices.find(tenant_query(user, {"status": {"$in": ["issued", "paid"]}})).to_list(10000)
+    return {"expense_spikes": expense_spikes(expenses, today), "client_concentration": client_concentration(invoices, today)}
+
+
 @router.get("/cashflow")
 async def cash_flow_forecast(user: dict = Depends(get_current_user)):
     """Πρόβλεψη ταμείου 3 μηνών βάσει ανείσπρακτων + επαναλαμβανόμενων εξόδων + φορολογικών προθεσμιών."""
