@@ -77,7 +77,7 @@ class Invoice(BaseDocument):
     total: float = 0
     vat_breakdown: dict = Field(default_factory=dict)
     status: Literal["draft", "issued", "paid", "cancelled"] = "draft"
-    mydata_status: Literal["not_sent", "pending", "synced", "failed", "cancelled"] = "not_sent"
+    mydata_status: Literal["not_sent", "pending", "synced", "failed", "cancelled", "needs_review"] = "not_sent"
     # Είδος παραστατικού ΑΑΔΕ· κενό = αυτόματη επιλογή βάσει πελάτη (βλ. mydata_client)
     invoice_type: str = ""
     mydata_mark: Optional[str] = None
@@ -124,6 +124,11 @@ class Expense(BaseDocument):
     mydata_mark: Optional[str] = None
     supplier_afm: str = ""
     mydata_invoice_type: str = ""
+    # Κατάσταση πληρωμής προς τον προμηθευτή. Παλιές εγγραφές θεωρούνται πληρωμένες.
+    payment_status: Literal["paid", "unpaid"] = "paid"
+    due_date: str = ""
+    paid_at: Optional[str] = None
+    paid_via: Optional[str] = None
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
@@ -290,6 +295,7 @@ class Settings(BaseDocument):
     autopilot_enabled: bool = True
     auto_email_on_issue: bool = True          # στέλνει PDF στον πελάτη μόλις εκδοθεί
     auto_reminders: bool = True               # αυτόματες υπενθυμίσεις ανείσπρακτων
+    early_risk_reminder: bool = True          # νωρίτερη υπενθύμιση όταν ο πελάτης καθυστερεί σε σχέση με το ιστορικό του
     reminder_after_days: int = 30             # πρώτη υπενθύμιση Χ ημέρες μετά την έκδοση
     reminder_interval_days: int = 15          # επόμενες υπενθυμίσεις κάθε Χ ημέρες
     reminder_max: int = 3                     # μέγιστος αριθμός υπενθυμίσεων ανά τιμολόγιο
@@ -493,6 +499,8 @@ class Notification(BaseDocument):
     actions: List[dict] = Field(default_factory=list)   # [{key,label,payload}]
     dedupe_key: str = ""
     read: bool = False
+    resolution_status: Literal["pending", "processing", "completed"] = "pending"
+    resolution_started_at: Optional[str] = None
     resolved_at: Optional[str] = None
     resolved_by: Optional[str] = None
     resolution: Optional[str] = None

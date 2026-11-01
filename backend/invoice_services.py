@@ -6,7 +6,7 @@ decided it was time.
 """
 import os
 import logging
-from datetime import datetime, timezone, date as _date
+from datetime import datetime, timedelta, timezone, date as _date
 
 from bson import ObjectId
 
@@ -21,6 +21,13 @@ from email_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _event(firm_id: str, invoice_id, action: str, details: str = "") -> None:
+    """Γεγονός στο χρονολόγιο του τιμολογίου (audit_logs, εκτελεστής «system»)."""
+    from audit import record
+    await record(action=action, firm_id=firm_id, entity="invoices", entity_id=str(invoice_id),
+                 actor_type="system", details=details)
 
 
 def _now() -> str:
@@ -52,42 +59,91 @@ async def payable_amount(firm_id: str, invoice: dict, settings: dict, client: di
 
 
 def safe_pdf_name(invoice: dict) -> str:
-    return (invoice.get("number") or "invoice").replace("ΤΠΥ", "TPY") + ".pdf"
+    from http_utils import ascii_filename
+    return ascii_filename(invoice.get("number") or "invoice") + ".pdf"
 
 
 # ---------------------------------------------------------------- myDATA ----
 
-async def transmit_to_mydata(firm_id: str, invoice: dict, settings: dict) -> dict:
+MYDATA_CLAIM_TTL_MIN = 15
+_SENDABLE = ("not_sent", "pending", "failed")
+
+
+async def transmit_to_mydata(firm_id: str, invoice: dict, settings: dict, force: bool = False) -> dict:
     """Send one invoice to AADE. Returns the ``$set`` update applied to the invoice.
 
     * live credentials  → real transmission (synced / failed)
     * ``MYDATA_MOCK=1`` → simulated MARK (explicit demo mode)
     * otherwise         → ``pending`` so Autopilot retries once credentials exist
+
+    Ένα παραστατικό διαβιβάζεται το πολύ μία φορά τη φορά: πριν την αποστολή γίνεται
+    atomic claim, ώστε ταυτόχρονες κλήσεις (χειροκίνητο κουμπί + Autopilot) να μην
+    στείλουν διπλό παραστατικό στην ΑΑΔΕ. Αν το σύστημα πέσει μετά την αποστολή και
+    πριν την εγγραφή του MARK, το claim μένει «ορφανό» και το `sweep_stale_mydata_claims`
+    το στέλνει για έλεγχο — δεν ξαναστέλνεται τυφλά. ``force`` επιτρέπεται μόνο για
+    παραστατικά σε κατάσταση ``needs_review`` και μόνο από ρητή ενέργεια χρήστη.
     """
     import uuid
     now = _now()
+    allowed = list(_SENDABLE) + (["needs_review"] if force else [])
+    token = uuid.uuid4().hex
+    claimed = await db.invoices.update_one(
+        firm_query(firm_id, {"_id": invoice["_id"], "mydata_claim_token": {"$in": [None, ""]},
+                             "$or": [{"mydata_status": {"$in": allowed}}, {"mydata_status": {"$exists": False}}]}),
+        {"$set": {"mydata_claim_token": token, "mydata_claim_at": now}},
+    )
+    if not getattr(claimed, "modified_count", 0):
+        current = await db.invoices.find_one(firm_query(firm_id, {"_id": invoice["_id"]})) or {}
+        state = current.get("mydata_status") or "not_sent"
+        return {"mydata_status": state, "skipped": True,
+                "in_progress": bool(current.get("mydata_claim_token"))}
+
+    release = {"mydata_claim_token": None, "mydata_claim_at": None}
+    inc = None
     if mydata_ready(settings):
         client = await load_client(firm_id, invoice)
         try:
             result = await send_invoice(settings, invoice, client or {})
             update = {"mydata_status": "synced", "mydata_mark": result["mark"], "mydata_uid": result["uid"],
                       "mydata_error": None, "mydata_synced_at": now}
-            inc = None
         except MyDataError as e:
             update = {"mydata_status": "failed", "mydata_error": str(e), "mydata_last_attempt_at": now}
             inc = {"mydata_attempts": 1}
     elif mydata_mock_enabled():
         update = {"mydata_status": "synced", "mydata_mark": f"MOCK-{uuid.uuid4().hex[:16].upper()}",
                   "mydata_uid": f"UID-{uuid.uuid4().hex[:12].upper()}", "mydata_error": None, "mydata_synced_at": now}
-        inc = None
     else:
         update = {"mydata_status": "pending", "mydata_error": MYDATA_NOT_CONFIGURED_MSG}
-        inc = None
-    ops = {"$set": update}
+    ops = {"$set": {**update, **release}}
     if inc:
         ops["$inc"] = inc
-    await db.invoices.update_one(firm_query(firm_id, {"_id": invoice["_id"]}), ops)
+    await db.invoices.update_one(firm_query(firm_id, {"_id": invoice["_id"], "mydata_claim_token": token}), ops)
+    if update["mydata_status"] != "pending":
+        detail = update.get("mydata_mark") or update.get("mydata_error") or ""
+        await _event(firm_id, invoice["_id"], f"invoice:mydata_{update['mydata_status']}", str(detail))
     return update
+
+
+async def sweep_stale_mydata_claims(firm_id: str, now: datetime | None = None) -> list:
+    """Παραστατικά με claim που δεν ολοκληρώθηκε (κρασάρισμα μεταξύ αποστολής και εγγραφής).
+
+    Άγνωστο αν η ΑΑΔΕ το παρέλαβε· γι' αυτό περνούν σε ``needs_review`` και όχι σε αυτόματη
+    επανάληψη, που θα μπορούσε να δημιουργήσει διπλό παραστατικό.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = (now - timedelta(minutes=MYDATA_CLAIM_TTL_MIN)).isoformat()
+    stuck = []
+    async for inv in db.invoices.find(firm_query(firm_id, {"mydata_claim_token": {"$nin": [None, ""]},
+                                                           "mydata_claim_at": {"$lt": cutoff}})):
+        res = await db.invoices.update_one(
+            firm_query(firm_id, {"_id": inv["_id"], "mydata_claim_token": inv["mydata_claim_token"]}),
+            {"$set": {"mydata_status": "needs_review", "mydata_claim_token": None, "mydata_claim_at": None,
+                      "mydata_error": "Η διαβίβαση διακόπηκε πριν επιβεβαιωθεί. Ελέγξτε στην ΑΑΔΕ αν το παραστατικό έχει καταχωρηθεί."}},
+        )
+        if getattr(res, "modified_count", 0):
+            stuck.append(inv)
+            await _event(firm_id, inv["_id"], "invoice:mydata_needs_review", "Διακοπή πριν την επιβεβαίωση")
+    return stuck
 
 
 # ------------------------------------------------------------------ email ----
@@ -212,14 +268,35 @@ async def send_reminder(firm_id: str, invoice: dict, settings: dict, client: dic
     return {"reminder_sent_at": _now(), "payment_link": payment_link}
 
 
-async def mark_paid(firm_id: str, invoice_id, paid_via: str = "manual") -> bool:
-    """Idempotent: returns True only if the invoice transitioned issued → paid."""
-    oid = invoice_id if isinstance(invoice_id, ObjectId) else ObjectId(invoice_id)
+async def apply_payment(firm_id: str, invoice_id, paid_via: str = "manual") -> str:
+    """Idempotent εξόφληση. Επιστρέφει ``paid`` | ``already_paid`` | ``not_payable`` | ``not_found``.
+
+    ``not_payable`` = πρόχειρο ή ακυρωμένο τιμολόγιο: ένα ποσό που εισπράχθηκε δεν πρέπει
+    ποτέ να «εξοφλεί» σιωπηλά παραστατικό που δεν ισχύει — χρειάζεται ανθρώπινη απόφαση.
+    """
+    try:
+        oid = invoice_id if isinstance(invoice_id, ObjectId) else ObjectId(invoice_id)
+    except Exception:
+        return "not_found"
     result = await db.invoices.update_one(
         firm_query(firm_id, {"_id": oid, "status": "issued"}),
         {"$set": {"status": "paid", "paid_at": _now(), "paid_via": paid_via}},
     )
-    return result.modified_count > 0
+    if result.modified_count > 0:
+        await _event(firm_id, oid, "invoice:paid", f"via {paid_via}")
+        await db.notifications.update_many(
+            firm_query(firm_id, {"dedupe_key": f"payment_at_risk:{oid}", "resolved_at": None}),
+            {"$set": {"resolved_at": _now(), "resolved_by": "autopilot", "resolution": "auto"}})
+        return "paid"
+    inv = await db.invoices.find_one(firm_query(firm_id, {"_id": oid}))
+    if not inv:
+        return "not_found"
+    return "already_paid" if inv.get("status") == "paid" else "not_payable"
+
+
+async def mark_paid(firm_id: str, invoice_id, paid_via: str = "manual") -> bool:
+    """Idempotent: returns True only if the invoice transitioned issued → paid."""
+    return await apply_payment(firm_id, invoice_id, paid_via) == "paid"
 
 
 # ------------------------------------------------- cancellation / credit ----

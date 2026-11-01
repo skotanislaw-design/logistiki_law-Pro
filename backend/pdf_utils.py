@@ -69,6 +69,16 @@ def _p(text, size=9, bold=False, color=colors.black, align=0, leading=None):
     return Paragraph(text, style)
 
 
+def _document_title(invoice: dict, client: dict) -> str:
+    from mydata_client import resolve_invoice_type, TYPE_RECEIPT_B2C, TYPE_CREDIT_NOTE
+    t = resolve_invoice_type(invoice, client or {})
+    if t == TYPE_RECEIPT_B2C:
+        return "ΑΠΟΔΕΙΞΗ ΠΑΡΟΧΗΣ ΥΠΗΡΕΣΙΩΝ"
+    if t == TYPE_CREDIT_NOTE:
+        return "ΠΙΣΤΩΤΙΚΟ ΤΙΜΟΛΟΓΙΟ"
+    return "ΤΙΜΟΛΟΓΙΟ ΠΑΡΟΧΗΣ ΥΠΗΡΕΣΙΩΝ"
+
+
 def build_invoice_pdf(invoice: dict, client: dict, settings: dict) -> bytes:
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=16 * mm, rightMargin=16 * mm, topMargin=14 * mm, bottomMargin=14 * mm)
@@ -92,7 +102,7 @@ def build_invoice_pdf(invoice: dict, client: dict, settings: dict) -> bytes:
     ] + [_p(l, 8, color=colors.HexColor("#aeb6c8")) for l in comp_lines]
 
     meta_cell = [
-        _p("ΤΙΜΟΛΟΓΙΟ ΠΑΡΟΧΗΣ ΥΠΗΡΕΣΙΩΝ", 10, bold=True, color=colors.white, align=2),
+        _p(_document_title(invoice, client), 10, bold=True, color=colors.white, align=2),
         Spacer(1, 3),
         _p(invoice.get("number") or "—", 13, bold=True, color=GOLD, align=2),
         _p(f"Ημερομηνία: {_gr_date(invoice.get('date'))}", 8.5, color=colors.HexColor("#aeb6c8"), align=2),

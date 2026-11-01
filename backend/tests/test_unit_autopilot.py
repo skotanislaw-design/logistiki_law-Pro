@@ -1,4 +1,5 @@
 """Autopilot engine tests against an in-memory database — no SMTP, no AADE, no network."""
+import asyncio
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -8,6 +9,7 @@ import invoice_services
 from automation import (
     reminder_due, mydata_retry_due, closed_vat_periods, digest_due, build_digest,
     notify, resolve_notification, run_firm, acquire_lock, release_lock, MYDATA_MAX_ATTEMPTS,
+    InvalidNotificationDecision, NotificationNotFound, NotificationDecisionConflict,
 )
 from db import db
 
@@ -109,11 +111,75 @@ async def test_notify_dedupes_unresolved_and_resolve_reconcile(monkeypatch):
 
     out = await resolve_notification(FIRM, str(first["_id"]), "user@example.gr", "confirm")
     assert out["resolution"] == "confirmed"
+    assert out["already_resolved"] is False
     assert (await db.invoices.find_one({"_id": inv.inserted_id}))["status"] == "paid"
     assert (await db.bank_transactions.find_one({"_id": tx.inserted_id}))["match_status"] == "manual_matched"
-    assert (await db.notifications.find_one({"_id": first["_id"]}))["resolved_by"] == "user@example.gr"
+    resolved = await db.notifications.find_one({"_id": first["_id"]})
+    assert resolved["resolved_by"] == "user@example.gr"
+    assert resolved["resolution_status"] == "completed"
+    log = await db.audit_logs.find_one({"entity": "notification", "entity_id": str(first["_id"])})
+    assert log["action"] == "decision:reconcile_review:confirm" and log["user_email"] == "user@example.gr"
+    assert "confirmed" in log["details"]
+    repeated = await resolve_notification(FIRM, str(first["_id"]), "another@example.gr", "ignore")
+    assert repeated == {"resolution": "confirmed", "already_resolved": True}
     # resolved → same key may be raised again
     assert await notify(FIRM, "reconcile_review", "warning", "t", dedupe_key="k1", requires_action=True)
+
+
+@pytest.mark.asyncio
+async def test_notification_rejects_unoffered_action_without_closing_item():
+    await _seed()
+    note = await notify(
+        FIRM, "expense_review", "warning", "Έλεγχος εξόδου",
+        entity="expense", entity_id="000000000000000000000001",
+        requires_action=True, actions=[{"key": "confirm", "label": "Επιβεβαίωση"}],
+    )
+
+    with pytest.raises(InvalidNotificationDecision):
+        await resolve_notification(FIRM, str(note["_id"]), "user@example.gr", "delete")
+
+    stored = await db.notifications.find_one({"_id": note["_id"]})
+    assert stored.get("resolved_at") is None
+    assert stored["resolution_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_notification_does_not_close_when_entity_is_missing():
+    await _seed()
+    note = await notify(
+        FIRM, "expense_review", "warning", "Έλεγχος εξόδου",
+        entity="expense", entity_id="000000000000000000000001",
+        requires_action=True, actions=[{"key": "confirm", "label": "Επιβεβαίωση"}],
+    )
+
+    with pytest.raises(NotificationNotFound):
+        await resolve_notification(FIRM, str(note["_id"]), "user@example.gr", "confirm")
+
+    stored = await db.notifications.find_one({"_id": note["_id"]})
+    assert stored.get("resolved_at") is None
+    assert stored["resolution_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_notification_resolution_is_claimed_once():
+    await _seed()
+    note = await notify(
+        FIRM, "manual_review", "warning", "Έλεγχος",
+        requires_action=True, actions=[{"key": "done", "label": "Ολοκλήρωση"}],
+    )
+
+    results = await asyncio.gather(
+        resolve_notification(FIRM, str(note["_id"]), "first@example.gr", "done"),
+        resolve_notification(FIRM, str(note["_id"]), "second@example.gr", "done"),
+        return_exceptions=True,
+    )
+    completed = [result for result in results if isinstance(result, dict)]
+    conflicts = [result for result in results if isinstance(result, NotificationDecisionConflict)]
+    assert sum(not result["already_resolved"] for result in completed) == 1
+    assert len(completed) + len(conflicts) == 2
+    stored = await db.notifications.find_one({"_id": note["_id"]})
+    assert stored["resolution_status"] == "completed"
+    assert stored["resolved_by"] in ("first@example.gr", "second@example.gr")
 
 
 @pytest.mark.asyncio
@@ -435,3 +501,228 @@ def test_autopilot_covers_firms_that_never_opened_the_dashboard():
 
         loop.run_until_complete(run_autopilot_cycle())
         assert loop.run_until_complete(db.automation_runs.count_documents({"firm_id": firm})) > 0
+
+
+# ------------------------------------------- myDATA: exactly-once transmit ---
+
+LIVE = {"aade_user_id": "u", "aade_subscription_key": "k", "afm": "123456783"}
+
+
+async def _issued_invoice(**extra):
+    res = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0100", "status": "issued",
+                                        "mydata_status": "not_sent", "line_items": [], **extra})
+    return await db.invoices.find_one({"_id": res.inserted_id})
+
+
+@pytest.mark.asyncio
+async def test_concurrent_transmit_sends_once(monkeypatch):
+    settings, _ = await _seed(LIVE)
+    calls = []
+
+    async def slow_send(settings, invoice, client):
+        calls.append(1)
+        await asyncio.sleep(0.05)
+        return {"mark": "400100", "uid": "UID1"}
+
+    monkeypatch.setattr(invoice_services, "send_invoice", slow_send)
+    inv = await _issued_invoice()
+    results = await asyncio.gather(*[invoice_services.transmit_to_mydata(FIRM, inv, settings) for _ in range(4)])
+    assert len(calls) == 1
+    assert sum(1 for r in results if r.get("skipped")) == 3
+    stored = await db.invoices.find_one({"_id": inv["_id"]})
+    assert stored["mydata_status"] == "synced" and stored["mydata_mark"] == "400100"
+    assert not stored.get("mydata_claim_token")
+
+
+@pytest.mark.asyncio
+async def test_synced_invoice_is_never_resent(monkeypatch):
+    settings, _ = await _seed(LIVE)
+
+    async def boom(*a, **k):
+        raise AssertionError("must not resend")
+
+    monkeypatch.setattr(invoice_services, "send_invoice", boom)
+    inv = await _issued_invoice(mydata_status="synced", mydata_mark="400101")
+    r = await invoice_services.transmit_to_mydata(FIRM, inv, settings)
+    assert r["skipped"] and r["mydata_status"] == "synced"
+
+
+@pytest.mark.asyncio
+async def test_failed_transmit_releases_claim_and_counts_attempt(monkeypatch):
+    settings, _ = await _seed(LIVE)
+
+    async def reject(*a, **k):
+        raise invoice_services.MyDataError("ΑΦΜ άκυρο")
+
+    monkeypatch.setattr(invoice_services, "send_invoice", reject)
+    inv = await _issued_invoice()
+    r = await invoice_services.transmit_to_mydata(FIRM, inv, settings)
+    stored = await db.invoices.find_one({"_id": inv["_id"]})
+    assert r["mydata_status"] == "failed" and stored["mydata_attempts"] == 1
+    assert not stored.get("mydata_claim_token")
+
+
+@pytest.mark.asyncio
+async def test_crashed_transmit_goes_to_review_not_blind_retry(monkeypatch):
+    settings, _ = await _seed(LIVE)
+    old = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+    inv = await _issued_invoice(mydata_claim_token="dead", mydata_claim_at=old)
+
+    async def boom(*a, **k):
+        raise AssertionError("must not resend")
+
+    monkeypatch.setattr(invoice_services, "send_invoice", boom)
+    # Ενώ το claim είναι ενεργό, καμία νέα αποστολή
+    assert (await invoice_services.transmit_to_mydata(FIRM, inv, settings))["skipped"]
+
+    await automation.job_mydata_retry(FIRM, settings)
+    stored = await db.invoices.find_one({"_id": inv["_id"]})
+    assert stored["mydata_status"] == "needs_review" and not stored.get("mydata_claim_token")
+    assert await db.notifications.find_one({"dedupe_key": f"mydata_needs_review:{inv['_id']}"})
+    # Το Autopilot δεν το ξαναστέλνει· μόνο ρητή ενέργεια (force)
+    assert (await invoice_services.transmit_to_mydata(FIRM, stored, settings))["skipped"]
+
+    async def ok(*a, **k):
+        return {"mark": "400102", "uid": "UID2"}
+
+    monkeypatch.setattr(invoice_services, "send_invoice", ok)
+    r = await invoice_services.transmit_to_mydata(FIRM, stored, settings, force=True)
+    assert r["mydata_status"] == "synced"
+
+
+# ------------------------------------------- είσπραξη: δεν εξοφλεί ό,τι δεν ισχύει ---
+
+@pytest.mark.asyncio
+async def test_bank_match_on_cancelled_invoice_is_not_confirmed():
+    settings, client_id = await _seed()
+    inv = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0200", "client_id": client_id,
+                                        "status": "cancelled", "total": 124.0, "line_items": []})
+    tx = await db.bank_transactions.insert_one({"firm_id": FIRM, "amount": 124.0, "date": "2026-08-03", "description": "x",
+                                                "match_status": "auto_matched", "match_confidence": 99,
+                                                "matched_invoice_id": str(inv.inserted_id), "matched_invoice_number": "ΤΠΥ-2026-0200"})
+    for _ in range(2):  # η δεύτερη εκτέλεση δεν διπλογράφει ειδοποίηση
+        stats = await automation.job_reconcile(FIRM, settings)
+    assert stats["confirmed"] == 0
+    stored = await db.bank_transactions.find_one({"_id": tx.inserted_id})
+    assert stored["match_status"] == "auto_matched"
+    assert (await db.invoices.find_one({"_id": inv.inserted_id}))["status"] == "cancelled"
+    notes = await db.notifications.find({"type": "reconcile_conflict"}).to_list(10)
+    assert len(notes) == 1 and [a["key"] for a in notes[0]["actions"]] == ["unmatch", "ignore"]
+
+
+@pytest.mark.asyncio
+async def test_apply_payment_outcomes():
+    for status, expected in (("issued", "paid"), ("paid", "already_paid"), ("cancelled", "not_payable"), ("draft", "not_payable")):
+        res = await db.invoices.insert_one({"firm_id": FIRM, "status": status, "line_items": []})
+        assert await invoice_services.apply_payment(FIRM, res.inserted_id, "test") == expected
+    assert await invoice_services.apply_payment(FIRM, "not-an-id") == "not_found"
+    other = await db.invoices.insert_one({"firm_id": "other-firm", "status": "issued", "line_items": []})
+    assert await invoice_services.apply_payment(FIRM, other.inserted_id) == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_stripe_webhook_retry_completes_payment_and_flags_cancelled():
+    import routes_payments
+    ok = await db.invoices.insert_one({"firm_id": FIRM, "status": "issued", "line_items": []})
+    gone = await db.invoices.insert_one({"firm_id": FIRM, "status": "cancelled", "line_items": []})
+    for sid, inv in (("cs_ok", ok), ("cs_gone", gone)):
+        await db.payment_transactions.insert_one({"firm_id": FIRM, "session_id": sid, "invoice_id": str(inv.inserted_id),
+                                                  "payment_status": "initiated", "amount": 124.0})
+    # Η συναλλαγή είχε ήδη σημειωθεί paid αλλά το τιμολόγιο όχι (κρασάρισμα): η επανάληψη το διορθώνει
+    await db.payment_transactions.update_one({"session_id": "cs_ok"}, {"$set": {"payment_status": "paid"}})
+    await routes_payments._mark_paid("cs_ok", "pi_1")
+    await routes_payments._mark_paid("cs_gone", "pi_2")
+    await routes_payments._mark_paid("cs_gone", "pi_2")
+    paid = await db.invoices.find_one({"_id": ok.inserted_id})
+    assert paid["status"] == "paid" and paid["paid_via"] == "stripe"
+    assert (await db.invoices.find_one({"_id": gone.inserted_id}))["status"] == "cancelled"
+    assert await db.notifications.count_documents({"type": "payment_conflict"}) == 1
+
+
+# ------------------------------------- πρώιμη υπενθύμιση για πελάτη που καθυστερεί ---
+
+async def _fast_payer_history(client_id):
+    today = date.today()
+    for i in range(3):
+        d = today - timedelta(days=200 + i * 10)
+        await db.invoices.insert_one({"firm_id": FIRM, "number": f"H{i}", "client_id": client_id, "status": "paid", "date": d.isoformat(),
+                                      "paid_at": (d + timedelta(days=7)).isoformat() + "T10:00:00+00:00", "line_items": []})
+
+
+@pytest.mark.asyncio
+async def test_client_late_vs_own_history_gets_early_reminder_and_inbox_alert():
+    settings, client_id = await _seed()
+    await _fast_payer_history(client_id)
+    # 25 ημέρες: κάτω από το γενικό όριο των 30, αλλά 18 ημέρες πέρα από το συνηθισμένο (7)
+    late = await db.invoices.insert_one({"firm_id": FIRM, "number": "ΤΠΥ-2026-0300", "client_id": client_id, "client_name": "Παπαδόπουλος",
+                                         "status": "issued", "total": 124.0, "date": (date.today() - timedelta(days=25)).isoformat(),
+                                         "reminder_count": 0, "line_items": []})
+    stats = await automation.job_reminders(FIRM, settings)
+    assert stats["queued"] == 1
+    note = await db.notifications.find_one({"type": "payment_at_risk"})
+    assert note and "πληρώνει συνήθως σε 7" in note["message"] and "Στέλνεται υπενθύμιση" in note["message"]
+    assert (await db.outbox.find_one({"kind": "email_reminder"}))["payload"]["to"] == "client@example.gr"
+    # δεύτερος κύκλος: ούτε νέα ειδοποίηση ούτε νέο email
+    assert (await automation.job_reminders(FIRM, settings))["queued"] == 0
+    assert await db.notifications.count_documents({"type": "payment_at_risk"}) == 1
+    # εξόφληση → η ειδοποίηση κλείνει μόνη της
+    await invoice_services.apply_payment(FIRM, late.inserted_id, "manual")
+    assert (await db.notifications.find_one({"type": "payment_at_risk"}))["resolved_at"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_client_is_not_reminded_early_and_opt_out_is_respected():
+    settings, client_id = await _seed()
+    young = {"firm_id": FIRM, "number": "N1", "client_id": client_id, "status": "issued", "date": (date.today() - timedelta(days=25)).isoformat(),
+             "reminder_count": 0, "line_items": []}
+    await db.invoices.insert_one(dict(young))
+    assert (await automation.job_reminders(FIRM, settings))["queued"] == 0
+    assert await db.notifications.count_documents({"type": "payment_at_risk"}) == 0
+
+    await _fast_payer_history(client_id)
+    off = {**settings, "early_risk_reminder": False}
+    assert (await automation.job_reminders(FIRM, off))["queued"] == 0
+    # χωρίς αυτόματες υπενθυμίσεις το γραφείο ενημερώνεται πάντα, αλλά δεν φεύγει email
+    manual = {**settings, "auto_reminders": False}
+    assert (await automation.job_reminders(FIRM, manual)) == {"skipped": True}
+    note = await db.notifications.find_one({"type": "payment_at_risk"})
+    assert note and "Εξετάστε υπενθύμιση" in note["message"]
+
+
+# ------------------------------------------------ δικάσιμοι και προθεσμίες υποθέσεων ---
+
+@pytest.mark.asyncio
+async def test_case_deadlines_warn_before_and_escalate_when_overdue():
+    today = date.today()
+    iso = lambda n: (today + timedelta(days=n)).isoformat()
+    h7 = await db.hearings.insert_one({"firm_id": FIRM, "court": "Πρωτοδικείο Αθηνών", "room": "Α1", "date": iso(7), "time": "09:00",
+                                       "pinakio_number": 12, "case_title": "Α ν. Β", "status": "scheduled"})
+    h1 = await db.hearings.insert_one({"firm_id": FIRM, "court": "Ειρηνοδικείο", "date": iso(1), "pinakio_number": 3, "status": "interrupted"})
+    await db.hearings.insert_one({"firm_id": FIRM, "court": "Εφετείο", "date": iso(3), "pinakio_number": 1, "status": "scheduled"})  # εκτός ορίων ειδοποίησης
+    await db.hearings.insert_one({"firm_id": FIRM, "court": "Άλλο", "date": iso(1), "pinakio_number": 2, "status": "completed"})
+    old = await db.hearings.insert_one({"firm_id": FIRM, "court": "Μονομελές", "date": iso(-2), "pinakio_number": 9, "status": "scheduled"})
+    await db.hearings.insert_one({"firm_id": "other-firm", "court": "Ξένο", "date": iso(1), "pinakio_number": 1, "status": "scheduled"})
+    case = await db.cases.insert_one({"firm_id": FIRM, "title": "Υπόθεση Γ", "status": "active", "next_action": "Κατάθεση προτάσεων", "next_action_date": iso(-5)})
+    await db.cases.insert_one({"firm_id": FIRM, "title": "Αρχειοθετημένη", "status": "archived", "next_action_date": iso(-9)})
+
+    stats = await automation.job_case_deadlines(FIRM, BASE_SETTINGS)
+    assert stats == {"raised": 2, "overdue": 2}
+    by = {n["entity_id"]: n for n in await db.notifications.find({"firm_id": FIRM}).to_list(50)}
+    assert by[str(h7.inserted_id)]["level"] == "warning" and "09:00" in by[str(h7.inserted_id)]["title"]
+    assert "αίθουσα Α1" in by[str(h7.inserted_id)]["message"]
+    assert by[str(h1.inserted_id)]["level"] == "critical"
+    assert by[str(old.inserted_id)]["requires_action"] and by[str(old.inserted_id)]["type"] == "hearing_overdue"
+    assert by[str(case.inserted_id)]["type"] == "case_action_overdue"
+    assert len(by) == 4
+
+    # δεύτερος κύκλος: κανένα διπλότυπο
+    assert await automation.job_case_deadlines(FIRM, BASE_SETTINGS) == {"raised": 0, "overdue": 0}
+    assert await db.notifications.count_documents({"firm_id": FIRM}) == 4
+
+
+@pytest.mark.asyncio
+async def test_case_deadlines_ignore_bad_dates_and_run_in_cycle():
+    await db.hearings.insert_one({"firm_id": FIRM, "court": "Χ", "date": "αύριο", "pinakio_number": 1, "status": "scheduled"})
+    await db.cases.insert_one({"firm_id": FIRM, "title": "Y", "status": "active", "next_action_date": "??"})
+    assert await automation.job_case_deadlines(FIRM, BASE_SETTINGS) == {"raised": 0, "overdue": 0}
+    assert "case_deadlines" in automation.JOBS and "case_deadlines" in automation.JOB_LABELS

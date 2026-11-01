@@ -16,6 +16,13 @@ from ai_helpers import transcribe_audio, parse_invoice_from_text
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
 
+def number_prefix(invoice, client: dict) -> str:
+    """ΑΠΥ για λιανική (ιδιώτης χωρίς ΑΦΜ), αλλιώς ΤΠΥ — ώστε αριθμός, τύπος και PDF να συμφωνούν."""
+    from mydata_client import resolve_invoice_type, TYPE_RECEIPT_B2C
+    data = invoice if isinstance(invoice, dict) else invoice.model_dump()
+    return "ΑΠΥ" if resolve_invoice_type(data, client) == TYPE_RECEIPT_B2C else "ΤΠΥ"
+
+
 async def _next_invoice_number(firm_id: str, prefix: str = "ΤΠΥ") -> str:
     from datetime import datetime, timezone
     from pymongo import ReturnDocument
@@ -63,6 +70,27 @@ async def get_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
     return Invoice.from_mongo(doc)
+
+
+@router.get("/{invoice_id}/timeline")
+async def invoice_timeline(invoice_id: str, user: dict = Depends(get_current_user)):
+    """Χρονολόγιο τιμολογίου: ποιος/τι έκανε τι και πότε (έκδοση, myDATA, εξόφληση, email).
+
+    Προέρχεται από το ελεγκτικό ίχνος αλλά εκθέτει μόνο τα πεδία που χρειάζεται ο χρήστης —
+    ποτέ IP, user agent ή διαδρομές, που παραμένουν αποκλειστικά για τον διαχειριστή.
+    """
+    try:
+        oid = ObjectId(invoice_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    if not await db.invoices.find_one(tenant_query(user, {"_id": oid}), {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    rows = await db.audit_logs.find(tenant_query(user, {
+        "entity": {"$in": ["invoices", "mydata"]}, "entity_id": invoice_id,
+        "$or": [{"status_code": None}, {"status_code": {"$lt": 400}}],
+    })).sort("created_at", 1).to_list(500)
+    return [{"at": r.get("created_at"), "action": r.get("action"), "actor": r.get("user_email") or r.get("actor_type", ""),
+             "actor_type": r.get("actor_type", ""), "details": r.get("details", "")} for r in rows]
 
 
 def _validate_invoice_payload(payload: Invoice) -> None:
@@ -127,7 +155,7 @@ async def create_invoice(payload: Invoice, user: dict = Depends(get_current_user
     payload.vat_breakdown = totals["vat_breakdown"]
     if payload.total <= 0:
         raise HTTPException(status_code=400, detail="Το σύνολο του τιμολογίου πρέπει να είναι θετικό.")
-    payload.number = await _next_invoice_number(firm_id_for(user))
+    payload.number = await _next_invoice_number(firm_id_for(user), number_prefix(payload, client_doc))
     payload.created_by = user["email"]
     result = await db.invoices.insert_one(payload.to_mongo())
     doc = await db.invoices.find_one(tenant_query(user, {"_id": result.inserted_id}))
@@ -165,6 +193,10 @@ async def update_invoice(invoice_id: str, payload: Invoice, user: dict = Depends
     payload.total = totals["total"]
     payload.vat_breakdown = totals["vat_breakdown"]
     payload.number = existing["number"]
+    wanted = number_prefix(payload, client_doc)
+    if not payload.number.startswith(wanted + "-"):
+        # Πρόχειρο που άλλαξε είδος παραστατικού (π.χ. άλλος πελάτης): νέα αρίθμηση στη σωστή σειρά.
+        payload.number = await _next_invoice_number(firm_id_for(user), wanted)
     data = payload.to_mongo()
     data.pop("_id", None)
     await db.invoices.update_one(tenant_query(user, {"_id": invoice_oid}), {"$set": data})
@@ -336,10 +368,9 @@ async def mark_invoice_paid(invoice_id: str, user: dict = Depends(get_current_us
         raise HTTPException(status_code=400, detail="Το τιμολόγιο είναι ήδη εξοφλημένο.")
     if doc.get("status") != "issued":
         raise HTTPException(status_code=400, detail="Μόνο εκδοθέντα τιμολόγια μπορούν να σημανθούν ως εξοφλημένα")
-    await db.invoices.update_one(
-        tenant_query(user, {"_id": ObjectId(invoice_id)}),
-        {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc).isoformat()}},
-    )
+    from invoice_services import apply_payment
+    if await apply_payment(firm_id_for(user), doc["_id"], paid_via="manual") == "not_payable":
+        raise HTTPException(status_code=400, detail="Μόνο εκδοθέντα τιμολόγια μπορούν να σημανθούν ως εξοφλημένα")
     doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
     return Invoice.from_mongo(doc)
 

@@ -43,6 +43,7 @@ INVOICE_TYPE_LABELS = {
     TYPE_CREDIT_NOTE: "Πιστωτικό Τιμολόγιο (συσχετιζόμενο)",
 }
 RETAIL_TYPES = {TYPE_RECEIPT_B2C}
+SUPPLIER_CREDIT_TYPES = {"5.1", "5.2", "11.4"}
 
 # Είδη που εκφράζουν πίστωση. Στο myDATA το **είδος** του παραστατικού φέρει το πρόσημο:
 # τα ποσά υποβάλλονται πάντα θετικά (`AmountType` με `minInclusive="0"`). Εσωτερικά η
@@ -555,13 +556,17 @@ def parse_requested_docs(xml_text: str, our_afm: str) -> list[dict]:
             rate = _vat_rate_from_category(_text(_find(details[0], "vatCategory")))
         else:
             rate = round(vat / net * 100) if net else 24
+        invoice_type = _text(_find(header, "invoiceType"))
+        if invoice_type in SUPPLIER_CREDIT_TYPES:
+            # Πιστωτικό προμηθευτή μειώνει τα έξοδα και τον ΦΠΑ εισροών — δεν τα αυξάνει.
+            net, vat, gross = -abs(net), -abs(vat), -abs(gross)
         docs.append({
             "mark": mark,
             "uid": _text(_find(inv, "uid")),
             "issuer_afm": issuer_afm,
             "issuer_name": _text(_find(issuer, "name")),
             "date": _text(_find(header, "issueDate"))[:10] or date.today().isoformat(),
-            "invoice_type": _text(_find(header, "invoiceType")),
+            "invoice_type": invoice_type,
             "series": _text(_find(header, "series")),
             "aa": _text(_find(header, "aa")),
             "net_value": round(net, 2),

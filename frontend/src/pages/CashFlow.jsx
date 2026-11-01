@@ -11,9 +11,11 @@ const CONF_STYLE = { high: "text-[hsl(var(--success))]", medium: "text-[hsl(var(
 
 export default function CashFlow() {
   const [data, setData] = useState(null);
+  const [insights, setInsights] = useState(null);
 
   useEffect(() => {
     axios.get(`${API}/analytics/cashflow`).then((r) => setData(r.data)).catch((e) => toast.error(errMsg(e)));
+    axios.get(`${API}/analytics/insights`).then((r) => setInsights(r.data)).catch(() => {});
   }, []);
 
   if (!data) return <div className="text-muted-foreground">Φόρτωση προβλέψεων...</div>;
@@ -56,6 +58,47 @@ export default function CashFlow() {
           <div className="text-xs text-muted-foreground mt-1">Πλεόνασμα / Έλλειμμα</div>
         </div>
       </div>
+
+      {(insights?.expense_spikes?.length > 0 || insights?.client_concentration) && (
+        <div className="lux-card p-5" data-testid="cf-insights">
+          <h3 className="font-semibold mb-3">Προληπτικά σημάδια</h3>
+          <ul className="divide-y divide-border text-sm">
+            {insights.expense_spikes.map((s) => (
+              <li key={s.category} className="py-2">
+                Δαπάνες «{s.category}»: {money(s.current)} αυτό τον μήνα, {s.ratio}× του μέσου όρου ({money(s.average)})
+              </li>
+            ))}
+            {insights.client_concentration && (
+              <li className="py-2">
+                {insights.client_concentration.share}% του τζίρου 12 μηνών προέρχεται από τον πελάτη {insights.client_concentration.client_name} ({money(insights.client_concentration.revenue)})
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {data.at_risk?.length > 0 && (
+        <div className="lux-card p-5" data-testid="cf-at-risk">
+          <div className="flex items-center gap-2 mb-1">
+            <Warning size={18} className="text-[hsl(var(--gold))]" />
+            <h3 className="font-semibold">Σε κίνδυνο καθυστέρησης — {money(data.at_risk_total)}</h3>
+          </div>
+          <p className="text-xs text-muted-foreground mb-3">
+            Τιμολόγια που καθυστερούν πολύ περισσότερο από όσο συνήθως πληρώνει ο πελάτης.
+          </p>
+          <ul className="divide-y divide-border text-sm">
+            {data.at_risk.map((r) => (
+              <li key={r.invoice_id} className="py-2 flex items-center justify-between gap-3" data-testid="cf-at-risk-item">
+                <span>{r.number} — {r.client_name}</span>
+                <span className="text-xs text-muted-foreground">
+                  {r.days_late} ημέρες πέρα από το συνηθισμένο ({r.typical_delay_days}{r.basis === "default" ? " εκτιμώμενες" : ""})
+                </span>
+                <span className="font-mono">{money(r.amount)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {data.net < 0 && (
         <div className="lux-card p-4 border-[hsl(var(--destructive))]/40 flex items-start gap-3">

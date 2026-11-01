@@ -52,53 +52,37 @@ async def test_connection(user: dict = Depends(require_admin)):
 
 @router.post("/sync/{invoice_id}")
 async def sync_invoice(invoice_id: str, user: dict = Depends(get_current_user)):
-    doc = await db.invoices.find_one(tenant_query(user, {"_id": ObjectId(invoice_id)}))
+    from invoice_services import transmit_to_mydata
+    from tenant import firm_id_for
+    try:
+        oid = ObjectId(invoice_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    doc = await db.invoices.find_one(tenant_query(user, {"_id": oid}))
     if not doc:
         raise HTTPException(status_code=404, detail="Το τιμολόγιο δεν βρέθηκε")
+    if doc.get("mydata_status") == "synced":
+        raise HTTPException(status_code=409, detail="Το παραστατικό έχει ήδη διαβιβαστεί στο myDATA.")
     settings = await db.settings.find_one(tenant_query(user, {})) or {}
 
-    if mydata_ready(settings):
-        client = None
-        if doc.get("client_id"):
-            try:
-                client = await db.clients.find_one(tenant_query(user, {"_id": ObjectId(doc["client_id"])}))
-            except Exception:
-                client = None
-        try:
-            result = await send_invoice(settings, doc, client or {})
-        except MyDataError as e:
-            await db.invoices.update_one(
-                tenant_query(user, {"_id": ObjectId(invoice_id)}),
-                {"$set": {"mydata_status": "failed", "mydata_error": str(e)}, "$inc": {"mydata_attempts": 1}},
-            )
-            raise HTTPException(status_code=400, detail=str(e))
-        await db.invoices.update_one(
-            tenant_query(user, {"_id": ObjectId(invoice_id)}),
-            {"$set": {"mydata_status": "synced", "mydata_mark": result["mark"], "mydata_uid": result["uid"], "mydata_error": None, "mydata_synced_at": datetime.now(timezone.utc).isoformat()}},
-        )
+    update = await transmit_to_mydata(firm_id_for(user), doc, settings, force=doc.get("mydata_status") == "needs_review")
+    if update.get("skipped"):
+        raise HTTPException(status_code=409, detail="Η διαβίβαση βρίσκεται ήδη σε εξέλιξη. Δοκιμάστε ξανά σε λίγο.")
+    status = update.get("mydata_status")
+    if status == "failed":
+        raise HTTPException(status_code=400, detail=update.get("mydata_error") or "Η διαβίβαση απέτυχε")
+    if status == "pending":
+        # Χωρίς διαπιστευτήρια το παραστατικό μένει στην ουρά· το Autopilot το ξαναδοκιμάζει.
+        raise HTTPException(status_code=400, detail=MYDATA_NOT_CONFIGURED_MSG)
+    await db.notifications.update_many(
+        tenant_query(user, {"dedupe_key": f"mydata_needs_review:{oid}", "resolved_at": None}),
+        {"$set": {"resolved_at": datetime.now(timezone.utc).isoformat(), "resolved_by": user.get("email", ""), "resolution": "manual"}})
+    live = mydata_ready(settings)
+    synced_at = update.get("mydata_synced_at") or datetime.now(timezone.utc).isoformat()
+    if live:
         env = ENV_LABEL[settings.get("aade_environment", "sandbox")]
-        return {
-            "message": f"Το παραστατικό διαβιβάστηκε στο myDATA ({env}) — MARK: {result['mark']}",
-            "mark": result["mark"], "uid": result["uid"], "mode": "live",
-            "synced_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-    if mydata_mock_enabled():
-        mark = f"MOCK-{uuid.uuid4().hex[:16].upper()}"
-        uid = f"UID-{uuid.uuid4().hex[:12].upper()}"
-        await db.invoices.update_one(
-            tenant_query(user, {"_id": ObjectId(invoice_id)}),
-            {"$set": {"mydata_status": "synced", "mydata_mark": mark, "mydata_uid": uid, "mydata_error": None}},
-        )
-        return {
-            "message": "Το παραστατικό στάλθηκε (προσομοίωση) στο myDATA",
-            "mark": mark, "uid": uid, "mode": "mock",
-            "synced_at": datetime.now(timezone.utc).isoformat(),
-        }
-    # No credentials: keep the invoice in the queue. Autopilot retries automatically once
-    # the AADE credentials are saved in Settings.
-    await db.invoices.update_one(
-        tenant_query(user, {"_id": ObjectId(invoice_id)}),
-        {"$set": {"mydata_status": "pending", "mydata_error": MYDATA_NOT_CONFIGURED_MSG}},
-    )
-    raise HTTPException(status_code=400, detail=MYDATA_NOT_CONFIGURED_MSG)
+        message = f"Το παραστατικό διαβιβάστηκε στο myDATA ({env}) — MARK: {update['mydata_mark']}"
+    else:
+        message = "Το παραστατικό στάλθηκε (προσομοίωση) στο myDATA"
+    return {"message": message, "mark": update["mydata_mark"], "uid": update["mydata_uid"],
+            "mode": "live" if live else "mock", "synced_at": synced_at}

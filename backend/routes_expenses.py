@@ -19,6 +19,28 @@ async def list_expenses(user: dict = Depends(get_current_user)):
     return [Expense.from_mongo(d) for d in docs]
 
 
+@router.get("/payables")
+async def payables(user: dict = Depends(get_current_user)):
+    from datetime import date
+    today = date.today().isoformat()
+    docs = await db.expenses.find(tenant_query(user, {"payment_status": "unpaid"})).sort("due_date", 1).to_list(1000)
+    items = [Expense.from_mongo(d).model_dump() | {"overdue": bool(d.get("due_date")) and d["due_date"] < today} for d in docs]
+    return {
+        "items": items,
+        "total": round(sum(i["amount"] for i in items), 2),
+        "overdue_total": round(sum(i["amount"] for i in items if i["overdue"]), 2),
+    }
+
+
+@router.post("/{expense_id}/mark-paid")
+async def mark_paid(expense_id: str, user: dict = Depends(get_current_user)):
+    from expense_services import mark_expense_paid
+    result = await mark_expense_paid(firm_id_for(user), expense_id, "manual")
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="Το έξοδο δεν βρέθηκε")
+    return {"result": result}
+
+
 @router.post("")
 async def create_expense(payload: Expense, user: dict = Depends(get_current_user)):
     payload.id = None

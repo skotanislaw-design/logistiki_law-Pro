@@ -35,7 +35,18 @@ export default function Expenses() {
   const [previewSrc, setPreviewSrc] = useState(null);
   const fileRef = useRef(null);
 
-  const load = () => axios.get(`${API}/expenses`).then((r) => setExpenses(r.data)).catch((e) => toast.error(errMsg(e)));
+  const [payables, setPayables] = useState({ items: [], total: 0, overdue_total: 0 });
+  const load = () => {
+    axios.get(`${API}/expenses`).then((r) => setExpenses(r.data)).catch((e) => toast.error(errMsg(e)));
+    axios.get(`${API}/expenses/payables`).then((r) => setPayables(r.data)).catch(() => {});
+  };
+  const markPaid = async (id) => {
+    try {
+      await axios.post(`${API}/expenses/${id}/mark-paid`);
+      toast.success("Σημειώθηκε ως πληρωμένο");
+      load();
+    } catch (e) { toast.error(errMsg(e)); }
+  };
   useEffect(() => { load(); }, []);
 
   const handleFile = async (e) => {
@@ -115,6 +126,34 @@ export default function Expenses() {
         </div>
       </div>
 
+      {payables.items.length > 0 && (
+        <div className="lux-card p-4 mb-4 animate-in-up" data-testid="payables-card">
+          <div className="flex items-baseline justify-between mb-2">
+            <h2 className="font-medium">Προς πληρωμή ({payables.items.length})</h2>
+            <span className="font-mono text-sm">
+              {money(payables.total)}
+              {payables.overdue_total > 0 && <span className="text-destructive ml-2">εκ των οποίων εκπρόθεσμα {money(payables.overdue_total)}</span>}
+            </span>
+          </div>
+          <ul className="divide-y divide-border">
+            {payables.items.map((p) => (
+              <li key={p.id} className="flex items-center justify-between py-2 text-sm" data-testid={`payable-${p.id}`}>
+                <span>
+                  {p.vendor}
+                  <span className={`ml-2 text-xs ${p.overdue ? "text-destructive" : "text-muted-foreground"}`}>
+                    {p.overdue ? "Έληξε " : "Λήξη "}{dateFmt(p.due_date)}
+                  </span>
+                </span>
+                <span className="flex items-center gap-3">
+                  <span className="font-mono">{money(p.amount)}</span>
+                  <Button size="sm" variant="outline" onClick={() => markPaid(p.id)} data-testid={`mark-paid-${p.id}`}>Πληρώθηκε</Button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="lux-card overflow-hidden animate-in-up">
         <Table data-testid="expenses-table">
           <TableHeader>
@@ -144,7 +183,7 @@ export default function Expenses() {
                 <TableCell>{ex.vendor}</TableCell>
                 <TableCell>{dateFmt(ex.date)}</TableCell>
                 <TableCell>{ex.category}</TableCell>
-                <TableCell className="text-xs text-muted-foreground">{ex.source === "photo_ocr" ? "AI OCR" : "Χειροκίνητα"}</TableCell>
+                <TableCell className="text-xs text-muted-foreground">{{ photo_ocr: "AI OCR", mydata: "myDATA", email_ocr: "Email" }[ex.source] || "Χειροκίνητα"}</TableCell>
                 <TableCell className="text-right font-mono">{money(ex.vat_amount)}</TableCell>
                 <TableCell className="text-right font-mono">{money(ex.amount)}</TableCell>
                 <TableCell className="text-right">
